@@ -1,10 +1,12 @@
 package github
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -183,11 +185,194 @@ func TestStatus(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("Status = %q, want %q", got, tc.want)
 			}
-			wantCommand := "api repos/" + repo + "/commits/" + sha + "/check-runs"
+			wantCommand := "api repos/" + repo + "/commits/" + sha + "/check-runs?per_page=100&page=1"
 			if command := m.commandLine(0); command != wantCommand {
 				t.Errorf("the adapter ran %q, want %q", command, wantCommand)
 			}
+			if len(m.ran) != 1 {
+				t.Errorf("the adapter asked %v, want once: every check of the commit is in that page", m.ran)
+			}
 		})
+	}
+}
+
+// TestStatusConclusions walks every conclusion GitHub writes, one run at a time,
+// because a commit is green or red by them and by nothing else. A check that was
+// skipped or came out neutral is a check that is not against this commit, which
+// is what GitHub itself counts as a passed required check: a workflow with a
+// conditional job would otherwise be red for ever.
+func TestStatusConclusions(t *testing.T) {
+	cases := []struct {
+		conclusion string
+		want       forge.CheckState
+	}{
+		{"success", forge.CheckSuccess},
+		{"neutral", forge.CheckSuccess},
+		{"skipped", forge.CheckSuccess},
+		{"failure", forge.CheckFailure},
+		{"cancelled", forge.CheckFailure},
+		{"timed_out", forge.CheckFailure},
+		{"action_required", forge.CheckFailure},
+		{"stale", forge.CheckFailure},
+	}
+	for _, tc := range cases {
+		t.Run(tc.conclusion, func(t *testing.T) {
+			m := newMachine().prints("api", checkRuns(
+				checkRunAnswer{name: "lint", status: "completed", conclusion: tc.conclusion}))
+			a := New(repo, "", m.env(t))
+
+			got, err := a.Status(t.Context(), sha)
+			if err != nil {
+				t.Fatalf("Status returned an error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("Status of a check concluded %q = %q, want %q", tc.conclusion, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestStatusNotFinished walks the statuses of a check run that has not ended: a
+// commit with one of them is a commit crewflow waits for, whatever the others
+// say, and the conclusion of such a run is nothing at all.
+func TestStatusNotFinished(t *testing.T) {
+	for _, status := range []string{"queued", "in_progress", "waiting", "requested", "pending"} {
+		t.Run(status, func(t *testing.T) {
+			m := newMachine().prints("api", checkRuns(
+				checkRunAnswer{name: "lint", status: status},
+				checkRunAnswer{name: "test", status: "completed", conclusion: "failure"}))
+			a := New(repo, "", m.env(t))
+
+			got, err := a.Status(t.Context(), sha)
+			if err != nil {
+				t.Fatalf("Status returned an error: %v", err)
+			}
+			if got != forge.CheckPending {
+				t.Errorf("Status of a check that is %q = %q, want %q", status, got, forge.CheckPending)
+			}
+		})
+	}
+}
+
+// TestStatusReadsEveryPage walks the commit whose checks do not fit into one
+// answer: the API gives 30 at a time unless it is asked for more, and a red
+// check on the second page is as red as one on the first. The fixtures are the
+// two real pages of one commit of this repository, three at a time, with the
+// conclusion of one run of the second page red.
+func TestStatusReadsEveryPage(t *testing.T) {
+	perPage(t, 3)
+	page := func(n int) string {
+		return "api repos/" + repo + "/commits/" + sha + "/check-runs?per_page=3&page=" + strconv.Itoa(n)
+	}
+	m := newMachine().
+		prints(page(1), fixture(t, "check-runs-page-1.json")).
+		prints(page(2), fixture(t, "check-runs-page-2.json"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Status(t.Context(), sha)
+	if err != nil {
+		t.Fatalf("Status returned an error: %v", err)
+	}
+
+	if got != forge.CheckFailure {
+		t.Errorf("Status = %q, want %q: the red check is on the second page", got, forge.CheckFailure)
+	}
+	for i, want := range []string{page(1), page(2)} {
+		if command := m.commandLine(i); command != want {
+			t.Errorf("the adapter asked %q as its question %d, want %q", command, i+1, want)
+		}
+	}
+	if len(m.ran) != 2 {
+		t.Errorf("the adapter asked %d times, want twice for the six checks of the commit", len(m.ran))
+	}
+}
+
+// TestStatusStopsAtTheLastPage checks that a commit of six checks does not make
+// crewflow ask for a third page that is not there.
+func TestStatusStopsAtTheLastPage(t *testing.T) {
+	perPage(t, 3)
+	page := func(n int) string {
+		return "api repos/" + repo + "/commits/" + sha + "/check-runs?per_page=3&page=" + strconv.Itoa(n)
+	}
+	m := newMachine().prints(page(1), fixture(t, "check-runs-page-1.json")).
+		prints(page(2), fixture(t, "check-runs-page-2.json"))
+	a := New(repo, "", m.env(t))
+
+	if _, err := a.Status(t.Context(), sha); err != nil {
+		t.Fatalf("Status returned an error: %v", err)
+	}
+
+	if len(m.ran) != 2 {
+		t.Errorf("the adapter asked %v, want the two pages of the commit and no more", m.ran)
+	}
+}
+
+// TestStatusOnePageIsEnough checks a commit whose checks fit into one answer: the
+// first page ends the questions, and no page is asked for that is not there.
+func TestStatusOnePageIsEnough(t *testing.T) {
+	perPage(t, 3)
+	m := newMachine().prints("api", `{"total_count": 1, "check_runs": [
+	  {"name": "test", "status": "completed", "conclusion": "success"}
+	]}`)
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Status(t.Context(), sha)
+	if err != nil {
+		t.Fatalf("Status returned an error: %v", err)
+	}
+
+	if got != forge.CheckSuccess {
+		t.Errorf("Status = %q, want %q", got, forge.CheckSuccess)
+	}
+	if len(m.ran) != 1 {
+		t.Errorf("the adapter asked %v, want the one page of one check", m.ran)
+	}
+}
+
+// TestStatusFailsOnTheSecondPage walks the other way round: a red check on the
+// first page and nothing after it is red without a second question.
+func TestStatusFailsOnTheSecondPage(t *testing.T) {
+	perPage(t, 3)
+	page := func(n int) string {
+		return "api repos/" + repo + "/commits/" + sha + "/check-runs?per_page=3&page=" + strconv.Itoa(n)
+	}
+	m := newMachine().prints(page(1), fixture(t, "check-runs-failure.json"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Status(t.Context(), sha)
+	if err != nil {
+		t.Fatalf("Status returned an error: %v", err)
+	}
+
+	if got != forge.CheckFailure {
+		t.Errorf("Status = %q, want %q", got, forge.CheckFailure)
+	}
+	if len(m.ran) != 1 {
+		t.Errorf("the adapter asked %v, want the one page that holds every check", m.ran)
+	}
+}
+
+// TestStatusPageFails walks a red check on a page that could not be read: the
+// whole answer is an error, because a commit whose second page is unknown is a
+// commit crewflow cannot call green.
+func TestStatusPageFails(t *testing.T) {
+	perPage(t, 3)
+	page := func(n int) string {
+		return "api repos/" + repo + "/commits/" + sha + "/check-runs?per_page=3&page=" + strconv.Itoa(n)
+	}
+	m := newMachine().
+		prints(page(1), fixture(t, "check-runs-page-1.json")).
+		fails(page(2), "HTTP 502: Bad gateway\n")
+	a := New(repo, "", m.env(t))
+
+	_, err := a.Status(t.Context(), sha)
+	if err == nil {
+		t.Fatal("Status returned no error, want one: half of the checks are unknown")
+	}
+	for _, want := range []string{"page=2", "HTTP 502"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 
@@ -434,6 +619,54 @@ func checkNamed(t *testing.T, checks []forge.Check, name string) forge.Check {
 	}
 	t.Fatalf("no check named %q in %v", name, checkNames(checks))
 	return forge.Check{}
+}
+
+// checkRunAnswer is one check of a commit as the API writes it: a name, a status
+// and a conclusion, which is there only when the check has ended.
+type checkRunAnswer struct {
+	name       string
+	status     string
+	conclusion string
+}
+
+// checkRuns is the answer of the API about the named checks, in the shape the
+// real answer has: a total, and the runs themselves.
+func checkRuns(runs ...checkRunAnswer) string {
+	answer := struct {
+		TotalCount int `json:"total_count"`
+		CheckRuns  []struct {
+			Name       string  `json:"name"`
+			HeadSHA    string  `json:"head_sha"`
+			Status     string  `json:"status"`
+			Conclusion *string `json:"conclusion"`
+		} `json:"check_runs"`
+	}{TotalCount: len(runs)}
+	for _, run := range runs {
+		written := struct {
+			Name       string  `json:"name"`
+			HeadSHA    string  `json:"head_sha"`
+			Status     string  `json:"status"`
+			Conclusion *string `json:"conclusion"`
+		}{Name: run.name, HeadSHA: sha, Status: run.status}
+		if run.conclusion != "" {
+			written.Conclusion = &run.conclusion
+		}
+		answer.CheckRuns = append(answer.CheckRuns, written)
+	}
+	out, err := json.Marshal(answer)
+	if err != nil {
+		panic("the answer of the test is not JSON: " + err.Error())
+	}
+	return string(out)
+}
+
+// perPage makes the adapter ask for fewer checks at a time, so that a test of the
+// pages does not have to hold a hundred runs to see the second one.
+func perPage(t *testing.T, n int) {
+	t.Helper()
+	was := checkRunsPerPage
+	checkRunsPerPage = n
+	t.Cleanup(func() { checkRunsPerPage = was })
 }
 
 func checkNames(checks []forge.Check) []string {

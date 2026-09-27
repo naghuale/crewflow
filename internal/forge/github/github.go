@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +36,18 @@ const (
 // states in capitals, crewflow writes its own in lower case, and the state() of
 // this package is where the two meet (docs/DESIGN.md §4).
 const completed = "completed"
+
+// failingConclusions are the conclusions of a check that did not pass. The rest —
+// success, neutral, skipped — are ways of saying that the check is not against
+// this commit, which is what GitHub itself counts as a passed required check: a
+// workflow with a conditional job would be red for ever otherwise.
+var failingConclusions = []string{"failure", "cancelled", "timed_out", "action_required", "stale"}
+
+// checkRunsPerPage is how many checks crewflow asks for at a time: the API gives
+// 30 unless it is asked for more, and 100 is the most it will give. It is a
+// variable so that a test does not have to hold a hundred runs to see the page
+// after the first one.
+var checkRunsPerPage = 100
 
 // Adapter is GitHub as the three roles of §7g at once, which is the default: the
 // tasks are the issues of the host and the checks are the workflows of the host.
@@ -142,20 +155,56 @@ func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, er
 
 // Status returns how the check runs of the commit stand. A commit with a check
 // that has not finished is a commit crewflow waits for, whatever the others say;
-// a commit whose checks have all finished is green only when all of them passed,
-// because a skipped or a neutral check is not a check that passed.
+// a commit whose checks have all finished is green unless one of them ended in
+// a conclusion that says the check did not pass.
 func (a *Adapter) Status(ctx context.Context, sha string) (forge.CheckState, error) {
-	out, err := a.json(ctx, "api", "repos/"+a.repo+"/commits/"+sha+"/check-runs")
+	runs, err := a.checkRuns(ctx, sha)
 	if err != nil {
 		return forge.CheckNone, err
 	}
-	var answer struct {
-		CheckRuns []checkRun `json:"check_runs"`
+	return checkState(runs), nil
+}
+
+// checkRuns reads the checks of the commit, page by page, and puts them together:
+// a commit with many checks is answered with 30 of them at a time, and a red check
+// on the second page is as red as one on the first.
+func (a *Adapter) checkRuns(ctx context.Context, sha string) ([]checkRun, error) {
+	endpoint := "repos/" + a.repo + "/commits/" + sha + "/check-runs"
+	var runs []checkRun
+	for page := 1; ; page++ {
+		got, err := a.checkRunsOfPage(ctx, endpoint, page)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, got.CheckRuns...)
+		// The total is the number of checks of the commit, not of the page, and
+		// a page that came back empty is the end of them whatever it says.
+		if len(runs) >= got.TotalCount || len(got.CheckRuns) == 0 {
+			return runs, nil
+		}
 	}
-	if err := decode(out, &answer); err != nil {
-		return forge.CheckNone, err
+}
+
+// checkRunsOfPage is one page of the answer of the API about the checks of a
+// commit, asked for with the biggest page there is.
+func (a *Adapter) checkRunsOfPage(ctx context.Context, endpoint string, page int) (checkRunsPage, error) {
+	path := fmt.Sprintf("%s?per_page=%d&page=%d", endpoint, checkRunsPerPage, page)
+	out, err := a.json(ctx, "api", path)
+	if err != nil {
+		return checkRunsPage{}, err
 	}
-	return checkState(answer.CheckRuns), nil
+	var runs checkRunsPage
+	if err := decode(out, &runs); err != nil {
+		return checkRunsPage{}, err
+	}
+	return runs, nil
+}
+
+// checkRunsPage is one answer of the API about the checks of a commit: how many
+// there are and how many of them are on this page.
+type checkRunsPage struct {
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []checkRun `json:"check_runs"`
 }
 
 // checkRun is one check of a commit, as far as its state is concerned: a check of
@@ -166,7 +215,7 @@ type checkRun struct {
 }
 
 // checkState is the state of a commit out of its check runs: none, pending while
-// anything is still running, and then success or failure.
+// anything has not ended, and then red for a check that did not pass.
 func checkState(runs []checkRun) forge.CheckState {
 	if len(runs) == 0 {
 		return forge.CheckNone
@@ -176,7 +225,7 @@ func checkState(runs []checkRun) forge.CheckState {
 		if run.Status != completed {
 			return forge.CheckPending
 		}
-		if run.Conclusion != "success" {
+		if slices.Contains(failingConclusions, run.Conclusion) {
 			failed = true
 		}
 	}
