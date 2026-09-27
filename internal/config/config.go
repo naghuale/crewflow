@@ -14,6 +14,8 @@ import (
 // in which worktree, and which commands must pass before a commit is reviewed.
 type Config struct {
 	Project      Project      `toml:"project"`
+	Forge        Forge        `toml:"forge"`
+	Tracker      Tracker      `toml:"tracker"`
 	Executor     Executor     `toml:"executor"`
 	Worktrees    Worktrees    `toml:"worktrees"`
 	Gates        []Gate       `toml:"gates"`
@@ -34,6 +36,29 @@ type Project struct {
 	DefaultBranch string `toml:"default_branch"`
 	// Language is the language of tasks, reviews and messages to the human.
 	Language string `toml:"language"`
+}
+
+// Forge is where the code of the project is hosted and reviewed: the requests to
+// change it, their head and their comments, and a merge through its API when
+// git is not allowed to push (docs/DESIGN.md §7g).
+type Forge struct {
+	// Kind is the host: "github", "gitlab", "bitbucket", "gitea", "azure" or
+	// "none" for a project that is not hosted at all.
+	Kind string `toml:"kind"`
+	// Host is the server of the project's own host, such as
+	// "gitlab.company.com". Empty is the public one.
+	Host string `toml:"host"`
+}
+
+// Tracker is where the tasks of the project come from. By default they are the
+// issues of the host, which is why this is a role of its own: they may also live
+// in Jira, in Linear or in files of the repository (docs/DESIGN.md §7g).
+type Tracker struct {
+	// Kind is "forge", "jira", "linear" or "files".
+	Kind string `toml:"kind"`
+	// Project is the key of the project in the tracker, for a tracker in which
+	// the repository is not the key.
+	Project string `toml:"project"`
 }
 
 // Executor is the agent crewflow runs a task with, plus the ones to try in turn
@@ -79,6 +104,9 @@ type Gate struct {
 
 // CI is what crewflow expects from GitHub Actions on the commit.
 type CI struct {
+	// Kind is where the checks run: "forge", "jenkins", "command" or "none"
+	// (docs/DESIGN.md §7g).
+	Kind string `toml:"kind"`
 	// Required makes crewflow wait for CI and refuse a red commit.
 	Required bool `toml:"required"`
 	// Timeout is how long crewflow waits for CI, as a duration such as "30m".
@@ -91,6 +119,9 @@ type Merge struct {
 	By string `toml:"by"`
 	// Strategy is how it merges. Fast-forward is the only one crewflow does.
 	Strategy string `toml:"strategy"`
+	// Via is what merges: "git-push" by default, and "forge" through the API of
+	// the host when main is protected and only it may merge (docs/DESIGN.md §7g).
+	Via string `toml:"via"`
 }
 
 // Parallel limits how many tasks run at the same time.

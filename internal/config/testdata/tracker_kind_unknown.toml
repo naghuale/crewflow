@@ -1,0 +1,10 @@
+# tracker.kind names a tracker crewflow has no adapter for.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[tracker]
+kind = "backlog"

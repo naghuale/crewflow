@@ -50,7 +50,7 @@ func (c *checker) probe(ctx context.Context, cfg config.Config) {
 
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	stdout, stderr, _, _ := c.env.Run(ctx, command[0], command[1:], c.env.TempDir)
+	stdout, stderr, _, _ := c.env.Run(ctx, command[0], command[1:], c.env.TempDir, nil)
 
 	// The exit code of the executor is not what is believed: a refused
 	// permission leaves it at zero without a PR (docs/DESIGN.md §7a). The

@@ -1,0 +1,11 @@
+[
+  {
+    "baseRefName": "main",
+    "body": "Closes #3 ## What changed - `internal/doctor`: `Run(ctx, Env …",
+    "headRefName": "feat/m1-2-doctor",
+    "headRefOid": "dbb3c3ba4c1e97f68cf7d8a36bc1839f8e934c02",
+    "number": 4,
+    "state": "MERGED",
+    "url": "https://github.com/naghuale/crewflow/pull/4"
+  }
+]

@@ -1,0 +1,17 @@
+# A project with no host has no CI of the host to wait for, so its tasks cannot
+# come from that host either.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[forge]
+kind = "none"
+
+[tracker]
+kind = "files"
+
+[ci]
+kind = "forge"

@@ -343,8 +343,9 @@ func TestRunToolWithoutCheckCommand(t *testing.T) {
 }
 
 // TestRunUnreadableConfig checks the case of a folder that is not a project
-// yet: git and gh are still worth telling about, and nothing that needs the
-// file is checked.
+// yet: git is still worth telling about, and nothing that needs the file is
+// checked. The roles are among those, because which host, tracker and CI a
+// project has is what the file says (docs/DESIGN.md §7g).
 func TestRunUnreadableConfig(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -380,12 +381,13 @@ func TestRunUnreadableConfig(t *testing.T) {
 			if got.Hint == "" {
 				t.Error("check \"config\" has no hint, want one that says what to do")
 			}
-			for _, name := range []string{"git", "gh"} {
-				if checkOf(t, report, name).Status != OK {
-					t.Errorf("check %q is not ok, want it made even without the file", name)
-				}
+			if git := checkOf(t, report, "git"); git.Status != OK {
+				t.Errorf("check \"git\" is not ok, want it made even without the file")
 			}
 			for _, check := range report.Checks {
+				if check.Name == "gh" || check.Name == "gh login" {
+					t.Errorf("check %q was made, want the roles to wait for the file that names them", check.Name)
+				}
 				if strings.HasPrefix(check.Name, "executor") ||
 					strings.HasPrefix(check.Name, "gate ") ||
 					strings.HasPrefix(check.Name, "tool ") {
@@ -394,6 +396,75 @@ func TestRunUnreadableConfig(t *testing.T) {
 			}
 			if report.OK() {
 				t.Error("report.OK() = true, want false when the file is not readable")
+			}
+		})
+	}
+}
+
+// TestRunRoleWithoutAnAdapter is the case a person runs into after writing down
+// a host crewflow has no adapter for: the report says so by name and says which
+// key is to be changed, and the code is not zero.
+func TestRunRoleWithoutAnAdapter(t *testing.T) {
+	cases := []struct {
+		name    string
+		config  string
+		check   string
+		want    []string
+		wantNot []string
+	}{
+		{
+			name:    "the host of the code",
+			config:  "\n[forge]\nkind = \"gitlab\"\n",
+			check:   "forge",
+			want:    []string{"adapter gitlab is not implemented yet", "forge.kind"},
+			wantNot: []string{"gh"},
+		},
+		{
+			name:    "the tracker of the tasks",
+			config:  "\n[tracker]\nkind = \"jira\"\n",
+			check:   "tracker",
+			want:    []string{"adapter jira is not implemented yet", "tracker.kind"},
+			wantNot: []string{"gh"},
+		},
+		{
+			name:    "the CI of a commit",
+			config:  "\n[ci]\nkind = \"jenkins\"\n",
+			check:   "ci",
+			want:    []string{"adapter jenkins is not implemented yet", "ci.kind"},
+			wantNot: []string{"gh"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine().has("git", "gh", "agent").
+				prints("git --version", "git version 2.47.1\n").
+				prints("gh --version", "gh version 2.62.0\n").
+				prints("gh auth status", "  ✓ Logged in to github.com account octocat\n")
+			config := writeConfig(t, baseConfig+tc.config)
+
+			report := runOn(t, m, config)
+
+			got := checkOf(t, report, tc.check)
+			if got.Status != Fail {
+				t.Errorf("check %q = %q (%s), want fail", tc.check, got.Status, got.Detail)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(got.Detail, want) {
+					t.Errorf("check %q detail = %q, want it to mention %q", tc.check, got.Detail, want)
+				}
+			}
+			if !strings.Contains(got.Hint, "crewflow.toml") {
+				t.Errorf("check %q hint = %q, want it to name the file to change", tc.check, got.Hint)
+			}
+			if report.OK() {
+				t.Error("report.OK() = true, want false when a role has no adapter")
+			}
+			for _, check := range report.Checks {
+				for _, not := range tc.wantNot {
+					if check.Name == not {
+						t.Errorf("check %q was made, want the check of the role that is missing to say it all", not)
+					}
+				}
 			}
 		})
 	}

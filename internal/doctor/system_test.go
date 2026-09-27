@@ -25,7 +25,7 @@ func TestCommandClosesStdin(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, _, err := Command(t.Context(), "cat", nil, t.TempDir())
+		_, _, _, err := Command(t.Context(), "cat", nil, t.TempDir(), nil)
 		done <- err
 	}()
 	select {
@@ -45,7 +45,7 @@ func TestCommandTellsTheCodeFromTheError(t *testing.T) {
 	t.Run("a program that failed", func(t *testing.T) {
 		dir := t.TempDir()
 		stdout, stderr, code, err := Command(t.Context(), "sh",
-			[]string{"-c", "pwd; echo out; echo err >&2; exit 3"}, dir)
+			[]string{"-c", "pwd; echo out; echo err >&2; exit 3"}, dir, nil)
 		if err != nil {
 			t.Errorf("Command returned an error for a program that failed: %v", err)
 		}
@@ -64,7 +64,7 @@ func TestCommandTellsTheCodeFromTheError(t *testing.T) {
 	})
 
 	t.Run("a program that is not there", func(t *testing.T) {
-		_, _, _, err := Command(t.Context(), "nosuchprogram-4f2b", nil, t.TempDir())
+		_, _, _, err := Command(t.Context(), "nosuchprogram-4f2b", nil, t.TempDir(), nil)
 		if err == nil {
 			t.Error("Command returned no error for a program that could not be started")
 		}
@@ -87,7 +87,7 @@ func TestSystem(t *testing.T) {
 	if path == "" {
 		t.Error("LookPath returned no path for a program every machine has")
 	}
-	if _, _, code, err := env.Run(t.Context(), path, []string{"-c", "exit 0"}, dir); code != 0 || err != nil {
+	if _, _, code, err := env.Run(t.Context(), path, []string{"-c", "exit 0"}, dir, nil); code != 0 || err != nil {
 		t.Errorf("Run of a program that is there = %d, %v, want 0 and no error", code, err)
 	}
 }

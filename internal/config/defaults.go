@@ -10,10 +10,14 @@ const (
 	defaultLanguage        = "en"
 	defaultWorktreesRoot   = "~/.crewflow/worktrees/{repo}"
 	defaultExecutorTimeout = "90m"
+	defaultForgeKind       = "github"
+	defaultTrackerKind     = "forge"
+	defaultCIKind          = "forge"
 	defaultCIRequired      = true
 	defaultCITimeout       = "30m"
 	defaultMergeBy         = "orchestrator"
 	defaultMergeStrategy   = "ff-only"
+	defaultMergeVia        = "git-push"
 	defaultMaxTasks        = 1
 	defaultIsolationMode   = "host"
 	defaultOwnerApproval   = "risky"
@@ -28,6 +32,12 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Project.Language == "" {
 		c.Project.Language = defaultLanguage
+	}
+	if c.Forge.Kind == "" {
+		c.Forge.Kind = defaultForgeKind
+	}
+	if c.Tracker.Kind == "" {
+		c.Tracker.Kind = defaultTrackerKind
 	}
 	if c.Executor.Timeout == "" {
 		c.Executor.Timeout = defaultExecutorTimeout
@@ -48,11 +58,17 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	if c.CI.Timeout == "" {
 		c.CI.Timeout = defaultCITimeout
 	}
+	if c.CI.Kind == "" {
+		c.CI.Kind = defaultCIKind
+	}
 	if c.Merge.By == "" {
 		c.Merge.By = defaultMergeBy
 	}
 	if c.Merge.Strategy == "" {
 		c.Merge.Strategy = defaultMergeStrategy
+	}
+	if c.Merge.Via == "" {
+		c.Merge.Via = defaultMergeVia
 	}
 	if !meta.IsDefined("parallel", "max_tasks") {
 		c.Parallel.MaxTasks = defaultMaxTasks

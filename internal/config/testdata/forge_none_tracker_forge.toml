@@ -1,0 +1,14 @@
+# A project with no host has no tasks to take: the tracker asks the forge for
+# them, and there is no forge.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[forge]
+kind = "none"
+
+[tracker]
+kind = "forge"

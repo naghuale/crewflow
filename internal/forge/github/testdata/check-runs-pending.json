@@ -1,0 +1,25 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 108719695802,
+      "name": "test (macos-latest)",
+      "head_sha": "9e37237496ea06aca445d2d6670171ec22d7d5bc",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-27T22:14:49Z",
+      "completed_at": "2026-09-27T22:15:16Z",
+      "html_url": "https://github.com/naghuale/crewflow/actions/runs/36354601722/job/108719695802"
+    },
+    {
+      "id": 108719695802,
+      "name": "test (ubuntu-latest)",
+      "head_sha": "9e37237496ea06aca445d2d6670171ec22d7d5bc",
+      "status": "in_progress",
+      "conclusion": null,
+      "started_at": "2026-09-27T22:14:49Z",
+      "completed_at": null,
+      "html_url": "https://github.com/naghuale/crewflow/actions/runs/36354601722/job/108719695802"
+    }
+  ]
+}

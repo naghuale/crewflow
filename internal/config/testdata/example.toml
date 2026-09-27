@@ -1,10 +1,16 @@
-# The full example from docs/DESIGN.md §5, kept verbatim so that the loader is
-# tested against the file a project is told to write.
-
 [project]
 repo = "naghuale/tele"
 default_branch = "main"
 language = "ru"            # язык задач, ревью и сообщений человеку
+
+[forge]                    # хостинг кода и ревью (§7g)
+kind = "github"            # github | gitlab | bitbucket | gitea | azure | none
+host = ""                  # свой сервер, например "gitlab.company.com"; пусто — публичный
+
+[tracker]                  # где живут задачи (§7g)
+kind = "forge"             # forge | jira | linear | files
+project = ""               # ключ проекта в трекере, если он не совпадает с репозиторием
+
 
 [executor]
 # Любой агент с режимом без окна. Шаблон команды; {worktree} и {prompt} подставляет crewflow.
@@ -53,12 +59,14 @@ name = "lint"
 run = ["golangci-lint", "run", "./..."]
 
 [ci]
-required = true            # ждать и требовать зелёный GitHub Actions на коммите
+kind = "forge"             # forge | jenkins | command | none (§7g)
+required = true            # ждать и требовать зелёный CI на коммите
 timeout = "30m"
 
 [merge]
 by = "orchestrator"        # orchestrator | executor | human
 strategy = "ff-only"
+via = "git-push"           # git-push | forge — через API хостинга, если main защищён (§7g)
 
 [parallel]
 max_tasks = 1              # сколько задач могут идти одновременно; 1 — строго по очереди

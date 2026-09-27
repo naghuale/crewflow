@@ -310,7 +310,7 @@ func (m *machine) lookPath(name string) (string, error) {
 
 // run starts a command that answers with its own command line and exits zero,
 // which is enough for the checks of a project that needs nothing else.
-func (m *machine) run(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
+func (m *machine) run(_ context.Context, name string, args []string, dir string, _ []string) ([]byte, []byte, int, error) {
 	if dir != "" {
 		m.folders = append(m.folders, dir)
 	}

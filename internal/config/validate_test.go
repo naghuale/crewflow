@@ -26,6 +26,13 @@ func TestLoadRejects(t *testing.T) {
 		{"gate_run_empty.toml", []string{"gates[0].run"}},
 		{"merge_by_unknown.toml", []string{"merge.by", "robot", "orchestrator"}},
 		{"merge_strategy_unknown.toml", []string{"merge.strategy", "squash", "ff-only"}},
+		{"merge_via_unknown.toml", []string{"merge.via", "web", "git-push"}},
+		{
+			"forge_kind_unknown.toml",
+			[]string{"forge.kind", "bogus", "github, gitlab, bitbucket, gitea, azure, none"},
+		},
+		{"tracker_kind_unknown.toml", []string{"tracker.kind", "backlog", "forge, jira, linear, files"}},
+		{"ci_kind_unknown.toml", []string{"ci.kind", "teamcity", "forge, jenkins, command, none"}},
 		{"parallel_max_tasks_zero.toml", []string{"parallel.max_tasks", "0"}},
 		{"isolation_mode_unknown.toml", []string{"isolation.mode", "vm", "host"}},
 		{"requirements_tool_duplicate.toml", []string{"requirements.tools[1].name", "go"}},

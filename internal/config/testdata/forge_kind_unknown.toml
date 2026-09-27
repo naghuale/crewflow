@@ -1,0 +1,10 @@
+# forge.kind names a host crewflow has no adapter for.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[forge]
+kind = "bogus"

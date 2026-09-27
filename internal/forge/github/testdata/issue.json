@@ -1,0 +1,21 @@
+{
+  "body": "## Зачем Пока у crewflow есть только описание устройства. Ну …",
+  "labels": [
+    {
+      "id": "MDU6TGFiZWwxNTA4ODAyMDA=",
+      "name": "risky",
+      "description": "Нужны секреты или внешние действия",
+      "color": "d93f0b"
+    },
+    {
+      "id": "MDU6TGFiZWwyMzY0MTk1MTI=",
+      "name": "approved",
+      "description": null,
+      "color": "ededed"
+    }
+  ],
+  "number": 1,
+  "state": "CLOSED",
+  "title": "feat: binary skeleton and crewflow.toml loading (M1.1)",
+  "url": "https://github.com/naghuale/crewflow/issues/1"
+}

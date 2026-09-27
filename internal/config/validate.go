@@ -25,8 +25,12 @@ var placeholderPattern = regexp.MustCompile(`\{[^{}]*\}`)
 
 // The values crewflow knows for the keys that are a choice, not free text.
 var (
+	forgeKinds      = []string{"github", "gitlab", "bitbucket", "gitea", "azure", "none"}
+	trackerKinds    = []string{"forge", "jira", "linear", "files"}
+	ciKinds         = []string{"forge", "jenkins", "command", "none"}
 	mergeBys        = []string{"orchestrator", "executor", "human"}
 	mergeStrategies = []string{"ff-only"}
+	mergeVias       = []string{"git-push", "forge"}
 	isolationModes  = []string{"host", "sandbox", "container"}
 	ownerApprovals  = []string{"all", "risky", "none"}
 )
@@ -36,6 +40,18 @@ var (
 // guessing.
 func (c Config) Validate() error {
 	if err := validateRepo(c.Project.Repo); err != nil {
+		return err
+	}
+	if err := oneOf("forge.kind", c.Forge.Kind, forgeKinds); err != nil {
+		return err
+	}
+	if err := oneOf("tracker.kind", c.Tracker.Kind, trackerKinds); err != nil {
+		return err
+	}
+	if err := oneOf("ci.kind", c.CI.Kind, ciKinds); err != nil {
+		return err
+	}
+	if err := validateRoles(c); err != nil {
 		return err
 	}
 	if err := validateExecutor("executor", c.Executor.ExecutorSpec); err != nil {
@@ -59,6 +75,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("merge.strategy: unknown value %q, the only strategy crewflow does is %q",
 			c.Merge.Strategy, mergeStrategies[0])
 	}
+	if err := oneOf("merge.via", c.Merge.Via, mergeVias); err != nil {
+		return err
+	}
 	if c.Parallel.MaxTasks < 1 {
 		return fmt.Errorf("parallel.max_tasks: must be at least 1, got %d", c.Parallel.MaxTasks)
 	}
@@ -72,6 +91,25 @@ func (c Config) Validate() error {
 		return err
 	}
 	return uniqueNames("capabilities", c.Capabilities, func(c Capability) string { return c.Name })
+}
+
+// validateRoles checks the roles of DESIGN §7g against each other: a project
+// with no host of its own has no tasks and no checks to take from that host, so
+// the two keys that ask the forge for them cannot stand next to a forge of "none".
+func validateRoles(c Config) error {
+	if c.Forge.Kind != "none" {
+		return nil
+	}
+	for _, role := range []struct{ key, kind string }{
+		{"tracker.kind", c.Tracker.Kind},
+		{"ci.kind", c.CI.Kind},
+	} {
+		if role.kind == "forge" {
+			return fmt.Errorf("%s: asks the forge for what it is, and forge.kind is %q: there is no forge to ask",
+				role.key, c.Forge.Kind)
+		}
+	}
+	return nil
 }
 
 // validateRepo checks that the repository is one repository: "owner/name".

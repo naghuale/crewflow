@@ -7,13 +7,15 @@ package doctor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/config"
+	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 )
 
 // Status is how one check ended.
@@ -59,9 +61,11 @@ func (r Report) OK() bool {
 type Env struct {
 	// LookPath finds a program the way the shell does, in PATH.
 	LookPath func(name string) (string, error)
-	// Run starts a program in dir with a closed stdin and returns what it
-	// wrote and the code it exited with.
-	Run func(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error)
+	// Run starts a program in dir with a closed stdin and returns what it wrote
+	// and the code it exited with. The extra environment is added to the one of
+	// the process, which is how a role of a project talks to a host of its own
+	// (GH_HOST and the like) without spelling out the whole environment.
+	Run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
 	// ConfigPath is the crewflow.toml to read.
 	ConfigPath string
 	// TempDir is the empty folder the probe runs the executor in, so that a
@@ -73,18 +77,18 @@ type Env struct {
 }
 
 // Run checks the machine and reports what it found. The checks are made in the
-// order of what they need: the file, then git and gh, then everything the file
-// says the project needs. A check that needs the file is skipped when the file
-// is not readable, because a check that could not be made is not a check that
-// failed.
+// order of what they need: the file, then git, then the roles the file speaks
+// of, then everything else the file says the project needs. A check that needs
+// the file is skipped when the file is not readable, because a check that could
+// not be made is not a check that failed.
 func Run(ctx context.Context, env Env) Report {
 	c := &checker{env: env}
 	cfg, readable := c.config()
 	c.git(ctx)
-	c.gh(ctx)
 	if !readable {
 		return c.report()
 	}
+	c.roles(ctx, cfg)
 	c.executors(cfg)
 	if env.Probe {
 		c.probe(ctx, cfg)
@@ -147,49 +151,65 @@ func (c *checker) git(ctx context.Context) {
 	c.add(Check{Name: "git", Status: OK, Detail: firstLine(stdout, stderr)})
 }
 
-// gh checks that gh is installed and that somebody is signed in with it: the
-// issue a task comes from and the CI it waits for both live on GitHub.
-func (c *checker) gh(ctx context.Context) {
-	gh, ok := c.lookUp("gh", "gh", "install gh, then sign in: gh auth login")
-	if !ok {
+// roles asks the three roles of the project what they found on the machine
+// (docs/DESIGN.md §7g): each has a program of its own and a login of its own, so
+// each is checked where it is, and the adapter of the system is the one that
+// knows how to be checked.
+func (c *checker) roles(ctx context.Context, cfg config.Config) {
+	set, err := roles.New(cfg, c.rolesEnv())
+	if err != nil {
+		c.add(c.noRole(err))
 		return
 	}
-	stdout, stderr, code, err := c.run(ctx, gh, "--version")
-	if code != 0 || err != nil {
-		c.add(Check{
-			Name:   "gh",
-			Status: Fail,
-			Detail: "gh --version " + exited(code, stdout, stderr),
-			Hint:   "install gh, or put the gh of the project in PATH",
-		})
-		return
+	for _, role := range set.Checkers() {
+		for _, check := range role.Doctor(ctx) {
+			c.add(asLine(check))
+		}
 	}
-	c.add(Check{Name: "gh", Status: OK, Detail: firstLine(stdout, stderr)})
-	c.ghLogin(ctx, gh)
 }
 
-// accountPattern finds the account in the answer of "gh auth status". The whole
-// answer is never shown: it holds the token, and a report is read by people and
-// pasted into issues.
-var accountPattern = regexp.MustCompile(`account (\S+)`)
+// rolesEnv is the environment of the machine as a role needs it: the same
+// programs, the same way of starting them, and the file a hint names.
+func (c *checker) rolesEnv() forge.Env {
+	return forge.Env{
+		LookPath:   c.env.LookPath,
+		Run:        c.env.Run,
+		ConfigPath: c.env.ConfigPath,
+	}
+}
 
-// ghLogin checks that gh is signed in, and reports only who: the answer of
-// "gh auth status" is not a thing to print.
-func (c *checker) ghLogin(ctx context.Context, gh string) {
-	stdout, stderr, code, err := c.env.Run(ctx, gh, []string{"auth", "status"}, "")
-	if code != 0 || err != nil {
-		detail := "nobody is signed in"
-		if line := firstLine(stderr, stdout); line != "" {
-			detail = line
+// noRole is the check for a role of a kind crewflow has no adapter for. It is a
+// failed check of the setting that asked for it: a person is to change that
+// setting, and not to install anything (docs/DESIGN.md §7g).
+func (c *checker) noRole(err error) Check {
+	var notImplemented *forge.ErrNotImplemented
+	if !errors.As(err, &notImplemented) {
+		return Check{
+			Name:   "config",
+			Status: Fail,
+			Detail: err.Error(),
+			Hint:   fmt.Sprintf("the keys of the roles say different things, fix them in %s", c.env.ConfigPath),
 		}
-		c.add(Check{Name: "gh login", Status: Fail, Detail: detail, Hint: "gh auth login"})
-		return
 	}
-	detail := "signed in"
-	if match := accountPattern.FindSubmatch(stdout); match != nil {
-		detail = "signed in as " + string(match[1])
+	role, _, _ := strings.Cut(notImplemented.Key, ".")
+	return Check{
+		Name:   role,
+		Status: Fail,
+		Detail: err.Error(),
+		Hint: fmt.Sprintf("crewflow has no %s adapter yet, or change %s in %s",
+			notImplemented.Kind, notImplemented.Key, c.env.ConfigPath),
 	}
-	c.add(Check{Name: "gh login", Status: OK, Detail: detail})
+}
+
+// asLine is a line of a role as a line of the report: the same words and the
+// same detail, and a failure of a role is a failure like any other.
+func asLine(check forge.Check) Check {
+	return Check{
+		Name:   check.Name,
+		Status: Status(check.Status),
+		Detail: check.Detail,
+		Hint:   check.Hint,
+	}
 }
 
 // executors checks that the executor and every executor it may fall back to are
@@ -259,7 +279,7 @@ func (c *checker) requirement(ctx context.Context, i int, tool config.Tool) {
 	if !ok {
 		return
 	}
-	stdout, stderr, code, err := c.env.Run(ctx, path, tool.Check[1:], "")
+	stdout, stderr, code, err := c.env.Run(ctx, path, tool.Check[1:], "", nil)
 	switch {
 	case code != 0 || err != nil:
 		c.add(Check{
@@ -348,9 +368,10 @@ func (c *checker) changeHint(program, key string) string {
 }
 
 // run starts a command in the folder crewflow was called in: the checks of the
-// machine itself do not depend on the project, only its file does.
+// machine itself do not depend on the project, only its file does. They also
+// need nothing of the environment of the project: that is what a role is for.
 func (c *checker) run(ctx context.Context, path string, args ...string) (stdout, stderr []byte, exitCode int, err error) {
-	return c.env.Run(ctx, path, args, "")
+	return c.env.Run(ctx, path, args, "", nil)
 }
 
 // exited is how a report says that a command did not do its job: the code it

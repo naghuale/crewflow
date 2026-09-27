@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 )
 
@@ -28,9 +29,16 @@ func System(configPath, tempDir string, probe bool) Env {
 // The stdin of the program is the empty device, on purpose. An agent that waits
 // for an answer to a question would otherwise wait for it until the timeout
 // (docs/DESIGN.md §7a).
-func Command(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error) {
+//
+// The extra environment is added to the one of the process and only that: a role
+// of a project tells its system which host to talk to, and nothing here hands a
+// secret of the machine to a program that did not have it.
+func Command(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	if len(extraEnv) > 0 {
+		cmd.Env = append(os.Environ(), extraEnv...)
+	}
 	var out, errOut bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errOut

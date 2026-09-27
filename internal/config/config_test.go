@@ -32,6 +32,10 @@ func TestLoadExample(t *testing.T) {
 		{"project.repo", cfg.Project.Repo, "naghuale/tele"},
 		{"project.default_branch", cfg.Project.DefaultBranch, "main"},
 		{"project.language", cfg.Project.Language, "ru"},
+		{"forge.kind", cfg.Forge.Kind, "github"},
+		{"forge.host", cfg.Forge.Host, ""},
+		{"tracker.kind", cfg.Tracker.Kind, "forge"},
+		{"tracker.project", cfg.Tracker.Project, ""},
 		{
 			"executor.command",
 			cfg.Executor.Command,
@@ -71,10 +75,12 @@ func TestLoadExample(t *testing.T) {
 				{Name: "lint", Run: []string{"golangci-lint", "run", "./..."}},
 			},
 		},
+		{"ci.kind", cfg.CI.Kind, "forge"},
 		{"ci.required", cfg.CI.Required, true},
 		{"ci.timeout", cfg.CI.Timeout, "30m"},
 		{"merge.by", cfg.Merge.By, "orchestrator"},
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
+		{"merge.via", cfg.Merge.Via, "git-push"},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 	}

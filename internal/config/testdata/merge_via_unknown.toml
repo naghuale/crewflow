@@ -1,0 +1,10 @@
+# merge.via names a way to merge crewflow does not do.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+via = "web"

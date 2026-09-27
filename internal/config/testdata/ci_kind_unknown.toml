@@ -1,0 +1,10 @@
+# ci.kind names a CI crewflow has no adapter for.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[ci]
+kind = "teamcity"

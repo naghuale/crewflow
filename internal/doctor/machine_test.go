@@ -25,7 +25,7 @@ type machine struct {
 	ran []command
 	// run starts a command. It is a field so that a test may make the machine
 	// answer, or hang, whatever it needs.
-	run func(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error)
+	run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
 }
 
 // answer is what a command of the fake machine does when it runs.
@@ -93,7 +93,7 @@ func (m *machine) lookPath(name string) (string, error) {
 }
 
 // exec runs a command the way the machine answers it.
-func (m *machine) exec(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
+func (m *machine) exec(ctx context.Context, name string, args []string, dir string, _ []string) ([]byte, []byte, int, error) {
 	m.ran = append(m.ran, command{name: name, args: args, dir: dir})
 	a, ok := m.answerOf(name, args)
 	if !ok {
@@ -118,11 +118,11 @@ func (m *machine) answerOf(name string, args []string) (answer, bool) {
 // answering returns a Run in which the one program answers as the test says, and
 // every other program is the machine as it is.
 func (m *machine) answering(program string, how func(ctx context.Context) ([]byte, []byte, int, error)) func(
-	ctx context.Context, name string, args []string, dir string,
+	ctx context.Context, name string, args []string, dir string, extraEnv []string,
 ) ([]byte, []byte, int, error) {
-	return func(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
+	return func(ctx context.Context, name string, args []string, dir string, extraEnv []string) ([]byte, []byte, int, error) {
 		if filepath.Base(name) != program {
-			return m.exec(ctx, name, args, dir)
+			return m.exec(ctx, name, args, dir, extraEnv)
 		}
 		m.ran = append(m.ran, command{name: name, args: args, dir: dir})
 		return how(ctx)
