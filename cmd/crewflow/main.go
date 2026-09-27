@@ -12,10 +12,12 @@ import (
 )
 
 // Exit codes. Two says that crewflow was called wrong, which a script can tell
-// from a run that did what it was told.
+// from a run that did what it was told; one says that the machine is not ready
+// for a task.
 const (
-	exitOK    = 0
-	exitUsage = 2
+	exitOK      = 0
+	exitFailure = 1
+	exitUsage   = 2
 )
 
 func main() {
@@ -30,6 +32,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	switch args[0] {
+	case "doctor":
+		return runDoctor(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -60,8 +64,9 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// usage lists the subcommands. For now that is all crewflow can do: the rest of
-// the cycle arrives with the next steps of docs/DESIGN.md §11.
+// usage lists the subcommands. For now that is a check of the machine and the
+// version: the rest of the cycle arrives with the next steps of
+// docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
 merges, and an executor that writes the code of one task at a time.
@@ -70,7 +75,8 @@ Usage:
   crewflow <subcommand> [flags]
 
 Subcommands:
-  help      Show this message
-  version   Print the version, the commit and the build time
+  doctor   Check that this machine is ready for a task (docs/DESIGN.md §7d)
+  help     Show this message
+  version  Print the version, the commit and the build time
 `)
 }

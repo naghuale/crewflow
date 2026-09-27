@@ -20,6 +20,7 @@ type Config struct {
 	CI           CI           `toml:"ci"`
 	Merge        Merge        `toml:"merge"`
 	Parallel     Parallel     `toml:"parallel"`
+	Tasks        Tasks        `toml:"tasks"`
 	Requirements Requirements `toml:"requirements"`
 	Isolation    Isolation    `toml:"isolation"`
 	Capabilities []Capability `toml:"capabilities"`
@@ -97,6 +98,13 @@ type Parallel struct {
 	// MaxTasks is the number of runs at once; 1 means strictly one after
 	// another.
 	MaxTasks int `toml:"max_tasks"`
+}
+
+// Tasks is how crewflow treats a task before it starts (docs/DESIGN.md §7f).
+type Tasks struct {
+	// OwnerApproval is whose approval a task waits for: "all" makes every task
+	// wait, "risky" only the ones a person must look at, "none" none.
+	OwnerApproval string `toml:"owner_approval"`
 }
 
 // Requirements are the tools the project needs, with the command that checks

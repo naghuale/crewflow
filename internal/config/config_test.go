@@ -76,6 +76,7 @@ func TestLoadExample(t *testing.T) {
 		{"merge.by", cfg.Merge.By, "orchestrator"},
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
+		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {
@@ -107,11 +108,39 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"isolation.mode", cfg.Isolation.Mode, "host"},
+		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestLoadOwnerApproval checks every value a project may put into
+// tasks.owner_approval, so that the choice of §7f is spelled out in one place.
+func TestLoadOwnerApproval(t *testing.T) {
+	for _, want := range []string{"all", "risky", "none"} {
+		t.Run(want, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "crewflow.toml")
+			writeFile(t, path, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[tasks]
+owner_approval = "`+want+`"
+`)
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load returned an error: %v", err)
+			}
+			if got := cfg.Tasks.OwnerApproval; got != want {
+				t.Errorf("tasks.owner_approval = %q, want %q", got, want)
+			}
+		})
 	}
 }
 

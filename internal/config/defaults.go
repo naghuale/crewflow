@@ -16,6 +16,7 @@ const (
 	defaultMergeStrategy   = "ff-only"
 	defaultMaxTasks        = 1
 	defaultIsolationMode   = "host"
+	defaultOwnerApproval   = "risky"
 )
 
 // applyDefaults fills in what the file does not say. A key written as false or as
@@ -58,5 +59,8 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Isolation.Mode == "" {
 		c.Isolation.Mode = defaultIsolationMode
+	}
+	if c.Tasks.OwnerApproval == "" {
+		c.Tasks.OwnerApproval = defaultOwnerApproval
 	}
 }

@@ -33,7 +33,7 @@ func TestRunHelp(t *testing.T) {
 			if !strings.Contains(stdout.String(), "Usage:") {
 				t.Errorf("run(%s) wrote %q, want the usage", arg, stdout.String())
 			}
-			for _, sub := range []string{"version", "help"} {
+			for _, sub := range []string{"doctor", "version", "help"} {
 				if !strings.Contains(stdout.String(), sub) {
 					t.Errorf("usage does not mention the %q subcommand", sub)
 				}

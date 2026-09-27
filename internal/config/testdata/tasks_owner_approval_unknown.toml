@@ -1,0 +1,10 @@
+# "sometimes" is not one of the choices a project may make.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[tasks]
+owner_approval = "sometimes"

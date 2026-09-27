@@ -62,3 +62,6 @@ strategy = "ff-only"
 
 [parallel]
 max_tasks = 1              # сколько задач могут идти одновременно; 1 — строго по очереди
+
+[tasks]
+owner_approval = "risky"   # all | risky | none — какие ТЗ ждут одобрения человека (§7f)

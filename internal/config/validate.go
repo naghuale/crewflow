@@ -28,6 +28,7 @@ var (
 	mergeBys        = []string{"orchestrator", "executor", "human"}
 	mergeStrategies = []string{"ff-only"}
 	isolationModes  = []string{"host", "sandbox", "container"}
+	ownerApprovals  = []string{"all", "risky", "none"}
 )
 
 // Validate reports the first thing that is wrong with the config, naming the key
@@ -62,6 +63,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("parallel.max_tasks: must be at least 1, got %d", c.Parallel.MaxTasks)
 	}
 	if err := oneOf("isolation.mode", c.Isolation.Mode, isolationModes); err != nil {
+		return err
+	}
+	if err := oneOf("tasks.owner_approval", c.Tasks.OwnerApproval, ownerApprovals); err != nil {
 		return err
 	}
 	if err := uniqueNames("requirements.tools", c.Requirements.Tools, func(t Tool) string { return t.Name }); err != nil {
