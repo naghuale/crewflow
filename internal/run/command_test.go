@@ -112,8 +112,9 @@ func TestWorktree(t *testing.T) {
 	}
 }
 
-// homeOfTest is the home directory of a test: it points "~/" at a folder of the
-// test's own, so that no test reads the home of the machine it runs on.
+// homeOfTest is the home directory of a test: TestMain points "~/" at a folder of
+// the run of the tests for all of them, and a test that wants a home of its own
+// takes one here.
 func homeOfTest(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()

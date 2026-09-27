@@ -34,6 +34,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "doctor":
 		return runDoctor(args[1:], stdout, stderr)
+	case "task":
+		return runTask(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -64,9 +66,8 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// usage lists the subcommands. For now that is a check of the machine and the
-// version: the rest of the cycle arrives with the next steps of
-// docs/DESIGN.md §11.
+// usage lists the subcommands: a check of the machine, a run of a task, and the
+// version. The rest of the cycle arrives with the next steps of docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
 merges, and an executor that writes the code of one task at a time.
@@ -75,8 +76,11 @@ Usage:
   crewflow <subcommand> [flags]
 
 Subcommands:
-  doctor   Check that this machine is ready for a task (docs/DESIGN.md §7d)
-  help     Show this message
-  version  Print the version, the commit and the build time
+  doctor         Check that this machine is ready for a task (docs/DESIGN.md §7d)
+  task run <N>   Run one task in a worktree of its own, and say how it ended (§6)
+  help           Show this message
+  version        Print the version, the commit and the build time
+
+  crewflow task run <N> [-config path] [-repo path] [-continue "message"] [-json]
 `)
 }

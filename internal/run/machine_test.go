@@ -10,6 +10,31 @@ import (
 	"time"
 )
 
+// TestMain points the home directory of the machine at a folder of the run of the
+// tests, for every test of the package. A run resolves "~" to the home of the person
+// it runs on, and a test of it must not write there: what a test leaves in the home
+// of a person outlives the test, and a worktree or a journal of another project in
+// it is work a later run of a task would walk into. A test that wants a home of its
+// own takes one; this is the net under all of them.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "crewflow-test-home-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "run tests: make a home of their own: %v\n", err)
+		os.Exit(1)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if err := os.Setenv(key, home); err != nil {
+			fmt.Fprintf(os.Stderr, "run tests: point %s at %s: %v\n", key, home, err)
+			os.Exit(1)
+		}
+	}
+	code := m.Run()
+	if err := os.RemoveAll(home); err != nil {
+		fmt.Fprintf(os.Stderr, "run tests: take %s away: %v\n", home, err)
+	}
+	os.Exit(code)
+}
+
 // machine is the machine a run happens on: the folders that are on it, what every
 // command answers, and everything that was started. It stands in for the machine of
 // a person, so that no test of a run makes a worktree in the folder of the project

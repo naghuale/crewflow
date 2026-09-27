@@ -370,6 +370,48 @@ func TestRunWithAWorktreeThatIsAlreadyThere(t *testing.T) {
 	}
 }
 
+// TestRunKeepsEveryFileInItsOwnFolders is the net under the tests of a run: the
+// journal, the state and the worktree of a task are the only files a run leaves, and
+// all of them have to be under the home crewflow was given and the root of worktrees
+// the project named. A run that resolved the home of the machine instead would write
+// into the home of the person who runs the tests, and this is the test that says so.
+func TestRunKeepsEveryFileInItsOwnFolders(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+
+	result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	for _, path := range []string{result.Journal, result.ErrorJournal} {
+		if !strings.HasPrefix(path, m.home) {
+			t.Errorf("the run left %q, want it under the home of crewflow %q", path, m.home)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("the run left no %q: %v", path, err)
+		}
+	}
+	if !strings.HasPrefix(result.Worktree, m.worktrees) {
+		t.Errorf("the run made the worktree %q, want it under the root the project named %q", result.Worktree, m.worktrees)
+	}
+	state := stateOf(t, m, 43)
+	for _, attempt := range state.Attempts {
+		for _, path := range []string{attempt.Journal, attempt.ErrorJournal} {
+			if !strings.HasPrefix(path, m.home) {
+				t.Errorf("the state points at %q, want it under the home of crewflow %q", path, m.home)
+			}
+		}
+	}
+	// The state of the task is under the home of crewflow, and the worktree is not:
+	// one of them is what crewflow keeps of its own, the other is the work.
+	if path := newJournals(m.home, "naghuale-crewflow").StatePath(43); !strings.HasPrefix(path, m.home) {
+		t.Errorf("the state of the task is at %q, want it under the home of crewflow %q", path, m.home)
+	}
+}
+
 // TestRunContinuesTheSession: the run that goes on after a review asked for
 // changes is the same session, in the same worktree, and it is the second attempt
 // of the task (docs/DESIGN.md §7).

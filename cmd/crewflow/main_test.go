@@ -3,11 +3,38 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestMain points the home directory of the machine at a folder of the run of the
+// tests, for every test of the package. A command of crewflow resolves "~" to the
+// home of the person it runs on, and a test of it must not write there: what a test
+// leaves in the home of a person outlives the test, and a journal or a state of
+// another project in it makes a later run believe what never happened. A test that
+// needs a home of its own sets one; this is the net under all of them.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "crewflow-test-home-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crewflow tests: make a home of their own: %v\n", err)
+		os.Exit(1)
+	}
+	for _, key := range []string{"HOME", "USERPROFILE"} {
+		if err := os.Setenv(key, home); err != nil {
+			fmt.Fprintf(os.Stderr, "crewflow tests: point %s at %s: %v\n", key, home, err)
+			os.Exit(1)
+		}
+	}
+	code := m.Run()
+	if err := os.RemoveAll(home); err != nil {
+		fmt.Fprintf(os.Stderr, "crewflow tests: take %s away: %v\n", home, err)
+	}
+	os.Exit(code)
+}
 
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
