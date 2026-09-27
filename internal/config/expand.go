@@ -16,7 +16,7 @@ var homeDir = os.UserHomeDir
 // the repository, "owner/name" becoming "owner-name", so that the worktrees of
 // two projects do not share a folder.
 func (c Config) ExpandPath(path string) (string, error) {
-	expanded := strings.ReplaceAll(path, "{repo}", c.repoName())
+	expanded := strings.ReplaceAll(path, "{repo}", c.RepoName())
 	rest, isHomeRelative := strings.CutPrefix(expanded, "~/")
 	if !isHomeRelative {
 		return expanded, nil
@@ -28,7 +28,9 @@ func (c Config) ExpandPath(path string) (string, error) {
 	return filepath.Join(home, filepath.FromSlash(rest)), nil
 }
 
-// repoName is the name of the repository that is safe to put in a path.
-func (c Config) repoName() string {
+// RepoName is the name of the repository as a path may hold it: "owner/name"
+// becomes "owner-name", so that the worktrees, the journals and the state of two
+// projects never share a folder.
+func (c Config) RepoName() string {
 	return strings.ReplaceAll(c.Project.Repo, "/", "-")
 }

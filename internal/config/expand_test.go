@@ -82,3 +82,26 @@ func TestExpandPathHomeUnavailable(t *testing.T) {
 		t.Errorf("error %q does not explain why the path could not be expanded", err)
 	}
 }
+
+// TestRepoName is the name a project is known by in a path: the worktrees, the
+// journals and the state of two projects must not share a folder.
+func TestRepoName(t *testing.T) {
+	cases := []struct {
+		repo string
+		want string
+	}{
+		{"naghuale/crewflow", "naghuale-crewflow"},
+		{"telecli/tele", "telecli-tele"},
+		{"a/b/c", "a-b-c"},
+		{"noslash", "noslash"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.repo, func(t *testing.T) {
+			cfg := Config{Project: Project{Repo: tc.repo}}
+
+			if got := cfg.RepoName(); got != tc.want {
+				t.Errorf("RepoName() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
