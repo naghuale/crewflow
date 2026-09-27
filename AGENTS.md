@@ -23,6 +23,13 @@ GitHub issues, reviews your pull request and merges it. You implement exactly on
 7. When you are done, stop. Your final message is a short report: branch, commit, PR URL,
    and anything you could not do.
 
+## Scratch files
+
+You may only touch files inside your worktree. Anything outside it — including `/tmp` — is
+refused without asking, and a refusal ends your run. Put scratch files and probes in
+`.scratch/` at the root of the worktree (it is git-ignored) and delete them before you commit.
+`go test` and `t.TempDir()` are fine: the toolchain manages its own temporary files.
+
 ## If something is in the way
 
 - If the task is ambiguous or contradicts the code, do not guess: stop and say so in your
