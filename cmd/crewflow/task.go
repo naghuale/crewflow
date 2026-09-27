@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -22,10 +21,6 @@ import (
 // run and the state of every task, outside the projects themselves
 // (docs/DESIGN.md §7).
 const crewflowHome = "~/.crewflow"
-
-// errNoTask is what taskNumber returns when the call named no task, which the
-// caller has already said out loud: the code of the call is the answer.
-var errNoTask = errors.New("no task")
 
 // taskRoles and taskRunEnv are how the task command gets the roles of a project and
 // the machine to run a task on. They are variables so that a test of the command
@@ -87,8 +82,8 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return exitUsage
 	}
-	task, err := taskNumber(stderr, number)
-	if err != nil {
+	task, named := taskNumber(stderr, number)
+	if !named {
 		return exitUsage
 	}
 
@@ -114,8 +109,8 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 		failed(stderr, err)
 	}
 	if *asJSON {
-		if err := printResultJSON(stdout, result); err != nil {
-			return failed(stderr, err)
+		if printErr := printResultJSON(stdout, result); printErr != nil {
+			return failed(stderr, printErr)
 		}
 	} else if result.Task != 0 {
 		printResult(stdout, result)
@@ -130,21 +125,22 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 }
 
 // taskNumber is the number of the task to run, which is what the tracker of the
-// project numbers its tasks by. A word that is not one is a mistake of the call,
-// and not a task that does not exist.
-func taskNumber(stderr io.Writer, number string) (int, error) {
+// project numbers its tasks by, and whether the call named one at all. A word that
+// is not a number is a mistake of the call and not a task that does not exist, and
+// it is said here where the usage is.
+func taskNumber(stderr io.Writer, number string) (int, bool) {
 	if number == "" {
 		fmt.Fprintf(stderr, "crewflow task run: which task? a number, as in `crewflow task run 43`\n\n")
 		usage(stderr)
-		return 0, errNoTask
+		return 0, false
 	}
 	task, err := strconv.Atoi(number)
 	if err != nil || task < 1 {
 		fmt.Fprintf(stderr, "crewflow task run: %q is not the number of a task\n\n", number)
 		usage(stderr)
-		return 0, errNoTask
+		return 0, false
 	}
-	return task, nil
+	return task, true
 }
 
 // runRole starts a program for a role of the project: the tracker, the host or the

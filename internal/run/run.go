@@ -250,23 +250,15 @@ func (r *runner) output(ctx context.Context, dir string, args ...string) (string
 	return string(stdout), nil
 }
 
-// attempt is the start of a task, numbered by how many the task took.
-func (r *runner) attempt() int {
-	state, err := LoadState(r.journals.StatePath(r.task.Number))
-	if err != nil {
-		return 1
-	}
-	return len(state.Attempts) + 1
-}
-
-// stateOf is what crewflow keeps of the task, or a state of one attempt when there
-// is none yet: a first run of a task starts a state of its own.
+// stateOf is what crewflow keeps of the task with one attempt more in it: a first
+// run of a task starts a state of its own, and every run after it is the next
+// attempt of the same task.
 func (r *runner) stateOf(started time.Time) State {
-	attempt := r.attempt()
 	state, err := LoadState(r.journals.StatePath(r.task.Number))
 	if err != nil {
 		state = State{}
 	}
+	attempt := len(state.Attempts) + 1
 	state.Number, state.Title = r.task.Number, r.task.Title
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
 	state.Session = r.session
@@ -276,17 +268,13 @@ func (r *runner) stateOf(started time.Time) State {
 		r.req.Continue != "")
 }
 
-// Timeout is how long a run of the executor may take before crewflow stops it: a
-// hang is an outcome of a run, not a reason to wait for ever (docs/DESIGN.md §7a).
-func (r *runner) timeout() (time.Duration, error) {
-	return time.ParseDuration(r.cfg.Executor.Timeout)
-}
-
-// start runs the executor in the worktree of the task and says what came of it.
+// start runs the executor in the worktree of the task and says what came of it. The
+// time limit of the run is the one of the project: a hang is an outcome of a run and
+// not a reason to wait for ever (docs/DESIGN.md §7a).
 func (r *runner) start(ctx context.Context) (Result, error) {
-	timeout, err := r.timeout()
+	timeout, err := time.ParseDuration(r.cfg.Executor.Timeout)
 	if err != nil {
-		return Result{}, fmt.Errorf("executor.timeout %q: %w", r.cfg.Executor.Timeout, err)
+		return Result{}, fmt.Errorf("executor.timeout: %w", err)
 	}
 	command, err := r.command()
 	if err != nil {
@@ -334,17 +322,14 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	result.Session = r.profile.SessionID(stdout)
 
 	result, err = r.outcome(ctx, result, stdout, stderr, code, timedOut)
-	if err != nil {
-		return result, r.keep(ctx, state, result, err)
-	}
-	return result, r.keep(ctx, state, result, nil)
+	return result, r.keep(state, result, err)
 }
 
 // keep writes what happened down, so that after an interruption it is visible where
 // the run stopped (docs/DESIGN.md §7). The state is written even when a run could
 // not be judged: what a person then reads is the attempt, and the reason comes back
 // as the error of the run.
-func (r *runner) keep(_ context.Context, state State, result Result, judgeErr error) error {
+func (r *runner) keep(state State, result Result, judgeErr error) error {
 	state = state.Ended(result.EndedAt, result.Outcome)
 	if result.Session != "" {
 		state.Session = result.Session
