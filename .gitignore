@@ -1,0 +1,5 @@
+/crewflow
+/dist/
+*.test
+*.out
+.DS_Store
