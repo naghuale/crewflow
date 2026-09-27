@@ -1,0 +1,7 @@
+# project.repo is not "owner/name".
+
+[project]
+repo = "crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]

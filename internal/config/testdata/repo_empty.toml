@@ -1,0 +1,7 @@
+# project.repo is empty.
+
+[project]
+repo = ""
+
+[executor]
+command = ["agent", "run", "{prompt}"]

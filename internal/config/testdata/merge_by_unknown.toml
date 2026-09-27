@@ -1,0 +1,10 @@
+# Nobody may merge.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+by = "robot"

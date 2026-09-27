@@ -1,0 +1,15 @@
+# Two gates share one name.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[[gates]]
+name = "test"
+run = ["go", "test", "./..."]
+
+[[gates]]
+name = "test"
+run = ["go", "test", "-race", "./..."]

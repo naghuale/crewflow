@@ -1,0 +1,7 @@
+# There is no [executor] command at all: the executor has no default.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+model = "fast"

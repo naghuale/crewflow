@@ -1,0 +1,9 @@
+# The model is asked for, but the flag never takes the model.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+model = "some/model"
+model_flag = ["--model-name"]

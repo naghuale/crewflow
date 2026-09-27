@@ -1,0 +1,10 @@
+# Zero tasks in parallel is not a limit, it is no crewflow at all.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[parallel]
+max_tasks = 0

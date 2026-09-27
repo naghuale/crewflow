@@ -1,0 +1,64 @@
+# The full example from docs/DESIGN.md §5, kept verbatim so that the loader is
+# tested against the file a project is told to write.
+
+[project]
+repo = "naghuale/tele"
+default_branch = "main"
+language = "ru"            # язык задач, ревью и сообщений человеку
+
+[executor]
+# Любой агент с режимом без окна. Шаблон команды; {worktree} и {prompt} подставляет crewflow.
+command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
+model = ""                 # пусто — модель по умолчанию из настроек самого агента
+model_flag = ["--model", "{model}"]   # как агент принимает модель; добавляется, только если model задана
+timeout = "90m"
+fallback = []              # запасные исполнители по порядку (такие же таблицы), если основной недоступен
+
+[requirements]
+# Что нужно проекту — инструменты и как их проверить. Путей здесь нет: они на разных
+# машинах разные и определяются сами (§7d).
+tools = [
+  { name = "go", check = ["go", "version"], min = "1.27" },
+  { name = "golangci-lint", check = ["golangci-lint", "version"] },
+  { name = "libtdjson", check = ["sh", "-c", "test -e \"$TELECLI_TDLIB_LIBRARY\""] },
+]
+
+[isolation]
+mode = "host"              # host | sandbox | container (§7d)
+
+[[capabilities]]
+# Доступ к секретам и внешним системам, который проекту может понадобиться (§7e).
+# Здесь только объявление; разрешает человек, и хранится разрешение на машине.
+name = "github-keys"
+use = ["gh"]               # пользоваться через посредника, не видя секрета
+actions = ["gh ssh-key add", "gh gpg-key add"]   # действия с последствиями снаружи — всегда с подтверждением
+
+[worktrees]
+root = "~/.crewflow/worktrees/{repo}"   # вне рабочей папки человека
+
+[[gates]]
+name = "format"
+run = ["sh", "-c", "test -z \"$(gofmt -l .)\""]
+
+[[gates]]
+name = "vet"
+run = ["go", "vet", "./..."]
+
+[[gates]]
+name = "test"
+run = ["go", "test", "-race", "-count=1", "./..."]
+
+[[gates]]
+name = "lint"
+run = ["golangci-lint", "run", "./..."]
+
+[ci]
+required = true            # ждать и требовать зелёный GitHub Actions на коммите
+timeout = "30m"
+
+[merge]
+by = "orchestrator"        # orchestrator | executor | human
+strategy = "ff-only"
+
+[parallel]
+max_tasks = 1              # сколько задач могут идти одновременно; 1 — строго по очереди

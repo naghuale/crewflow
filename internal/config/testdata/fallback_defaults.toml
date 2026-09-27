@@ -1,0 +1,11 @@
+# A fully written file, to see what crewflow makes of every default that is not
+# spelled out: a fallback without a timeout gets the same limit as the primary one.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+fallback = [
+  { command = ["other-agent", "run", "{prompt}"] },
+]

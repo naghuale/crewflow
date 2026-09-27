@@ -1,0 +1,8 @@
+# A typo inside a known table and a whole unknown table.
+
+[project]
+repo = "naghuale/crewflow"
+reppo = "naghuale/crewflow"
+
+[creatflow]
+enabled = true

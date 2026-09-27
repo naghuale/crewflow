@@ -1,0 +1,7 @@
+# The command has no {prompt}, so crewflow has nothing to hand to the agent.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "--dir", "{worktree}"]

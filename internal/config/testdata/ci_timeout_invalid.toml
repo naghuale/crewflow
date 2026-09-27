@@ -1,0 +1,10 @@
+# ci.timeout has no unit: time.ParseDuration rejects it.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[ci]
+timeout = "30"

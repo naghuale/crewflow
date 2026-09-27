@@ -1,0 +1,10 @@
+# fast-forward is the only strategy crewflow does.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+strategy = "squash"

@@ -1,0 +1,7 @@
+# The command uses a placeholder crewflow does not know.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "--dir", "{worktree}", "--repo", "{repo}", "{prompt}"]

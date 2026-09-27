@@ -1,0 +1,13 @@
+# The same tool twice: doctor would check it twice and say nothing.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[requirements]
+tools = [
+  { name = "go", check = ["go", "version"] },
+  { name = "go", check = ["go", "env", "GOVERSION"] },
+]

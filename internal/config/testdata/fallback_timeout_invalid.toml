@@ -1,0 +1,10 @@
+# A fallback executor with an unparsable timeout.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+fallback = [
+  { command = ["other-agent", "run", "{prompt}"], timeout = "half an hour" },
+]

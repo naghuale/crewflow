@@ -1,0 +1,8 @@
+# executor.timeout is zero: a run would be killed at once.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+timeout = "0s"

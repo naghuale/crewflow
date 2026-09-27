@@ -1,0 +1,10 @@
+# A gate without a name cannot be told apart in a report.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[[gates]]
+run = ["true"]

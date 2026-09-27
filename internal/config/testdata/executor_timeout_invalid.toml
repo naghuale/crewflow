@@ -1,0 +1,8 @@
+# executor.timeout is not a duration.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+timeout = "soon"

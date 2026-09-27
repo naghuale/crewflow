@@ -1,0 +1,15 @@
+# The same capability twice: the grant would be ambiguous.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[[capabilities]]
+name = "github-keys"
+use = ["gh"]
+
+[[capabilities]]
+name = "github-keys"
+use = ["gh", "ssh"]

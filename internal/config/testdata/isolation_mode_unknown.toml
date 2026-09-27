@@ -1,0 +1,10 @@
+# There is no "vm" isolation in crewflow.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[isolation]
+mode = "vm"

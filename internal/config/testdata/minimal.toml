@@ -1,0 +1,7 @@
+# The smallest valid file: everything else comes from the defaults.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]

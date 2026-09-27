@@ -1,0 +1,10 @@
+# A gate without a command cannot fail, so it must not exist.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[[gates]]
+name = "test"

@@ -1,0 +1,76 @@
+// Command crewflow develops with two roles: an orchestrator that plans, reviews
+// and merges, and an executor that writes the code of one task at a time.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"io"
+	"os"
+
+	"github.com/naghuale/crewflow/internal/buildinfo"
+)
+
+// Exit codes. Two says that crewflow was called wrong, which a script can tell
+// from a run that did what it was told.
+const (
+	exitOK    = 0
+	exitUsage = 2
+)
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run dispatches the subcommand in args and returns the exit code, so that the
+// whole program can be tested in process.
+func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		usage(stderr)
+		return exitUsage
+	}
+	switch args[0] {
+	case "version":
+		return runVersion(args[1:], stdout, stderr)
+	case "help", "-h", "--help":
+		usage(stdout)
+		return exitOK
+	default:
+		fmt.Fprintf(stderr, "crewflow: unknown subcommand %q\n\n", args[0])
+		usage(stderr)
+		return exitUsage
+	}
+}
+
+// runVersion prints the version, the commit and the build time that were stamped
+// into the binary at link time.
+func runVersion(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.Usage = func() { usage(stderr) }
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "crewflow version: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+	fmt.Fprintln(stdout, buildinfo.String())
+	return exitOK
+}
+
+// usage lists the subcommands. For now that is all crewflow can do: the rest of
+// the cycle arrives with the next steps of docs/DESIGN.md §11.
+func usage(w io.Writer) {
+	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
+merges, and an executor that writes the code of one task at a time.
+
+Usage:
+  crewflow <subcommand> [flags]
+
+Subcommands:
+  help      Show this message
+  version   Print the version, the commit and the build time
+`)
+}

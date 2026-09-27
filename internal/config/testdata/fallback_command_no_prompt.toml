@@ -1,0 +1,10 @@
+# A fallback executor with nothing to run: crewflow would try it and fail anyway.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+fallback = [
+  { command = ["other-agent", "run", "--dir", "{worktree}"] },
+]
