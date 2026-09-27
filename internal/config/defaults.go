@@ -23,6 +23,13 @@ const (
 	defaultOwnerApproval   = "risky"
 )
 
+// DefaultWorktreesRoot is where the worktree of a task is made when the file of
+// the project does not say: outside the folder of the person, whatever the
+// worktrees of a run end up doing (docs/DESIGN.md §8). It is exported because a
+// caller that builds the settings of a project by hand must land on the same
+// place as one that reads them from a file.
+const DefaultWorktreesRoot = defaultWorktreesRoot
+
 // applyDefaults fills in what the file does not say. A key written as false or as
 // 0 is a decision, not a missing key, so for those the file itself is asked
 // whether the key is there at all.
