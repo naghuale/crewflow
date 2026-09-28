@@ -83,6 +83,9 @@ timeout = "30m"
 by = "orchestrator"        # orchestrator | executor | human
 strategy = "ff-only"
 via = "git-push"           # git-push | forge — через API хостинга, если main защищён (§7g)
+# Логины, чья запись ревью считается одобрением (§7h). Пусто — владелец репозитория.
+# Запись исполнителя одобрением не считается, что бы он ни написал под своим PR.
+reviewers = []
 
 [parallel]
 max_tasks = 1              # сколько задач могут идти одновременно; 1 — строго по очереди

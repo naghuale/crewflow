@@ -5,5 +5,12 @@
   "headRefOid": "9e37237496ea06aca445d2d6670171ec22d7d5bc",
   "number": 2,
   "state": "MERGED",
-  "url": "https://github.com/naghuale/crewflow/pull/2"
+  "url": "https://github.com/naghuale/crewflow/pull/2",
+  "isDraft": false,
+  "mergeStateStatus": "UNKNOWN",
+  "headRepository": {
+    "id": "R_kgDOUv-WTw",
+    "name": "crewflow",
+    "nameWithOwner": "naghuale/crewflow"
+  }
 }

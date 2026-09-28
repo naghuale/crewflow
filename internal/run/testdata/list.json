@@ -9,10 +9,7 @@
     "started_at": "2026-09-28T14:00:00Z",
     "duration_seconds": 65,
     "executor": "opencode",
-    "identity": {
-      "mode": "owner",
-      "description": "owner — the account the run of a test went under"
-    }
+    "identity": "owner"
   },
   {
     "repo": "naghuale/crewflow",
@@ -24,10 +21,7 @@
     "started_at": "2026-09-28T13:00:00Z",
     "duration_seconds": null,
     "executor": "opencode",
-    "identity": {
-      "mode": "owner",
-      "description": "owner — the account the run of a test went under"
-    }
+    "identity": "owner"
   },
   {
     "repo": "naghuale/crewflow",
@@ -44,9 +38,6 @@
       "number": 44,
       "url": "https://github.com/naghuale/crewflow/pull/44"
     },
-    "identity": {
-      "mode": "bot",
-      "description": "bot — the account the run of a test went under"
-    }
+    "identity": "bot"
   }
 ]

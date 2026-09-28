@@ -1,0 +1,11 @@
+# A reviewer of the project has to be an account: a gate that looks for a record in
+# the name of nobody counts no record at all (§7h).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+reviewers = ["  "]

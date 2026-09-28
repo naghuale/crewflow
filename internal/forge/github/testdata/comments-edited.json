@@ -1,0 +1,35 @@
+{
+  "comments": [
+    {
+      "id": "IC_kwDOUu9w6c8AAAABXU0IVg",
+      "author": {
+        "login": "naghuale"
+      },
+      "authorAssociation": "OWNER",
+      "body": "REVIEW: CHANGES REQUESTED Ревью коммита 1d74cab. Код соответ …",
+      "createdAt": "2026-09-27T22:10:43Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/naghuale/crewflow/pull/2#issuecomment-5860296790",
+      "viewerDidAuthor": true
+    },
+    {
+      "id": "IC_kwDOUu9w6c8AAAABXU14Yw",
+      "author": {
+        "login": "naghuale"
+      },
+      "authorAssociation": "OWNER",
+      "body": "REVIEW: APPROVED 9e37237496ea06aca445d2d6670171ec22d7d5bc Th …",
+      "createdAt": "2026-09-27T22:14:28Z",
+      "includesCreatedEdit": false,
+      "isMinimized": false,
+      "minimizedReason": "",
+      "reactionGroups": [],
+      "url": "https://github.com/naghuale/crewflow/pull/2#issuecomment-5860325475",
+      "viewerDidAuthor": true,
+      "lastEditedAt": "2026-09-27T23:02:11Z"
+    }
+  ]
+}

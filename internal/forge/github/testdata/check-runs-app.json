@@ -1,0 +1,51 @@
+{
+  "total_count": 2,
+  "check_runs": [
+    {
+      "id": 109145667337,
+      "name": "test (ubuntu-latest)",
+      "head_sha": "fb8c5057f225d20e06d3d609750fe36458fa9fd7",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-28T21:33:03Z",
+      "completed_at": "2026-09-28T21:34:04Z",
+      "html_url": "https://github.com/naghuale/crewflow/actions/runs/36486833265/job/109145667337",
+      "app": {
+        "id": 15368,
+        "slug": "github-actions",
+        "name": "GitHub Actions",
+        "owner": {
+          "login": "github",
+          "id": 9919,
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk="
+        }
+      },
+      "check_suite": {
+        "id": 98801591925
+      }
+    },
+    {
+      "id": 109145667338,
+      "name": "lint",
+      "head_sha": "fb8c5057f225d20e06d3d609750fe36458fa9fd7",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-09-28T21:33:03Z",
+      "completed_at": "2026-09-28T21:35:11Z",
+      "html_url": "https://github.com/naghuale/crewflow/actions/runs/36486833265/job/109145667338",
+      "app": {
+        "id": 15368,
+        "slug": "github-actions",
+        "name": "GitHub Actions",
+        "owner": {
+          "login": "github",
+          "id": 9919,
+          "node_id": "MDEyOk9yZ2FuaXphdGlvbjk5MTk="
+        }
+      },
+      "check_suite": {
+        "id": 98801591926
+      }
+    }
+  ]
+}

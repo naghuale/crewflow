@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,6 +30,14 @@ const program = "gh"
 const (
 	taskFields   = "number,title,body,labels,state,url"
 	changeFields = "number,url,headRefName,headRefOid,baseRefName,state,body"
+	// viewFields is what a review needs as well: whether the request is a draft,
+	// whether it can be merged into the branch it is meant for, and which
+	// repository the work is in. A `gh pr list` is not asked for any of it: that
+	// command looks at many requests at a time and a review is about one (§7h).
+	viewFields = changeFields + ",isDraft,mergeStateStatus,headRepository"
+	// fileFields is a `gh pr view` about the files of a request alone, for a review
+	// that has read the rest of it already.
+	fileFields = "files"
 )
 
 // completed is what GitHub calls a check run that has ended. GitHub writes its
@@ -125,9 +132,11 @@ func (a *Adapter) changeRequestOf(ctx context.Context, branch string, env []stri
 }
 
 // ChangeRequest returns the request with the number: the head it stands on is
-// what a review is about and what a merge may touch (docs/DESIGN.md §8).
+// what a review is about and what a merge may touch, and whether it is a draft or
+// cannot be merged into its branch is what a review has to name (docs/DESIGN.md §8,
+// §7h).
 func (a *Adapter) ChangeRequest(ctx context.Context, number int) (forge.ChangeRequest, error) {
-	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", changeFields)
+	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", viewFields)
 	if err != nil {
 		return forge.ChangeRequest{}, err
 	}
@@ -138,9 +147,38 @@ func (a *Adapter) ChangeRequest(ctx context.Context, number int) (forge.ChangeRe
 	return change.changeRequest(), nil
 }
 
+// ChangedFiles returns the paths a request changes against the branch it is meant
+// for, as the host holds them: the boundaries of a task are checked against the
+// work, and not against what the executor of it said it wrote (docs/DESIGN.md §7c, §7h).
+func (a *Adapter) ChangedFiles(ctx context.Context, number int) ([]string, error) {
+	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", fileFields)
+	if err != nil {
+		return nil, err
+	}
+	var answer struct {
+		Files []struct {
+			Path string `json:"path"`
+		} `json:"files"`
+	}
+	if err := decode(out, &answer); err != nil {
+		return nil, err
+	}
+	files := make([]string, 0, len(answer.Files))
+	for _, file := range answer.Files {
+		if file.Path != "" {
+			files = append(files, file.Path)
+		}
+	}
+	return files, nil
+}
+
 // Comments returns what was written under the request, in the order it was
 // written: the review of a run is read as a conversation, and a decision comes
 // after the reasons for it.
+//
+// Whether a comment has been edited since it was published comes with it, because
+// a record of a review that anybody can rewrite after the fact is not a record the
+// gate may count (docs/DESIGN.md §7h).
 func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, error) {
 	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", "comments")
 	if err != nil {
@@ -158,10 +196,15 @@ func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, er
 		if err != nil {
 			return nil, fmt.Errorf("comment of %s at %q: %w", comment.Author.Login, comment.CreatedAt, err)
 		}
+		edited, err := comment.editedAfter()
+		if err != nil {
+			return nil, fmt.Errorf("comment of %s: %w", comment.Author.Login, err)
+		}
 		comments = append(comments, forge.Comment{
 			Author:    comment.Author.Login,
 			Body:      comment.Body,
 			CreatedAt: created.UTC(),
+			Edited:    edited,
 		})
 	}
 	return comments, nil
@@ -179,12 +222,30 @@ func (a *Adapter) Status(ctx context.Context, sha string) (forge.CheckState, err
 	return checkState(runs), nil
 }
 
+// checkState is the state of a commit out of its check runs: none, pending while
+// anything has not ended, and then red for a check that did not pass.
+func checkState(runs []checkRunJSON) forge.CheckState {
+	if len(runs) == 0 {
+		return forge.CheckNone
+	}
+	state := forge.CheckSuccess
+	for _, run := range runs {
+		switch run.state() {
+		case forge.CheckPending:
+			return forge.CheckPending
+		case forge.CheckFailure:
+			state = forge.CheckFailure
+		}
+	}
+	return state
+}
+
 // checkRuns reads the checks of the commit, page by page, and puts them together:
 // a commit with many checks is answered with 30 of them at a time, and a red check
 // on the second page is as red as one on the first.
-func (a *Adapter) checkRuns(ctx context.Context, sha string) ([]checkRun, error) {
+func (a *Adapter) checkRuns(ctx context.Context, sha string) ([]checkRunJSON, error) {
 	endpoint := "repos/" + a.repo + "/commits/" + sha + "/check-runs"
-	var runs []checkRun
+	var runs []checkRunJSON
 	for page := 1; ; page++ {
 		got, err := a.checkRunsOfPage(ctx, endpoint, page)
 		if err != nil {
@@ -217,36 +278,8 @@ func (a *Adapter) checkRunsOfPage(ctx context.Context, endpoint string, page int
 // checkRunsPage is one answer of the API about the checks of a commit: how many
 // there are and how many of them are on this page.
 type checkRunsPage struct {
-	TotalCount int        `json:"total_count"`
-	CheckRuns  []checkRun `json:"check_runs"`
-}
-
-// checkRun is one check of a commit, as far as its state is concerned: a check of
-// GitHub is either still running or ended with a conclusion.
-type checkRun struct {
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
-}
-
-// checkState is the state of a commit out of its check runs: none, pending while
-// anything has not ended, and then red for a check that did not pass.
-func checkState(runs []checkRun) forge.CheckState {
-	if len(runs) == 0 {
-		return forge.CheckNone
-	}
-	failed := false
-	for _, run := range runs {
-		if run.Status != completed {
-			return forge.CheckPending
-		}
-		if slices.Contains(failingConclusions, run.Conclusion) {
-			failed = true
-		}
-	}
-	if failed {
-		return forge.CheckFailure
-	}
-	return forge.CheckSuccess
+	TotalCount int            `json:"total_count"`
+	CheckRuns  []checkRunJSON `json:"check_runs"`
 }
 
 // issueJSON is the answer of "gh issue view", as far as a task needs it: the
@@ -280,7 +313,9 @@ func (i issueJSON) task() forge.Task {
 }
 
 // changeJSON is the answer of "gh pr list" and of "gh pr view", which ask for the
-// same fields of a request.
+// same fields of a request. The last three are asked for by "gh pr view" only: they
+// are what a review needs to know beyond the head and the branch, and they are
+// empty in a list, which is not a review.
 type changeJSON struct {
 	Number     int    `json:"number"`
 	URL        string `json:"url"`
@@ -289,7 +324,27 @@ type changeJSON struct {
 	BaseBranch string `json:"baseRefName"`
 	State      string `json:"state"`
 	Body       string `json:"body"`
+	IsDraft    bool   `json:"isDraft"`
+	// MergeState is what the host says about merging the request into its branch:
+	// "CLEAN", "DIRTY" when it conflicts, "BLOCKED", "UNSTABLE" and "UNKNOWN"
+	// while the host is still working it out. It is kept as it is, in the words
+	// of the host, because which of them is an answer and which is not is a
+	// question the gate asks and this adapter does not.
+	MergeState string `json:"mergeStateStatus"`
+	// HeadRepository is the repository the work is in. A request of a fork names
+	// the fork there, and a gate has to be able to see that it is not the project.
+	HeadRepository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"headRepository"`
+	HeadOwner struct {
+		Login string `json:"login"`
+	} `json:"headRepositoryOwner"`
 }
+
+// dirty is what the host calls a request that conflicts with the branch it is meant
+// for. GitHub runs no checks for such a request, which is why the gate has to name
+// the conflict and not the checks that never came (docs/DESIGN.md §7h).
+const dirty = "DIRTY"
 
 // changeRequest is the request as the core knows it.
 func (c changeJSON) changeRequest() forge.ChangeRequest {
@@ -301,7 +356,21 @@ func (c changeJSON) changeRequest() forge.ChangeRequest {
 		BaseBranch: c.BaseBranch,
 		State:      state(c.State),
 		Body:       c.Body,
+		Draft:      c.IsDraft,
+		Repository: c.repository(),
+		Conflicted: strings.EqualFold(c.MergeState, dirty),
+		MergeState: c.MergeState,
 	}
+}
+
+// repository is the repository the work of the request is in, as the core names a
+// repository. A request of a fork names the fork, and that is the whole of what a
+// gate needs to know to refuse it by name.
+func (c changeJSON) repository() string {
+	if c.HeadRepository.NameWithOwner != "" {
+		return c.HeadRepository.NameWithOwner
+	}
+	return c.HeadOwner.Login
 }
 
 // commentJSON is one comment of the answer of "gh pr view --json comments".
@@ -311,6 +380,24 @@ type commentJSON struct {
 	} `json:"author"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"createdAt"`
+	// LastEditedAt is when the comment was changed after it was published, and
+	// gh leaves the field out altogether for a comment nobody has edited: what is
+	// there is a moment, and what is not there is a record nobody has touched.
+	LastEditedAt *string `json:"lastEditedAt"`
+}
+
+// editedAfter says that the comment was changed after it was published. A moment
+// crewflow cannot read is an answer it does not have: the gate counts a record that
+// was edited apart from one that was not, and guessing which one it is would let
+// an approval be rewritten in silence (docs/DESIGN.md §7h).
+func (c commentJSON) editedAfter() (bool, error) {
+	if c.LastEditedAt == nil {
+		return false, nil
+	}
+	if _, err := time.Parse(time.RFC3339, *c.LastEditedAt); err != nil {
+		return false, fmt.Errorf("the answer says it was edited at %q, which is not a moment: %w", *c.LastEditedAt, err)
+	}
+	return true, nil
 }
 
 // state is the state of a task or a request as the core writes it: in one case,

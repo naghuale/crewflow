@@ -36,6 +36,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runDoctor(args[1:], stdout, stderr)
 	case "task":
 		return runTask(args[1:], stdout, stderr)
+	case "review":
+		return runReview(args[1:], stdout, stderr)
 	case "auth":
 		return runAuth(args[1:], stdout, stderr)
 	case "version":
@@ -70,8 +72,9 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 
 // usage lists the subcommands: a check of the machine, a run of a task, what a check
 // of a task is missing before it is run, a watch of a run that is going on, a list of
-// the runs of the project, the key of the app a run works as, and the version. The
-// rest of the cycle arrives with the next steps of docs/DESIGN.md §11.
+// the runs of the project, a review of a change, the key of the app a run works as,
+// and the version. The rest of the cycle arrives with the next steps of
+// docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
 merges, and an executor that writes the code of one task at a time.
@@ -85,6 +88,7 @@ Subcommands:
   task check <N> Say whether a task may be run, and what it is missing when it may not
   task watch <N> Show what the executor of a task is doing, as it is doing it
   task list      List the runs of the project, and of the whole machine with -all
+  review <PR>    Say whether a change may be merged, and why it may not (§7h)
   auth app       The GitHub App a run works as: import its key, check it (§7i)
   help           Show this message
   version        Print the version, the commit and the build time
@@ -93,6 +97,7 @@ Subcommands:
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
   crewflow task list [-all] [-json] [-config path] [-repo path]
+  crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
   crewflow auth app import <file.pem> [-config path]
   crewflow auth app check [-config path] [-json]
 `)

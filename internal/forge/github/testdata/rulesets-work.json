@@ -1,0 +1,10 @@
+[
+  {
+    "id": 24115315,
+    "name": "task branches: no force push, no deletion",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "naghuale/crewflow",
+    "enforcement": "active"
+  }
+]

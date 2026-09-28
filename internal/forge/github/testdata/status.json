@@ -1,0 +1,26 @@
+{
+  "state": "failure",
+  "statuses": [
+    {
+      "url": "https://api.github.com/repos/naghuale/crewflow/statuses/1",
+      "id": 1,
+      "state": "failure",
+      "context": "lint",
+      "description": "the lint gate did not pass",
+      "target_url": "https://github.com/naghuale/crewflow/actions/runs/36486833265",
+      "created_at": "2026-09-28T21:35:12Z",
+      "updated_at": "2026-09-28T21:35:12Z"
+    }
+  ],
+  "sha": "fb8c5057f225d20e06d3d609750fe36458fa9fd7",
+  "total_count": 1,
+  "repository": {
+    "id": 1392481871,
+    "name": "crewflow",
+    "full_name": "naghuale/crewflow",
+    "owner": {
+      "login": "naghuale",
+      "id": 93920024
+    }
+  }
+}

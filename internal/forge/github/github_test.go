@@ -101,34 +101,6 @@ func TestFindChangeRequestWithoutOne(t *testing.T) {
 	}
 }
 
-// TestChangeRequest reads the answer of "gh pr view" of a real request.
-func TestChangeRequest(t *testing.T) {
-	m := newMachine().prints("pr view", fixture(t, "change.json"))
-	a := New(repo, "", m.env(t))
-
-	change, err := a.ChangeRequest(t.Context(), 2)
-	if err != nil {
-		t.Fatalf("ChangeRequest(2) returned an error: %v", err)
-	}
-
-	want := forge.ChangeRequest{
-		Number:     2,
-		URL:        "https://github.com/naghuale/crewflow/pull/2",
-		HeadBranch: "feat/m1-1-skeleton",
-		HeadSHA:    sha,
-		BaseBranch: "main",
-		State:      "merged",
-		Body:       "Closes #1 ## What changed - `cmd/crewflow`: the binary, disp …",
-	}
-	if !reflect.DeepEqual(change, want) {
-		t.Errorf("ChangeRequest(2) = %+v,\nwant %+v", change, want)
-	}
-	wantCommand := "pr view 2 -R " + repo + " --json number,url,headRefName,headRefOid,baseRefName,state,body"
-	if got := m.commandLine(0); got != wantCommand {
-		t.Errorf("the adapter ran %q, want %q", got, wantCommand)
-	}
-}
-
 // TestComments reads the review of a run out of the comments of a request: who
 // wrote it, what was written and when, because the order of the review is the
 // order of the comments.

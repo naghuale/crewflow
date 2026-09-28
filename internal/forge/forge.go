@@ -67,6 +67,25 @@ type ChangeRequest struct {
 	State string
 	// Body is the text the request was opened with, "Closes #N" among it.
 	Body string
+	// Draft says that the request is still a draft and asks for nothing yet.
+	Draft bool
+	// Repository is the repository the work is in, as "owner/name". A host that
+	// does not write it says nothing: a change of the repository of the project is
+	// read as a change in the project, and a change of a fork is not
+	// (docs/DESIGN.md §7h).
+	Repository string
+	// Conflicted says that the request cannot be merged into its base branch as it
+	// stands. A host that runs checks only on a mergeable request will not run any
+	// for such a change, and a gate that reported the checks as missing would be
+	// reporting the absence of something the host was never going to do
+	// (docs/DESIGN.md §7h).
+	Conflicted bool
+	// MergeState is what the host says about merging the request into its base
+	// branch, in the words of the host: "CLEAN", "DIRTY" when it conflicts,
+	// "BLOCKED", "UNSTABLE", and "UNKNOWN" while the host has not worked it out.
+	// It is there because which of those is an answer and which is not is a
+	// question of the gate and not of an adapter (docs/DESIGN.md §7h).
+	MergeState string
 }
 
 // Comment is one comment under a change request, by a person or by an agent.
@@ -77,6 +96,10 @@ type Comment struct {
 	Body string
 	// CreatedAt is when it was written, which orders the review of a run.
 	CreatedAt time.Time
+	// Edited says that it was changed after it was published. A record of a review
+	// that has been edited is a record anybody can rewrite after the fact, and the
+	// gate does not count it (docs/DESIGN.md §7h).
+	Edited bool
 }
 
 // Forge is where the code of a project is hosted and reviewed: the requests to
@@ -117,6 +140,91 @@ type CI interface {
 	RoleChecker
 	// Status returns how the checks of the commit stand.
 	Status(ctx context.Context, sha string) (CheckState, error)
+}
+
+// CheckRun is one check of a commit, as a gate needs it and not as a report of a
+// machine needs it: the name it is known under, how it stands, the app that
+// reported it, and the commit it is about. The last two are why a green mark of
+// somebody else about another commit is not a check of this change
+// (docs/DESIGN.md §7h).
+type CheckRun struct {
+	// Name is what the rules of the branch call the check.
+	Name string
+	// State is how the check stands.
+	State CheckState
+	// App is the app that reported it — "github-actions" for a workflow of
+	// GitHub — and empty for a mark written through the API of statuses, which is
+	// the mark of whoever wrote it.
+	App string
+	// SHA is the commit the check is about.
+	SHA string
+}
+
+// RequiredCheck is a check the rules of the branch of a project demand of a change,
+// and the app its result is to be taken from. The app is the rule of the host made
+// a fact: for GitHub it is GitHub Actions, and a mark written through the API of
+// statuses is the mark of whoever wrote it (docs/DESIGN.md §7h).
+type RequiredCheck struct {
+	// Name is what the rules of the branch call the check.
+	Name string
+	// App is the slug of the app the check is to come from, and empty where a host
+	// expects none.
+	App string
+}
+
+// CheckLister is the CI of a project that can say what checks a commit has, where
+// each of them came from and which of them the rules of the branch demand. A role
+// that is not one of these has no checks to name: a project with no CI at all is
+// answered for, and a project whose CI cannot say has not answered (docs/DESIGN.md §7g, §7h).
+type CheckLister interface {
+	CI
+	// Checks returns the checks of the commit: the runs of a host and the marks
+	// written through its API of statuses, both of which have a name, a state, a
+	// source and a commit.
+	Checks(ctx context.Context, sha string) ([]CheckRun, error)
+	// RequiredChecks returns what the rules of the branch of the project demand of
+	// a change, and the app each of them is to come from. An answer with nothing in
+	// it means the host names no check, and what the project says about its CI is
+	// then what stands (docs/DESIGN.md §7h).
+	RequiredChecks(ctx context.Context) ([]RequiredCheck, error)
+}
+
+// FileLister is the host that can say which files a change request touches. The
+// boundaries of a task are checked against the work and not against what the
+// executor said it wrote, both after a run and before a merge (docs/DESIGN.md §7c, §7h).
+type FileLister interface {
+	// ChangedFiles returns the paths a change request changes against the branch
+	// it is meant for, as the host knows them.
+	ChangedFiles(ctx context.Context, number int) ([]string, error)
+}
+
+// HeadRef is the host's own name of the ref that stands at the head of a change.
+// A review needs the commit of the head in a checkout to ask git about the history,
+// and a host may name that ref differently on every host (§7h).
+type HeadRef interface {
+	// HeadRef is the ref of the host that is the head of the change request, as
+	// `git fetch` is given it.
+	HeadRef(number int) string
+}
+
+// CommentWriter is the host a record of a review is written to: a comment under the
+// change, in the name of the account whose approval the gate counts. It is the
+// orchestrator's business and never the executor's: a record an executor writes is a
+// record the gate does not count (docs/DESIGN.md §7h, §7i).
+type CommentWriter interface {
+	// WriteComment writes the body under the change request, as the account the
+	// project reviews with.
+	WriteComment(ctx context.Context, number int, body string) error
+}
+
+// SignedIn is the host that can say which account it speaks as, without handing out
+// the rights of that account: a record of a review is a comment, and it is an
+// approval only because of the account it is written in (docs/DESIGN.md §7h).
+type SignedIn interface {
+	// SignedIn is the login of the account the role is authenticated as, and an
+	// error when it could not be read at all — which is not the same thing as an
+	// account of no name.
+	SignedIn(ctx context.Context) (string, error)
 }
 
 // The two modes of a run, the words the core knows and nothing else: the executor

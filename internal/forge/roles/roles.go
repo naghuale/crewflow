@@ -22,7 +22,26 @@ import (
 // that has been through [config.Load]: the pairs that contradict each other are
 // refused there.
 func New(cfg config.Config, env forge.Env) (forge.Set, error) {
-	hosting, err := hostOf(cfg, env)
+	return rolesOf(cfg, env, cfg.Identity.Mode)
+}
+
+// AsOwner returns the roles of a project as the person who runs crewflow, whoever
+// the executor of the project works as.
+//
+// A review of a change is the business of the orchestrator, and the orchestrator is
+// the person: the record of a review is written in their name and counted only
+// because it is, and the rules of a branch are rights of a person and not of the App
+// of an executor, which has none of them (docs/DESIGN.md §7h, §7i). A project in the
+// mode of the owner gets the same roles either way, and `task run` asks for the ones
+// of [New].
+func AsOwner(cfg config.Config, env forge.Env) (forge.Set, error) {
+	return rolesOf(cfg, env, forge.ModeOwner)
+}
+
+// rolesOf is the roles of a project under the mode of the executor, which is what a
+// run works under and what a review deliberately does not.
+func rolesOf(cfg config.Config, env forge.Env, mode string) (forge.Set, error) {
+	hosting, err := hostOf(cfg, env, mode)
 	if err != nil {
 		return forge.Set{}, err
 	}
@@ -40,7 +59,7 @@ func New(cfg config.Config, env forge.Env) (forge.Set, error) {
 		// run whose executor did not. A project in the mode of the owner opens it
 		// as the person who runs crewflow, which is what a run has always done and
 		// what a report of a run in that mode is expected to say (§7i).
-		if cfg.Identity.Mode == forge.ModeBot {
+		if mode == forge.ModeBot {
 			set.Opener = hosting
 		}
 	}
@@ -60,11 +79,12 @@ func New(cfg config.Config, env forge.Env) (forge.Set, error) {
 // hostOf is the adapter of the host of the code, and nothing for a project that
 // is not hosted anywhere: its change requests are local branches, and reading
 // those is no adapter's work yet (§7g).
-func hostOf(cfg config.Config, env forge.Env) (*github.Adapter, error) {
+func hostOf(cfg config.Config, env forge.Env, mode string) (*github.Adapter, error) {
 	switch cfg.Forge.Kind {
 	case "github":
-		adapter := github.New(cfg.Project.Repo, cfg.Forge.Host, env)
-		if cfg.Identity.Mode == forge.ModeBot {
+		adapter := github.New(cfg.Project.Repo, cfg.Forge.Host, env).
+			WithDefaultBranch(cfg.Project.DefaultBranch)
+		if mode == forge.ModeBot {
 			// The numbers of the App are all the file of the project says about it:
 			// the key of the App is in the store of the machine and never in a file
 			// of a project (docs/DESIGN.md §7e, §7i).

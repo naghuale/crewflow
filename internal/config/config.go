@@ -172,6 +172,12 @@ type Merge struct {
 	// Via is what merges: "git-push" by default, and "forge" through the API of
 	// the host when main is protected and only it may merge (docs/DESIGN.md §7g).
 	Via string `toml:"via"`
+	// Reviewers are the logins whose record of a review counts as an approval. A
+	// record of anybody else — of the executor of a run, of an agent that was given
+	// the right to write — is a comment and not an approval, whatever it says
+	// (docs/DESIGN.md §7h). An empty list is the owner of the repository, which is
+	// what a project gets without saying anything.
+	Reviewers []string `toml:"reviewers"`
 }
 
 // Parallel limits how many tasks run at the same time.

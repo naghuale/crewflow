@@ -869,11 +869,14 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 		if under == "" {
 			under = mode
 		}
-		state = state.NextAttempt(attempt.startedAt,
-			journals.JournalPath(number, i+1),
-			journals.errorJournalPath(number, i+1),
-			i > 0, proc.Process{Pid: attempt.pid, StartedAt: begin},
-			Identity{Mode: under, Description: descriptionOf(under)})
+		state = state.NextAttempt(StartOf{
+			Started:      attempt.startedAt,
+			Journal:      journals.JournalPath(number, i+1),
+			ErrorJournal: journals.errorJournalPath(number, i+1),
+			Continued:    i > 0,
+			Process:      proc.Process{Pid: attempt.pid, StartedAt: begin},
+			Identity:     Identity{Mode: under, Description: descriptionOf(under)},
+		})
 		if attempt.outcome != Running {
 			state = state.Ended(attempt.endedAt, attempt.outcome)
 		}

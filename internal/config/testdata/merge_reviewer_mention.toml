@@ -1,0 +1,11 @@
+# A mention is not a login: the gate compares what the host writes under a comment
+# with what the file of the project names (§7h).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+reviewers = ["@naghuale"]

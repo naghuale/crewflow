@@ -85,6 +85,9 @@ func (c Config) Validate() error {
 	if err := oneOf("merge.via", c.Merge.Via, mergeVias); err != nil {
 		return err
 	}
+	if err := validateReviewers(c.Merge.Reviewers); err != nil {
+		return err
+	}
 	if c.Parallel.MaxTasks < 1 {
 		return fmt.Errorf("parallel.max_tasks: must be at least 1, got %d", c.Parallel.MaxTasks)
 	}
@@ -123,6 +126,31 @@ func validateIdentity(c Config) error {
 	if c.Identity.GitHubApp.InstallationID < 0 {
 		return fmt.Errorf("identity.github_app.installation_id: must be a number of an installation or 0 to find it, got %d",
 			c.Identity.GitHubApp.InstallationID)
+	}
+	return nil
+}
+
+// validateReviewers checks the accounts whose record of a review counts: each of them
+// has to be a name, because a gate that looks for a record in the name of nobody
+// counts no record at all, and none of them twice, because a list that says the same
+// name twice is a file a person meant something else by (docs/DESIGN.md §7h).
+//
+// An empty list is not a mistake: the owner of the repository reviews the project
+// until it says otherwise, which is what a project that says nothing gets.
+func validateReviewers(reviewers []string) error {
+	seen := make(map[string]struct{}, len(reviewers))
+	for i, reviewer := range reviewers {
+		switch {
+		case strings.TrimSpace(reviewer) == "":
+			return fmt.Errorf("merge.reviewers[%d]: must be a login of an account, as %q, got %q",
+				i, "naghuale", reviewer)
+		case strings.HasPrefix(reviewer, "@"):
+			return fmt.Errorf("merge.reviewers[%d]: a login is written without the @ of a mention: %q", i, reviewer)
+		}
+		if _, duplicate := seen[reviewer]; duplicate {
+			return fmt.Errorf("merge.reviewers[%d]: duplicate reviewer %q", i, reviewer)
+		}
+		seen[reviewer] = struct{}{}
 	}
 	return nil
 }

@@ -1,0 +1,19 @@
+{
+  "files": [
+    {
+      "additions": 412,
+      "deletions": 3,
+      "path": "internal/gate/gate.go"
+    },
+    {
+      "additions": 190,
+      "deletions": 0,
+      "path": "internal/gate/gate_test.go"
+    },
+    {
+      "additions": 12,
+      "deletions": 1,
+      "path": "docs/DESIGN.md"
+    }
+  ]
+}

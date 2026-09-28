@@ -77,9 +77,18 @@ func TestRunInTheModeOfTheBotHandsTheExecutorTheTokenOfTheApp(t *testing.T) {
 		"crewflow: executor: "+theBot().Description; got != want {
 		t.Errorf("the journal starts with %q, want %q", got, want)
 	}
+	// A state of a task keeps the mode of every attempt of it and not the one line a
+	// report of a run shows: that line is in the journal and in the result of the
+	// run, and the state is a list of facts for a list of runs to read (§7h).
 	state := stateOf(t, m, 43)
-	if want := (Identity{Mode: "bot", Description: theBot().Description}); state.Attempts[0].Identity != want {
-		t.Errorf("the state holds the identity %+v, want %+v", state.Attempts[0].Identity, want)
+	if got, want := state.Attempts[0].Identity.Mode, "bot"; got != want {
+		t.Errorf("the state holds the mode %q, want %q", got, want)
+	}
+	if got := state.Attempts[0].Executor; got != "opencode" {
+		t.Errorf("the state holds the executor %q, want the agent of the attempt", got)
+	}
+	if state.Schema != Schema {
+		t.Errorf("the state is of the format %d, want %d", state.Schema, Schema)
 	}
 	if want := (Identity{Mode: "bot", Description: theBot().Description}); result.Identity != want {
 		t.Errorf("the result holds the identity %+v, want %+v", result.Identity, want)

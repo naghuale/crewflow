@@ -127,8 +127,13 @@ func TestStateRoundTrip(t *testing.T) {
 		Profile:  "opencode",
 		Session:  "ses_7fKq2",
 	}
-	attempt := state.NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false,
-		proc.Process{Pid: 4242, StartedAt: started}, Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"})
+	attempt := state.NextAttempt(StartOf{
+		Started:      started,
+		Journal:      journals.JournalPath(43, 1),
+		ErrorJournal: journals.errorJournalPath(43, 1),
+		Process:      proc.Process{Pid: 4242, StartedAt: started},
+		Identity:     Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"},
+	})
 	attempt = attempt.Ended(ended, TimedOut)
 	path := journals.StatePath(43)
 	if err := SaveState(path, attempt); err != nil {
@@ -228,8 +233,13 @@ func TestStateKeepsTheProcessOfTheRun(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 
 	state := State{Number: 43, Title: "the run of a task"}.
-		NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false, process,
-			Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"}).
+		NextAttempt(StartOf{
+			Started:      started,
+			Journal:      journals.JournalPath(43, 1),
+			ErrorJournal: journals.errorJournalPath(43, 1),
+			Process:      process,
+			Identity:     Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"},
+		}).
 		Ended(started.Add(42*time.Minute), ChangeRequestOpened)
 	state.Change = &Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"}
 	path := journals.StatePath(43)
@@ -316,4 +326,95 @@ func whatWasWritten(t *testing.T, path string) string {
 	}
 	t.Fatalf("the journal %s holds no line of the executor in it, want the lines of crewflow and then what it wrote", path)
 	return ""
+}
+
+// TestAStateOfBeforeIsReadAsItIs: a state written before the format was versioned
+// holds a table where an attempt of today holds the mode of the run, and it is read
+// as what it is — every attempt of it, its outcome and its process — because a run of
+// before is a run that happened and a list of runs has to show it (docs/DESIGN.md §7h).
+func TestAStateOfBeforeIsReadAsItIs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "43.json")
+	if err := os.WriteFile(path, []byte(read(t, filepath.Join("testdata", "state-of-before.json"))), 0o600); err != nil {
+		t.Fatalf("write the state of before: %v", err)
+	}
+
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState of a state of before returned an error: %v", err)
+	}
+
+	if state.Schema != 0 {
+		t.Errorf("a state without a schema is of the format %d, want 0", state.Schema)
+	}
+	if len(state.Attempts) != 1 {
+		t.Fatalf("the state holds %d attempts, want the one it was written with", len(state.Attempts))
+	}
+	attempt := state.Attempts[0]
+	if attempt.Identity.Mode != "bot" {
+		t.Errorf("the mode of the attempt is %q, want %q", attempt.Identity.Mode, "bot")
+	}
+	if attempt.Outcome != ChangeRequestOpened || attempt.Number != 1 {
+		t.Errorf("the attempt is %+v, want the first one that opened a change request", attempt)
+	}
+	process, named := attempt.Process()
+	if !named || process.Pid != 4242 {
+		t.Errorf("the process of the run is %+v, want the one the state was written with", process)
+	}
+	if state.Change == nil || state.Change.Number != 44 {
+		t.Errorf("the change request of the state is %+v, want #44", state.Change)
+	}
+
+	// The next run that goes on with the task writes the file in the format of
+	// today: the attempts before it are kept as they were, and the new one has the
+	// mode, the agent and the session of its own.
+	next := state.NextAttempt(StartOf{
+		Started:      attempt.EndedAt.Add(time.Hour),
+		Journal:      "/home/p/.crewflow/runs/naghuale-crewflow/43-2.jsonl",
+		ErrorJournal: "/home/p/.crewflow/runs/naghuale-crewflow/43-2.err",
+		Executor:     "opencode",
+		Session:      "ses_7fKq2",
+		Continued:    true,
+		Identity:     Identity{Mode: "bot"},
+	}).Ended(attempt.EndedAt.Add(time.Hour).Add(20*time.Minute), ChangeRequestOpened)
+	if err := SaveState(path, next); err != nil {
+		t.Fatalf("SaveState returned an error: %v", err)
+	}
+
+	written := read(t, path)
+	for _, in := range []string{`"schema": 1`, `"identity": "bot"`, `"executor": "opencode"`, `"session": "ses_7fKq2"`} {
+		if !strings.Contains(written, in) {
+			t.Errorf("the state written in the format of today does not hold %s:\n%s", in, written)
+		}
+	}
+	again, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState of the state of today returned an error: %v", err)
+	}
+	if len(again.Attempts) != 2 {
+		t.Fatalf("the state of today holds %d attempts, want both", len(again.Attempts))
+	}
+	if again.Attempts[0].Identity.Description != "" {
+		t.Errorf("the attempt of before keeps the line a report shows: %q", again.Attempts[0].Identity.Description)
+	}
+	if again.Attempts[1].Session != "ses_7fKq2" {
+		t.Errorf("the second attempt is in the session %q, want the one it went on in", again.Attempts[1].Session)
+	}
+}
+
+// TestAStateOfANewerCrewflowIsRefused: a file of a format nobody looked at is a file
+// crewflow cannot say anything true about, and a list of runs that read it as
+// something it is not would show a person a run that never was (docs/DESIGN.md §7h).
+func TestAStateOfANewerCrewflowIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "43.json")
+	written := strings.Replace(read(t, filepath.Join("testdata", "state-of-before.json")),
+		`"task": 43`, `"schema": 99,`+"\n"+`  "task": 43`, 1)
+	if err := os.WriteFile(path, []byte(written), 0o600); err != nil {
+		t.Fatalf("write the state: %v", err)
+	}
+
+	if _, err := LoadState(path); err == nil {
+		t.Fatal("LoadState read a state of a format crewflow does not know")
+	} else if !strings.Contains(err.Error(), "99") {
+		t.Errorf("the error %q does not say which format the file is of", err)
+	}
 }

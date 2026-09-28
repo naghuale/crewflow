@@ -77,6 +77,45 @@ func TestNewPassesTheProjectToTheAdapter(t *testing.T) {
 	}
 }
 
+// TestAsOwnerOfAProjectInTheModeOfTheBot is the review of a change: it is the
+// business of the person who runs crewflow even where the executor of the project
+// works as an App of the host, because the record of a review is counted only when
+// it is written by a reviewer of the project, and the rules of a branch are rights
+// a person has and an App of a run does not (docs/DESIGN.md §7h, §7i).
+func TestAsOwnerOfAProjectInTheModeOfTheBot(t *testing.T) {
+	m := newMachine()
+	cfg := load(t, baseConfig+`
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 5107052
+`)
+
+	asRun, err := New(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	asOwner, err := AsOwner(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("AsOwner returned an error: %v", err)
+	}
+
+	if asRun.Opener == nil {
+		t.Error("a run of a project in the mode of the bot has nothing to open a change request with")
+	}
+	if asOwner.Opener != nil {
+		t.Error("a review has an account of the host of its own: the record of a review is the word of a person")
+	}
+	described, err := forge.DescribeIdentity(t.Context(), asOwner.Forge)
+	if err != nil {
+		t.Fatalf("DescribeIdentity returned an error: %v", err)
+	}
+	if described.Mode != forge.ModeOwner {
+		t.Errorf("the identity of a review is %q, want %q: it is the person who reviews", described.Mode, forge.ModeOwner)
+	}
+}
+
 // TestNewWithoutChecks walks a project that has no CI at all: its gates are the
 // only checks there are, and there is nothing to ask.
 func TestNewWithoutChecks(t *testing.T) {
@@ -106,7 +145,7 @@ func TestNewWithoutChecks(t *testing.T) {
 func TestHostOfWithoutAHost(t *testing.T) {
 	cfg := load(t, baseConfig+"\n[forge]\nkind = \"none\"\n\n[tracker]\nkind = \"files\"\n\n[ci]\nkind = \"none\"\n")
 
-	hosting, err := hostOf(cfg, newMachine().env(t))
+	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode)
 	if err != nil {
 		t.Fatalf("hostOf returned an error: %v", err)
 	}

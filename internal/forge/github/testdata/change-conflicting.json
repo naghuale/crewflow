@@ -1,0 +1,16 @@
+{
+  "baseRefName": "main",
+  "body": "Closes #19\n\n## What changed",
+  "headRefName": "crewflow/19-…",
+  "headRefOid": "fb8c5057f225d20e06d3d609750fe36458fa9fd7",
+  "headRepository": {
+    "id": "R_kgDOUv-WTw",
+    "name": "crewflow",
+    "nameWithOwner": "naghuale/crewflow"
+  },
+  "isDraft": false,
+  "mergeStateStatus": "DIRTY",
+  "number": 19,
+  "state": "OPEN",
+  "url": "https://github.com/naghuale/crewflow/pull/19"
+}

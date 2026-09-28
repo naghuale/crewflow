@@ -1,0 +1,29 @@
+{
+  "task": 43,
+  "title": "crewflow task run",
+  "branch": "crewflow/43-crewflow-task-run",
+  "worktree": "/w/43",
+  "profile": "opencode",
+  "session": "ses_7fKq2",
+  "change": {
+    "number": 44,
+    "url": "https://github.com/naghuale/crewflow/pull/44"
+  },
+  "attempts": [
+    {
+      "number": 1,
+      "started_at": "2026-09-28T10:00:00Z",
+      "ended_at": "2026-09-28T10:42:00Z",
+      "journal": "/home/p/.crewflow/runs/naghuale-crewflow/43-1.jsonl",
+      "error_journal": "/home/p/.crewflow/runs/naghuale-crewflow/43-1.err",
+      "identity": {
+        "mode": "bot",
+        "description": "bot — GitHub App crewflow-executor (installation 12345)"
+      },
+      "outcome": "pr-opened",
+      "continued": false,
+      "pid": 4242,
+      "process_started_at": "2026-09-28T09:59:58Z"
+    }
+  ]
+}

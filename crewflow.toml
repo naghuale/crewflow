@@ -55,6 +55,9 @@ timeout = "30m"
 [merge]
 by = "orchestrator"
 strategy = "ff-only"
+# Логины, чья запись ревью считается одобрением (§7h). Пусто — владелец
+# репозитория, то есть naghuale. Запись исполнителя (App) одобрением не считается.
+reviewers = []
 
 [parallel]
 max_tasks = 1

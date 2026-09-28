@@ -334,12 +334,21 @@ func (r *runner) stateOf(started time.Time) State {
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
 	state.Session = r.session
 	process, _ := r.process()
-	return state.NextAttempt(started,
-		r.journals.JournalPath(r.task.Number, attempt),
-		r.journals.errorJournalPath(r.task.Number, attempt),
-		r.req.Continue != "",
-		process,
-		Identity{Mode: r.identity.Mode, Description: r.identity.Description})
+	// The executor and the session of the attempt are of that attempt and not of the
+	// task: a task whose executor was replaced starts again in a session of its own,
+	// and a continuation goes on in the one before. The session of a first run is
+	// not known before the executor is started, and it is written into the attempt
+	// when the run is over (§7h).
+	return state.NextAttempt(StartOf{
+		Started:      started,
+		Journal:      r.journals.JournalPath(r.task.Number, attempt),
+		ErrorJournal: r.journals.errorJournalPath(r.task.Number, attempt),
+		Executor:     r.profile.Name(),
+		Session:      r.session,
+		Continued:    r.req.Continue != "",
+		Process:      process,
+		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
+	})
 }
 
 // process is the process of crewflow this run is happening in, and whether the machine
@@ -551,6 +560,12 @@ func (r *runner) keep(state State, result Result, judgeErr error) error {
 	state = state.Ended(result.EndedAt, result.Outcome)
 	if result.Session != "" {
 		state.Session = result.Session
+		// The session of a run belongs to the attempt it went in, and not only to
+		// the task: every attempt of a task has its own session, and a continuation
+		// goes on in the one of the attempt it follows (docs/DESIGN.md §7h).
+		if last := len(state.Attempts) - 1; last >= 0 {
+			state.Attempts[last].Session = result.Session
+		}
 	}
 	if change := result.ChangeRequest; change != nil {
 		state.Change = &Change{Number: change.Number, URL: change.URL}

@@ -1,0 +1,44 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+X-Accepted-Github-Permissions: administration=read
+X-Content-Type-Options: nosniff
+X-Github-Api-Version-Selected: 2022-11-28
+
+{
+  "url": "https://api.github.com/repos/naghuale/crewflow/branches/main/protection",
+  "enabled": true,
+  "required_status_checks": {
+    "url": "https://api.github.com/repos/naghuale/crewflow/branches/main/protection/required_status_checks",
+    "strict": true,
+    "contexts": [
+      "test (ubuntu-latest)",
+      "lint"
+    ],
+    "checks": [
+      {
+        "context": "test (ubuntu-latest)",
+        "app_id": 15368
+      },
+      {
+        "context": "lint",
+        "app_id": 15368
+      }
+    ]
+  },
+  "required_pull_request_reviews": {
+    "url": "https://api.github.com/repos/naghuale/crewflow/branches/main/protection/required_pull_request_reviews",
+    "required_approving_review_count": 1
+  },
+  "restrictions": null,
+  "required_linear_history": {
+    "enabled": false
+  },
+  "allow_force_pushes": {
+    "enabled": false
+  },
+  "allow_deletions": {
+    "enabled": false
+  }
+}

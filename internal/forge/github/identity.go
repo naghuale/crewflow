@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/forge"
@@ -116,6 +117,17 @@ func (a *Adapter) account() string {
 	return ""
 }
 
+// SignedIn is the account gh speaks as, and an error when gh does not say: a record
+// of a review is a comment, and it is an approval only because of the account it was
+// written in, so an account nobody can name is a record crewflow cannot count and
+// should not write in the name of (docs/DESIGN.md §7h).
+func (a *Adapter) SignedIn(context.Context) (string, error) {
+	if account := a.account(); account != "" {
+		return account, nil
+	}
+	return "", errors.New("gh does not say which account it is signed in as: run `gh auth status` and read the account out of it")
+}
+
 // OpenChangeRequest opens the change request of a branch on behalf of a run whose
 // executor did not: the agent ran out of time, or the token of gh it was given is
 // over, and the work of a run is on a branch that nobody asked about
@@ -166,12 +178,54 @@ func (a *Adapter) base() string {
 	return a.defaultBranch
 }
 
+// WithDefaultBranch returns the adapter with the branch the change requests of the
+// project are meant for: the rules of a branch are read by their name, and a project
+// whose branch is not main needs crewflow to know which one it is (§7h).
+func (a *Adapter) WithDefaultBranch(branch string) *Adapter {
+	a.defaultBranch = branch
+	return a
+}
+
+// HeadRef is the ref of GitHub that stands at the head of a change request, and it
+// is what a review fetches to have the commit of the head in a checkout: the rules
+// of §7h are asked of git, and git is asked about a commit it has to hold
+// (docs/DESIGN.md §7h).
+func (a *Adapter) HeadRef(number int) string {
+	return fmt.Sprintf("refs/pull/%d/head", number)
+}
+
+// WriteComment writes a record of a review under the change request.
+//
+// It writes as the person who runs crewflow and never as the App of the executor:
+// the record of a review is the word of the orchestrator, and a record the
+// executor could write is a record the gate would have to refuse (docs/DESIGN.md §7h, §7i).
+func (a *Adapter) WriteComment(ctx context.Context, number int, body string) error {
+	arguments := []string{"pr", "comment", strconv.Itoa(number), "-R", a.repo, "--body", body}
+	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
+	switch {
+	case err != nil:
+		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+	case code != 0:
+		return fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+	}
+	return nil
+}
+
 // The adapter of GitHub is a role of the core that can also say whose name the
-// executor of a run works under, and can open a change request on behalf of a run.
-// Without a project that asks for the mode of the bot it is neither, and a project
-// with such an app is given both.
+// executor of a run works under, can open a change request on behalf of a run, and
+// can say everything a review of a change is made of. Without a project that asks
+// for the mode of the bot it is neither of the first two, and a project with such an
+// app is given both.
 var (
 	_ forge.Identified    = (*Adapter)(nil)
 	_ forge.Described     = (*Adapter)(nil)
 	_ forge.RequestOpener = (*Adapter)(nil)
+	_ forge.SignedIn      = (*Adapter)(nil)
+	// A review of a project on GitHub is gathered out of these four, and without
+	// one of them the gate of §7h has nothing to judge.
+	_ forge.FileLister    = (*Adapter)(nil)
+	_ forge.CheckLister   = (*Adapter)(nil)
+	_ forge.HeadRef       = (*Adapter)(nil)
+	_ forge.CommentWriter = (*Adapter)(nil)
 )

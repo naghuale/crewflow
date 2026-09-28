@@ -44,11 +44,12 @@ Works today:
 - ✅ tasks as readable specs, with boundaries and owner approval for risky ones
 - ✅ the executor reads the dependencies the project names and never a secret
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
+- ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
+  one of the reasons of §7h says why it may not
 
 In progress:
 
-- ⏳ the merge gate in code (`crewflow review`, `merge`, `verify`); until then the orchestrator
-  applies the same rules by hand
+- ⏳ the merge itself and the check after it (`crewflow merge`, `crewflow verify`)
 - ⏳ the owner's acceptance of a review build before a merge
 - ⏳ `crewflow init` and recovery of an interrupted task
 
@@ -70,6 +71,8 @@ Put a `crewflow.toml` in the root of your repository (see [the example](crewflow
 crewflow doctor            # tools, requirements, access, the identity of the executor
 crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
+crewflow review 14         # may PR #14 be merged, and if not, why not
+crewflow review 14 -approve   # write REVIEW: APPROVED <full sha> on the head
 crewflow task watch 12     # follow a run live
 crewflow task list         # runs of this project, the ones that want you on top, and what else runs here
 crewflow task list -all    # every run of every project on this machine
@@ -80,6 +83,27 @@ A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `time
 `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `task list` shows
 the agent (`EXECUTOR`), whose name it worked under (`AS`: `owner` or `bot`), the attempt
 (`RUN`, `57-2`) and the change request (`CHANGE`), and reads nothing but the local state.
+
+## The gate
+
+`crewflow review <PR>` gathers the facts of a change from the host and from git and answers
+one question: may it be merged? When it may not, the answer names a single reason out of the
+table of §7h — `approval-missing`, `approval-untrusted`, `approval-edited`, `approval-stale`,
+`history-rewritten`, `pr-not-open`, `pr-draft`, `wrong-repository`, `wrong-target-branch`,
+`out-of-scope`, `required-check-missing` / `-incomplete` / `-failed` / `-untrusted`,
+`ci-sha-mismatch`, `not-fast-forward`, `forge-unavailable` — and says what to do about it.
+
+- an approval counts only from `[merge] reviewers` (the owner of the repository by default),
+  only unedited, and only of the current head of the change;
+- the record of a review is a comment whose first line is `REVIEW: APPROVED <full sha>` or
+  `REVIEW: CHANGES REQUESTED`; `-approve` and `-request-changes <file>` write it for you;
+- the files the change touches are checked against the boundaries of its task, and only a
+  reviewer may take a file outside them with `SCOPE: ACCEPTED <full sha> <why>`;
+- the required checks are the ones the rules of the branch demand, taken from GitHub Actions
+  rather than from anybody's mark through the API of statuses;
+- anything the host did not answer is `forge-unavailable`, never a pass.
+
+See §7h of the design for the whole rule.
 
 ## Executors
 

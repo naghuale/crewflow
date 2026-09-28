@@ -18,7 +18,16 @@ import (
 // profile of the executor, the session to go on in, and every attempt in its own
 // right (docs/DESIGN.md §7). The truth about the work is still on the host; this
 // is what crewflow needs to not start from the beginning next time.
+//
+// What is never kept here is whether a change was approved or whether it may be
+// merged: those are worked out from the host and from git every time they are asked
+// for, so that a state file cannot say what the host says otherwise (docs/DESIGN.md §7h).
 type State struct {
+	// Schema is the version of the format of the file. A state written before
+	// crewflow kept one is read as the version before the first, with every attempt
+	// of it read as it is, and it is written again in the current format the next
+	// time a run of the task touches it.
+	Schema int `json:"schema,omitempty"`
 	// Number is the task the state is of.
 	Number int `json:"task"`
 	// Title is the one line a person wrote, so that a state file says what it is
@@ -48,25 +57,66 @@ type Change struct {
 	URL    string `json:"url"`
 }
 
+// Schema is the version of the format of a state file, and a file without one is
+// the version before it: crewflow kept the branch, the worktree and the outcomes of
+// the attempts, and every attempt of it is read as it was written. A run that goes
+// on writes the file in this version, and a file of a version crewflow does not know
+// is refused rather than read as something it is not.
+const Schema = 1
+
 // Identity is whose name the executor of an attempt worked under: the mode it worked
 // in and the one line a report shows (docs/DESIGN.md §7i).
 //
-// A state written before crewflow kept the mode holds an empty one, and is read as it
-// is: a run of before does not say whose name it went under, and a list of runs says
-// a dash where there is nothing rather than a mode that was not.
+// From the schema of §7h on it is written as the mode itself, "owner" or "bot": the
+// words of a report of a run are in the journal and in the result of a run, and what
+// a state file has to say is which of the two modes a try went under. A state written
+// before that held a table with a mode and a description; it is read as it is, the
+// table with the two words, and the mode in it is what a report shows.
 type Identity struct {
 	// Mode is "owner" or "bot", the two words the core knows.
-	Mode string `json:"mode"`
+	Mode string
 	// Description is the one line a report of the run shows.
-	Description string `json:"description"`
+	Description string
 }
 
-// Attempt is one start of the executor on a task: when it was, where it wrote, and
-// how it ended. A task has as many attempts as it took tries, and the journal of
-// each of them stays where it was written.
+// MarshalJSON is the mode alone: a state file of §7h holds `identity: "owner"`, and
+// the line a report shows is in the report and not in the state of the task.
+func (i Identity) MarshalJSON() ([]byte, error) {
+	return json.Marshal(i.Mode)
+}
+
+// UnmarshalJSON reads both the mode of §7h and the table of the format before it, so
+// that a state of before is read as what it is and a state of now is read as the
+// mode it is.
+func (i *Identity) UnmarshalJSON(data []byte) error {
+	var mode string
+	if err := json.Unmarshal(data, &mode); err == nil {
+		i.Mode = mode
+		return nil
+	}
+	type identity Identity
+	var before identity
+	if err := json.Unmarshal(data, &before); err != nil {
+		return fmt.Errorf("the identity of an attempt is neither %q nor a table of before: %w", "owner", err)
+	}
+	*i = Identity(before)
+	return nil
+}
+
+// Attempt is one start of the executor on a task: who ran it, in which session, whose
+// name it went under, when it was, where it wrote, and how it ended. A task has as
+// many attempts as it took tries, and the journal of each of them stays where it was
+// written.
 type Attempt struct {
 	// Number is the attempt in the task, starting at one.
 	Number int `json:"number"`
+	// Executor is the agent of the attempt — "opencode", "codex" — and Session the
+	// session of it, which is what a continuation goes on in. Both are of the
+	// attempt and not of the task: a task whose executor was replaced starts again
+	// in a session of its own, and a continuation goes on in the one before
+	// (docs/DESIGN.md §7, §7h).
+	Executor string `json:"executor,omitempty"`
+	Session  string `json:"session,omitempty"`
 	// StartedAt and EndedAt are when the executor was started and when it stopped,
 	// which is what says how long a run took.
 	StartedAt time.Time `json:"started_at"`
@@ -114,28 +164,54 @@ func (s State) Attempt(number int) (Attempt, bool) {
 	return Attempt{}, false
 }
 
+// StartOf is one start of the executor: when it was, which agent ran it, in which
+// session, whose name it went under, where it writes, and whether it goes on in the
+// session of an attempt before. It is what a run of a task knows about its own start
+// before the executor is started, and the state of the task is told before the
+// executor is (docs/DESIGN.md §7).
+type StartOf struct {
+	// Started is when the executor was started: the attempt is going on from the
+	// moment it is added, because that is what the state of a task says while the
+	// executor works.
+	Started time.Time
+	// Journal and ErrorJournal are the files of what it writes and of what it says
+	// on the way out.
+	Journal      string
+	ErrorJournal string
+	// Executor is the agent of the attempt and Session the session of it, and a
+	// continuation goes on in the session of the attempt before.
+	Executor string
+	Session  string
+	// Continued says that the attempt goes on in the session of an earlier one.
+	Continued bool
+	// Process is the process the run of crewflow is happening in, which is what a
+	// later list asks the machine about, and the identity is whose name the
+	// executor of the run is about to work under, so that the state says it from
+	// the moment the run starts and not only when it is over (docs/DESIGN.md §7, §7i).
+	Process  proc.Process
+	Identity Identity
+}
+
 // NextAttempt is the number the next start of the executor of this task gets, and
 // the state with that attempt added and not written anywhere yet. The attempt is
 // running from the moment it is added: it is what the state of a task says while the
-// executor works, and what a run that is cut short leaves behind. The process is the
-// one the run is happening in, which is what a later list asks the machine about, and
-// the identity is whose name the executor of it is about to work under, so that the
-// state says it from the moment the run starts and not only when it is over
-// (docs/DESIGN.md §7, §7i).
-func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool, process proc.Process, identity Identity) State {
+// executor works, and what a run that is cut short leaves behind.
+func (s State) NextAttempt(start StartOf) State {
 	next := len(s.Attempts) + 1
 	attempt := Attempt{
 		Number:       next,
-		StartedAt:    started,
-		Journal:      journal,
-		ErrorJournal: errorJournal,
-		Identity:     identity,
+		StartedAt:    start.Started,
+		Journal:      start.Journal,
+		ErrorJournal: start.ErrorJournal,
+		Executor:     start.Executor,
+		Session:      start.Session,
+		Identity:     start.Identity,
 		Outcome:      Running,
-		Continued:    continued,
+		Continued:    start.Continued,
 	}
-	if process.Pid > 0 {
-		started := process.StartedAt
-		attempt.PID, attempt.ProcessStartedAt = process.Pid, &started
+	if start.Process.Pid > 0 {
+		started := start.Process.StartedAt
+		attempt.PID, attempt.ProcessStartedAt = start.Process.Pid, &started
 	}
 	s.Attempts = append(s.Attempts, attempt)
 	return s
@@ -252,6 +328,13 @@ func openForWriting(path string) (*os.File, error) {
 // LoadState reads what crewflow kept of a task. A task with no state is not an
 // error about the machine: it is a task that was never run, and the caller decides
 // what that means.
+//
+// A state written before the format was versioned is read as the version before the
+// first one, and nothing of it is lost: a run of before is a run of before, and the
+// file is written in the current format the next time a run of the task touches it
+// (docs/DESIGN.md §7h). A state of a version crewflow does not know is refused: a
+// file of a shape nobody has looked at is a file crewflow cannot say anything true
+// about, and a report that says nothing is worth more than one that lies.
 func LoadState(path string) (State, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -261,13 +344,20 @@ func LoadState(path string) (State, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return State{}, fmt.Errorf("the state of the task in %s is not readable: %w", path, err)
 	}
+	if state.Schema > Schema {
+		return State{}, fmt.Errorf("the state of the task in %s is of the format %d, and crewflow knows %d: "+
+			"a newer crewflow wrote it, and this one cannot read what it does not know", path, state.Schema, Schema)
+	}
 	return state, nil
 }
 
-// SaveState writes the state of a task. It is written whole or not at all: a file
-// cut in half by an interruption is a file that says the wrong thing about a run,
-// and a state that is wrong is worse than none.
+// SaveState writes the state of a task, in the current format of it whatever the one
+// it was read in: a state of before is a state of a task of before, and the run that
+// goes on with it writes what it knows today. It is written whole or not at all: a
+// file cut in half by an interruption is a file that says the wrong thing about a
+// run, and a state that is wrong is worse than none.
 func SaveState(path string, state State) error {
+	state.Schema = Schema
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("the state of the task: %w", err)
