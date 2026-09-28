@@ -136,6 +136,10 @@ func TestResolveClosesThePlacesOfSecrets(t *testing.T) {
 
 	policy, problems := Resolve(t.Context(), Env{Home: home, Run: machine{}.run}, config.Access{})
 
+	// The list is written out here and not taken from the package: a secret that is
+	// added to the package and not to this list is a secret crewflow has and a test
+	// does not know about. The home of the test is a folder this machine holds, so
+	// every place of it is in one spelling and the list is the list of the secrets.
 	want := []string{
 		filepath.Join(home, ".ssh"),
 		filepath.Join(home, ".gnupg"),
@@ -154,6 +158,60 @@ func TestResolveClosesThePlacesOfSecrets(t *testing.T) {
 	if len(policy.Read) != 0 || len(problems) != 0 {
 		t.Errorf("a project that named nothing got %v and %+v, want no folder to read and no problems",
 			policy.Read, problems)
+	}
+}
+
+// TestResolveNamesEveryPlaceInBothSpellings is the case the macOS runner of a run of
+// the pilot found: `/var` and `/tmp` are links into `/private`, and an agent asks about
+// a path in the spelling it wrote, so a rule in the spelling of the machine does not
+// cover the one the agent uses. Every place is named twice — as the project wrote it
+// and with every link above it followed — for the folders that may be read and for the
+// places that are closed, whether they are there or not.
+//
+// The link is made here, in a folder of the test, so that the case is the same on a
+// machine that has no links in `/var` and on one that has.
+func TestResolveNamesEveryPlaceInBothSpellings(t *testing.T) {
+	// The home of the person is a link to a folder of the test, which is what `/var` is
+	// on macOS: two names, one folder. The folder is taken as this machine holds it, so
+	// that the two spellings the test is about are the two of the link and not three.
+	held := folder(t, filepath.Join(real(t.TempDir()), "home"))
+	home := filepath.Join(held, "..", "link")
+	if err := os.Symlink(held, home); err != nil {
+		t.Fatalf("make the link of the home: %v", err)
+	}
+	// The folder of the dependencies is named the way the agent would name it, through
+	// the link, and one of the places of secrets is named the other way, through the
+	// folder the link leads to: the two spellings have to be in the policy both times.
+	library := folder(t, filepath.Join(held, "go", "pkg", "mod"))
+	keys := folder(t, filepath.Join(held, ".ssh"))
+	m := machine{prints: map[string]string{
+		"go env GOMODCACHE": filepath.Join(home, "go", "pkg", "mod") + "\n",
+	}}
+
+	policy, problems := Resolve(t.Context(), Env{Home: home, Run: m.run, Timeout: time.Second},
+		config.Access{ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}}})
+
+	if len(problems) != 0 {
+		t.Errorf("the problems = %+v, want none: a folder under a link is still a folder", problems)
+	}
+	want := []string{filepath.Join(home, "go", "pkg", "mod"), library}
+	if !slices.Equal(policy.Read, want) {
+		t.Errorf("the policy allows reading %v, want the folder in both spellings %v", policy.Read, want)
+	}
+	// The place of secrets that is not there is closed in both spellings all the same:
+	// nothing is read because a rule is in another spelling than the agent's, and a
+	// folder of a person that does not exist yet is still the one its home holds.
+	for _, want := range []string{filepath.Join(home, ".ssh"), keys, filepath.Join(home, ".netrc"), filepath.Join(held, ".netrc"), "**/.env"} {
+		if !slices.Contains(policy.Deny, want) {
+			t.Errorf("the closed places are %v, want %q among them", policy.Deny, want)
+		}
+	}
+	// The home of the person is one folder in two names, and neither of them opens.
+	for _, spelling := range []string{home, held} {
+		refused, reason := Resolve(t.Context(), Env{Home: home, Run: m.run}, config.Access{Read: []string{spelling}})
+		if len(refused.Read) != 0 || len(reason) == 0 {
+			t.Errorf("the home of the person named as %q was opened (%v, %+v), want it refused", spelling, refused.Read, reason)
+		}
 	}
 }
 

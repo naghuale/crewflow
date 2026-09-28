@@ -72,12 +72,14 @@ read_from = [["go", "env", "GOMODCACHE"], ["go", "env", "GOROOT"]]
 read = ["/opt/homebrew/include"]
 ```
 
-crewflow runs those commands before the run and opens the folders it is given to **read only**. The
-places that hold secrets — `~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`, `~/.aws`,
-`~/.netrc`, `~/.docker/config.json`, `~/.kube`, `.env` files — stay closed whatever a project says,
-as do the root of a disk, the home folder and anything a secret sits in. `crewflow doctor` shows
-what is open on this machine and what was refused and why; the first line of the journal of a run
-is the policy it was started with. See §7d of the design.
+crewflow runs those commands before the run and opens the folders it is given to **read only**, in
+both spellings of every path: `/var` and `/private/var` are one folder in two names, and an agent
+asks in the one it wrote. The places that hold secrets — `~/.ssh`, `~/.gnupg`,
+`~/Library/Keychains`, `~/.config/gh`, `~/.aws`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`,
+`.env` files — stay closed whatever a project says, to reading and to writing, as does the `.env`
+of the worktree itself; so do the root of a disk, the home folder and anything a secret sits in.
+`crewflow doctor` shows what is open on this machine and what was refused and why; the first line
+of the journal of a run is the policy it was started with. See §7d of the design.
 
 ## License
 

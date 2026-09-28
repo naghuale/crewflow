@@ -49,10 +49,12 @@ var secrets = []string{
 // by its own profile, and the second one is stronger than the first: a place that is
 // in both is closed (docs/DESIGN.md §7d).
 type Policy struct {
-	// Read are the folders that may be read, clean and as they are on this machine.
+	// Read are the folders that may be read, as this machine spells them — a folder
+	// under a link is in both spellings, because an agent asks about a path in the one
+	// it wrote.
 	Read []string
-	// Deny are the places that may never be read: the secrets of the machine, as
-	// paths and as patterns.
+	// Deny are the places that may never be read: the secrets of the machine, in the
+	// same two spellings, and the patterns that are the same on every machine.
 	Deny []string
 }
 
@@ -88,9 +90,11 @@ type Env struct {
 
 // Resolve works out the reading policy of a run on this machine: it runs the commands
 // of the project, keeps the folders that are there, and closes the places of secrets
-// whatever they named. A path crewflow will not open comes back as a Problem, and the
-// policy comes back without it: a run goes on with what the project was really after
-// (docs/DESIGN.md §7d).
+// whatever they named. A folder is named in both the spelling the project wrote and
+// the one every link above it makes, because `/var` and `/private/var` are one folder
+// in two names and an agent asks in the one it wrote. A path crewflow will not open
+// comes back as a Problem, and the policy comes back without it: a run goes on with
+// what the project was really after (docs/DESIGN.md §7d).
 func Resolve(ctx context.Context, env Env, cfg config.Access) (Policy, []Problem) {
 	var problems []Problem
 	named := slices.Clone(cfg.Read)
@@ -104,12 +108,16 @@ func Resolve(ctx context.Context, env Env, cfg config.Access) (Policy, []Problem
 	}
 	policy := Policy{Deny: denyList(env.Home)}
 	for _, path := range named {
-		folder, reason := readable(path, env.Home)
+		folders, reason := readable(path, env.Home)
 		switch {
 		case reason != "":
 			problems = append(problems, Problem{Path: strings.TrimSpace(path), Reason: reason})
-		case folder != "" && !slices.Contains(policy.Read, folder):
-			policy.Read = append(policy.Read, folder)
+		default:
+			for _, folder := range folders {
+				if !slices.Contains(policy.Read, folder) {
+					policy.Read = append(policy.Read, folder)
+				}
+			}
 		}
 	}
 	return policy, problems
@@ -142,30 +150,31 @@ func ask(ctx context.Context, env Env, command []string) ([]string, string) {
 }
 
 // readable is what crewflow makes of one path a project named: the folder the
-// executor may read, or the reason the folder is not opened. A path with neither is
-// one that is not there, and a path that is not there is not opened either — an
-// empty line and a tool that named a folder it does not have are the same thing.
-func readable(path, home string) (string, string) {
+// executor may read in every way this machine spells it, or the reason the folder is
+// not opened. A path with neither is one that is not there, and a path that is not
+// there is not opened either — an empty line and a tool that named a folder it does
+// not have are the same thing.
+func readable(path, home string) ([]string, string) {
 	place := strings.TrimSpace(path)
 	switch {
 	case place == "":
-		return "", ""
+		return nil, ""
 	case strings.HasPrefix(place, "~"):
 		if home == "" {
-			return "", "~ stands for the home of the person, and this machine says it has none"
+			return nil, "~ stands for the home of the person, and this machine says it has none"
 		}
 		place = expand(place, home)
 	case !filepath.IsAbs(place):
-		return "", "not an absolute path, and crewflow cannot tell what it is relative to"
+		return nil, "not an absolute path, and crewflow cannot tell what it is relative to"
 	}
 	folder := real(place)
 	if reason := refusal(folder, home); reason != "" {
-		return "", reason
+		return nil, reason
 	}
 	if _, err := os.Stat(folder); err != nil {
-		return "", ""
+		return nil, ""
 	}
-	return folder, ""
+	return spellings(place, folder), ""
 }
 
 // refusal is why crewflow will not let the executor read the folder, or an empty
@@ -189,17 +198,37 @@ func refusal(folder, home string) string {
 }
 
 // places is where the secrets of this machine are, with the "~" of the file
-// resolved: the folders as this machine holds them, and the patterns as they were
-// written, because a pattern is the same everywhere.
+// resolved: the folders as this machine holds them in both the spellings of it, and the
+// patterns as they were written, because a pattern is the same everywhere.
 func places(home string) (folders, patterns []string) {
 	for _, secret := range secrets {
 		if strings.Contains(secret, "**") {
 			patterns = append(patterns, secret)
 			continue
 		}
-		folders = append(folders, real(expand(secret, home)))
+		// A machine with no home of the person has no place to resolve "~" against, and
+		// a run cannot start on one anyway. The places are left as they are written,
+		// which names no folder of the machine.
+		if home == "" {
+			folders = append(folders, secret)
+			continue
+		}
+		written := expand(secret, home)
+		folders = append(folders, spellings(written, real(written))...)
 	}
 	return folders, patterns
+}
+
+// spellings is one place in every way this machine writes it: as the project named it
+// and with every link above it followed, when the two are not the same path. On macOS
+// `/tmp` and `/var` are links into `/private`, and an agent asks about a path in the
+// spelling it wrote, so a rule in one of them does not cover the other and both are
+// named (docs/DESIGN.md §7d).
+func spellings(written, followed string) []string {
+	if written == followed {
+		return []string{followed}
+	}
+	return []string{written, followed}
 }
 
 // holds is whether the folder and the place of secrets are one folder or one of them
@@ -236,15 +265,22 @@ func expand(path, home string) string {
 	return path
 }
 
-// real is the path as this machine holds it: a link followed, so that two names of
-// one folder are one folder in the policy, and the folders that are not there are
-// the ones nobody can read.
+// real is the path as this machine holds it: every link in the part of it that is
+// there followed, and the rest joined as it was written. A folder that is not there
+// yet still belongs to the tree the links above it make, and without that the same
+// folder would be in two spellings on one machine: `/private/var/…/.ssh` for a folder
+// that exists and `/var/…/.ssh` for one that does not.
 func real(path string) string {
-	followed, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return filepath.Clean(path)
+	clean := filepath.Clean(path)
+	followed, err := filepath.EvalSymlinks(clean)
+	if err == nil {
+		return filepath.Clean(followed)
 	}
-	return filepath.Clean(followed)
+	parent := filepath.Dir(clean)
+	if parent == clean {
+		return clean
+	}
+	return filepath.Join(real(parent), filepath.Base(clean))
 }
 
 // firstLine is the first line of the outputs that says something: a command that

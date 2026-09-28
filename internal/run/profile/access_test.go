@@ -12,19 +12,24 @@ import (
 )
 
 // thePolicy is the reading policy of a run of this repository: the cache of the
-// modules and the toolchain of Go, and the places of secrets of the person. The
-// paths are written out whole, because what a profile builds out of them is what a
-// person reads in the settings of a run, and a machine of a test is not there.
+// modules and the toolchain of Go, and the places of secrets of the person — a folder
+// of keys, a file of tokens and the patterns of the environment files. The paths are
+// written out whole, because what a profile builds out of them is what a person reads
+// in the settings of a run, and a machine of a test is not there.
 var thePolicy = access.Policy{
 	Read: []string{"/Users/someone/go/pkg/mod", "/usr/local/go"},
-	Deny: []string{"/Users/someone/.ssh", "/Users/someone/.aws", "**/.env", "**/.env.*"},
+	Deny: []string{
+		"/Users/someone/.ssh", "/Users/someone/.netrc", "**/.env", "**/.env.*",
+	},
 }
 
-// TestAccessEnvOfOpencode is the settings of a run, letter for letter: what the
-// executor of a project may read outside its worktree, what it may never read, and
-// the same folders for writing, which a run never allows. The file is the golden of
-// it, because these are the bytes an agent of a real run is handed, and a rule that
-// moved in them is a permission that moved.
+// TestAccessEnvOfOpencode is the settings of a run, letter for letter: the folders the
+// executor may read outside its worktree, the places that are closed to it for reading
+// and for writing, a place of secrets as the place itself and as everything under it
+// (a secret is a file as often as a folder), and the `.env` of the worktree itself,
+// which is inside it and out of the reach of a rule about the outside. The file is the
+// golden of it, because these are the bytes an agent of a real run is handed, and a
+// rule that moved in them is a permission that moved.
 func TestAccessEnvOfOpencode(t *testing.T) {
 	got, err := (opencode{}).AccessEnv(thePolicy, nil)
 	if err != nil {
@@ -44,14 +49,18 @@ func TestAccessEnvOfOpencode(t *testing.T) {
 }
 
 // TestAccessEnvOfOpencodeOverTheSettingsOfThePerson: a person may have settings of
-// their own in the environment, and the rules of the run are written over them: what
-// a run may read is what the policy of the run says. What is not a permission is
-// left alone, because the settings of a person are not crewflow's to throw away.
+// their own in the environment, and the rules of a run are written into them key by
+// key, not over the whole table. A rule of a person for another pattern or another
+// tool stays, a rule of a run for the same pattern wins, and a permission that is a
+// single word has no keys to keep and is replaced (docs/DESIGN.md §7d).
 func TestAccessEnvOfOpencodeOverTheSettingsOfThePerson(t *testing.T) {
 	environ := []string{
 		"HOME=/Users/someone",
 		configContent + `={"$schema":"https://opencode.ai/config.json","model":"someone/model",` +
-			`"permission":{"bash":"ask","external_directory":{"**":"ask"}}}`,
+			`"permission":{"bash":"ask",` +
+			`"external_directory":{"**":"ask","/Users/someone/go/pkg/mod/**":"deny"},` +
+			`"read":{"**":"allow","/Users/someone/.netrc":"allow"},` +
+			`"edit":{"*.md":"allow"}}}`,
 	}
 
 	env, err := (opencode{}).AccessEnv(thePolicy, environ)
@@ -64,35 +73,86 @@ func TestAccessEnvOfOpencodeOverTheSettingsOfThePerson(t *testing.T) {
 		Permission struct {
 			Bash              any               `json:"bash"`
 			ExternalDirectory map[string]string `json:"external_directory"`
+			Read              map[string]string `json:"read"`
 			Edit              map[string]string `json:"edit"`
 		} `json:"permission"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(env[0], configContent+"=")), &settings); err != nil {
 		t.Fatalf("the settings of the run are not JSON: %v", err)
 	}
+	// What is not a permission of a run is the settings of the person and stays as it
+	// was: a model, a tool, and a rule for a pattern crewflow writes nothing about.
 	if settings.Model != "someone/model" {
-		t.Errorf("the model = %q, want the one the person had, want the settings of a person kept", settings.Model)
+		t.Errorf("the model = %q, want the one the person had", settings.Model)
 	}
 	if settings.Permission.Bash != "ask" {
 		t.Errorf("the permission of bash = %v, want the one the person had", settings.Permission.Bash)
 	}
-	// The rule of a person over every path is replaced by the rules of the run, and a
-	// place that is closed in both lists stays closed.
-	if _, asked := settings.Permission.ExternalDirectory["**"]; asked {
-		t.Error("the rule of the person over every path is still there, want the rules of the run")
+	kept := []struct {
+		name  string
+		table map[string]string
+		key   string
+		want  string
+	}{
+		{"external_directory", settings.Permission.ExternalDirectory, "**", "ask"},
+		{"read", settings.Permission.Read, "**", "allow"},
+		{"edit", settings.Permission.Edit, "*.md", "allow"},
 	}
-	for path, want := range map[string]string{
-		"/Users/someone/go/pkg/mod/**": "allow",
-		"/usr/local/go/**":             "allow",
-		"/Users/someone/.ssh/**":       "deny",
-		"**/.env":                      "deny",
-	} {
-		if got := settings.Permission.ExternalDirectory[path]; got != want {
-			t.Errorf("the rule for %q is %q, want %q", path, got, want)
+	for _, k := range kept {
+		if got := k.table[k.key]; got != k.want {
+			t.Errorf("the rule %q of the person for %q = %q, want %q: a rule of a run is written key by key",
+				k.name, k.key, got, k.want)
 		}
-		if got := settings.Permission.Edit[path]; got != "deny" {
-			t.Errorf("the rule for writing %q is %q, want it closed for a folder that may be read", path, got)
+	}
+	// The keys a run writes are its own, whatever the person wrote for them: the folder
+	// of the dependencies is open for reading, and the file of a secret is closed even
+	// where the person had allowed it — "**" under a place does not match the place.
+	won := []struct {
+		name  string
+		table map[string]string
+		key   string
+		want  string
+	}{
+		{"external_directory", settings.Permission.ExternalDirectory, "/Users/someone/go/pkg/mod/**", "allow"},
+		{"external_directory", settings.Permission.ExternalDirectory, "/Users/someone/.ssh", "deny"},
+		{"external_directory", settings.Permission.ExternalDirectory, "/Users/someone/.ssh/**", "deny"},
+		{"read", settings.Permission.Read, "/Users/someone/.netrc", "deny"},
+		{"read", settings.Permission.Read, "**/.env", "deny"},
+		{"edit", settings.Permission.Edit, "/usr/local/go/**", "deny"},
+	}
+	for _, w := range won {
+		if got := w.table[w.key]; got != w.want {
+			t.Errorf("%s[%q] = %q, want %q: the rules of a run win on a key of their own", w.name, w.key, got, w.want)
 		}
+	}
+}
+
+// TestAccessEnvOfAPermissionThatIsAWord: a permission that is only "allow" or "deny"
+// has no keys to merge into, so the rules of a run are the whole of it. A person who
+// wrote that got no table, and a run may not leave a table of rules beside a word that
+// says something else.
+func TestAccessEnvOfAPermissionThatIsAWord(t *testing.T) {
+	env, err := (opencode{}).AccessEnv(thePolicy, []string{
+		configContent + `={"permission":{"edit":"deny","read":"allow"}}`,
+	})
+	if err != nil {
+		t.Fatalf("AccessEnv returned an error: %v", err)
+	}
+
+	var settings struct {
+		Permission struct {
+			Edit map[string]string `json:"edit"`
+			Read map[string]string `json:"read"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(env[0], configContent+"=")), &settings); err != nil {
+		t.Fatalf("the settings of the run are not JSON: %v", err)
+	}
+	if got := settings.Permission.Edit["/Users/someone/.ssh"]; got != "deny" {
+		t.Errorf("the rules of writing = %+v, want the rules of the run in them", settings.Permission.Edit)
+	}
+	if got := settings.Permission.Read["**/.env"]; got != "deny" {
+		t.Errorf("the rules of reading = %+v, want the rules of the run in them", settings.Permission.Read)
 	}
 }
 
@@ -147,7 +207,7 @@ func TestAccessEnvOfAGenericAgent(t *testing.T) {
 
 	want := []string{
 		readVar + "=/Users/someone/go/pkg/mod:/usr/local/go",
-		denyVar + "=/Users/someone/.ssh:/Users/someone/.aws:**/.env:**/.env.*",
+		denyVar + "=/Users/someone/.ssh:/Users/someone/.netrc:**/.env:**/.env.*",
 	}
 	if !slices.Equal(env, want) {
 		t.Errorf("AccessEnv = %q, want %q", env, want)

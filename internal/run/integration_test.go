@@ -264,6 +264,12 @@ func TestRunKeepsTheScratchOfTheExecutorOutOfTheProject(t *testing.T) {
 // was started with. The folders the project named in [access] are opened to it for
 // reading and closed for writing, the places of secrets are closed, and the journal of
 // the run says what it was started with (docs/DESIGN.md §7d).
+//
+// The home of the person is reached through a link, as it is on macOS where `/var` and
+// `/tmp` lead into `/private`: the rules of a run name a place in both the spelling
+// the project wrote and the one the machine holds, because an agent asks about a path
+// in the spelling it wrote. The link is made here, so that the case is the same
+// everywhere and does not wait for a runner to have links of its own.
 func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git is not installed: %v", err)
@@ -276,11 +282,19 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 		"printf '%s' \"$OPENCODE_CONFIG_CONTENT\" > rights\n"+
 			"printf '%s' '"+theEvents+"'\n")
 	host := &host{task: taskOf(43)}
-	// The home of the person is a folder of the test, and so is the cache of the
-	// modules in it: the paths of the policy are the ones of this machine and no
-	// secret of the person who runs the tests is in any of them.
-	userHome := t.TempDir()
-	modules := filepath.Join(userHome, "go", "pkg", "mod")
+	// The folder of the home is taken as this machine holds it, or the two spellings
+	// the test is about would be three: the one of the test runner, the one of the link
+	// and the one the link leads to.
+	held := onThisMachine(t, t.TempDir())
+	userHome := filepath.Join(held, "link")
+	if err := os.Symlink(held, userHome); err != nil {
+		t.Fatalf("make the link of the home: %v", err)
+	}
+	// The cache of the modules is named through the link, the way the tool of the
+	// project would name it, and both the paths of the test and the ones this machine
+	// holds are the ones no secret of the person who runs the tests is in.
+	through := filepath.Join(userHome, "go", "pkg", "mod")
+	modules := filepath.Join(held, "go", "pkg", "mod")
 	if err := os.MkdirAll(modules, 0o700); err != nil {
 		t.Fatalf("make %s: %v", modules, err)
 	}
@@ -288,7 +302,7 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
 	// The project says how to find its dependencies, because the paths are different
 	// on every machine: here a command that prints the folder of the test.
-	cfg.Access.ReadFrom = [][]string{{"sh", "-c", "printf '%s\\n' '" + modules + "'"}}
+	cfg.Access.ReadFrom = [][]string{{"sh", "-c", "printf '%s\\n' '" + through + "'"}}
 	env := System(t.TempDir())
 	env.UserHome, env.Environ = userHome, nil
 
@@ -297,13 +311,24 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 		t.Fatalf("Run returned an error: %v", err)
 	}
 
-	// What the executor was given, as a program of a real run would find it.
+	// What the executor was given, as a program of a real run would find it: the folder
+	// of the dependencies in both of the spellings of it, the same folder closed for
+	// writing, a place of secrets as the place itself and as everything under it in both
+	// spellings, a secret that is a file and is not there, and the `.env` of the worktree
+	// itself closed to reading as well.
 	rights := read(t, filepath.Join(result.Worktree, "rights"))
 	for _, want := range []string{
-		`"` + modules + `/**":"allow"`,                        // the folder of the dependencies, to read
-		`"` + modules + `/**":"deny"`,                         // the same folder, to write
-		`"` + filepath.Join(userHome, ".ssh") + `/**":"deny"`, // the keys of the person
+		`"` + through + `/**":"allow"`,                        // the dependencies, through the link
+		`"` + modules + `/**":"allow"`,                        // the same folder, as this machine holds it
+		`"` + modules + `/**":"deny"`,                         // and closed for writing, in both spellings
+		`"` + through + `/**":"deny"`,                         //
+		`"` + filepath.Join(held, ".ssh") + `":"deny"`,        // the keys of the person
+		`"` + filepath.Join(held, ".ssh") + `/**":"deny"`,     // and everything in them
+		`"` + filepath.Join(userHome, ".ssh") + `/**":"deny"`, // through the link as well
+		`"` + filepath.Join(held, ".netrc") + `":"deny"`,      // a secret that is a file,
+		`"` + filepath.Join(held, ".netrc") + `/**":"deny"`,   // and there may be none of it
 		`"**/.env":"deny"`,                                    // the environment of the project
+		`"read":{"**/.env":"deny"`,                            // closed to the tool that reads
 	} {
 		if !strings.Contains(rights, want) {
 			t.Errorf("the rights of the executor are %s,\nwant %q in them", rights, want)
@@ -312,13 +337,25 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 	// The journal of the run holds the policy it was started with, in its first line,
 	// so that a person reading it afterwards sees what the run was given.
 	journal := read(t, result.Journal)
-	if !strings.HasPrefix(journal, "crewflow: the executor may read outside the worktree: "+modules) {
+	if !strings.HasPrefix(journal, "crewflow: the executor may read outside the worktree: "+through+", "+modules) {
 		t.Errorf("the journal starts with %q, want the rights of the run in it", firstLineOf(journal))
 	}
 	// A run that named what it may read and got it has nothing to say on the way out.
 	if said := read(t, result.ErrorJournal); said != "" {
 		t.Errorf("the way out of the run holds %q, want nothing said", said)
 	}
+}
+
+// onThisMachine is the path as the machine of a test holds it: a folder of a temporary
+// folder of a test may be under a link, and the rights of a run name a place in both
+// the spelling it was written in and the one every link above it makes.
+func onThisMachine(t *testing.T, path string) string {
+	t.Helper()
+	followed, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("follow %s: %v", path, err)
+	}
+	return followed
 }
 
 // firstLineOf is the first line of a text, for a test that is about where a file

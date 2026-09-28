@@ -27,16 +27,34 @@ const (
 	denyVar = "CREWFLOW_DENY"
 )
 
+// The three permissions of OpenCode that the rights of a run are written into, by the
+// names of the agent itself.
+const (
+	// outside is a path outside the worktree, and the only permission that can open
+	// one: everything under it needs an answer of its own (docs/DESIGN.md §7a).
+	outside = "external_directory"
+	// reading is the tool that reads a file, wherever it is. The places of secrets
+	// are closed to it as well, because the `.env` of the worktree itself is inside
+	// it and no rule about paths outside the worktree reaches there.
+	reading = "read"
+	// writing is the tool that changes a file. Every folder a run opened is closed to
+	// it, and so is every place of secrets: a run writes in its worktree and nowhere
+	// else.
+	writing = "edit"
+)
+
 // AccessEnv is the reading policy of a run as OpenCode reads it: a part of its
-// settings that opens the folders the project named outside the worktree, closes the
-// places of secrets, and — for every folder that is opened — closes the same folder
-// for writing, which a run never allows (docs/DESIGN.md §7d).
+// settings that opens the folders the project named outside the worktree and closes
+// the places of secrets to reading, to writing and to going outside the worktree
+// (docs/DESIGN.md §7d).
 //
-// What the environment already held is read first and the rules of the run are written
-// over it: what a run may read is what the policy of the run says, whatever else was
-// configured. Settings that are not a permission are left as they are. A value that is
-// not JSON is an error before the executor is started, because guessing the rights of
-// a run out of a value nobody can read is not a decision crewflow may make.
+// The three tables are written key by key over the ones the environment already held:
+// what a run may read is what the policy of the run says, and a rule of a person for
+// another path or another tool is not crewflow's to throw away. A value that is not a
+// table of patterns — a permission that is only "allow" or "deny" — has no keys to
+// keep and is replaced. A value that is not JSON is an error before the executor is
+// started, because guessing the rights of a run out of a value nobody can read is not
+// a decision crewflow may make.
 func (opencode) AccessEnv(policy access.Policy, environ []string) ([]string, error) {
 	settings := map[string]any{}
 	if given := valueOf(environ, configContent); given != "" {
@@ -48,25 +66,30 @@ func (opencode) AccessEnv(policy access.Policy, environ []string) ([]string, err
 			settings = map[string]any{}
 		}
 	}
-	external, edit := map[string]string{}, map[string]string{}
+
+	external, read, edit := map[string]string{}, map[string]string{}, map[string]string{}
 	for _, path := range policy.Read {
-		external[patternOf(path)], edit[patternOf(path)] = "allow", "deny"
+		external[under(path)] = "allow"
+		edit[under(path)] = "deny"
 	}
 	// The places that are closed are written last, so that a place that is in both
 	// lists is closed: the secrets of the machine are stronger than what a project
 	// asked for, and a project cannot open them.
 	for _, path := range policy.Deny {
-		external[patternOf(path)], edit[patternOf(path)] = "deny", "deny"
+		for _, pattern := range patternsOf(path) {
+			external[pattern], read[pattern], edit[pattern] = "deny", "deny", "deny"
+		}
 	}
-	// Only the two permissions a run knows are written: a rule of a person for another
-	// tool is not crewflow's to throw away, and a run that has no opinion about a tool
-	// is not one that has a different opinion.
+
 	permission, isTable := settings["permission"].(map[string]any)
 	if !isTable {
 		permission = map[string]any{}
 	}
-	permission["external_directory"], permission["edit"] = external, edit
+	permission[outside] = rulesOf(permission[outside], external)
+	permission[reading] = rulesOf(permission[reading], read)
+	permission[writing] = rulesOf(permission[writing], edit)
 	settings["permission"] = permission
+
 	content, err := json.Marshal(settings)
 	if err != nil {
 		return nil, fmt.Errorf("the rights of the run: %w", err)
@@ -87,14 +110,42 @@ func (generic) AccessEnv(policy access.Policy, _ []string) ([]string, error) {
 	}, nil
 }
 
-// patternOf is the pattern of one place: everything under a folder is named with
-// "/**", and a pattern crewflow was given as a pattern — `**/.env` — is left as it
-// was written, because it is a pattern and not a folder.
-func patternOf(path string) string {
-	if strings.Contains(path, "**") {
-		return path
+// rulesOf is the rules of one permission of a run written into the rules that were
+// there: key by key, where a rule of a run for a pattern wins and a rule of a person
+// for any other pattern stays. The rules of a person are kept as they are, of whatever
+// shape they are: only the keys crewflow writes are its own.
+func rulesOf(given any, rules map[string]string) any {
+	table, isTable := given.(map[string]any)
+	if !isTable {
+		return rules
 	}
+	merged := make(map[string]any, len(table)+len(rules))
+	for pattern, answer := range table {
+		merged[pattern] = answer
+	}
+	for pattern, answer := range rules {
+		merged[pattern] = answer
+	}
+	return merged
+}
+
+// under is the pattern of everything in a folder: a folder of a run is opened for what
+// is in it, and not for itself.
+func under(path string) string {
 	return strings.TrimSuffix(path, "/") + "/**"
+}
+
+// patternsOf is a place in the patterns that cover it: the place itself and everything
+// under it. A secret is a file as often as it is a folder — `~/.netrc`,
+// `~/.docker/config.json` — and a pattern of everything under a place does not match
+// the place. A pattern crewflow was given as a pattern is left as it was written,
+// because a pattern is not a folder.
+func patternsOf(path string) []string {
+	if strings.Contains(path, "**") {
+		return []string{path}
+	}
+	place := strings.TrimSuffix(path, "/")
+	return []string{place, place + "/**"}
 }
 
 // valueOf is what the environment says under the name, or an empty string when it
