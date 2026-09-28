@@ -437,7 +437,7 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 		{[]string{"task", "run", "43", "-config", project, "-continue", "and a test of the timeout"},
 			"the report of the second run", "executor: owner"},
 		{[]string{"task", "watch", "43", "-config", project}, "the watch", "executor: owner"},
-		{[]string{"task", "list", "-config", project}, "the list", "EXECUTOR"},
+		{[]string{"task", "list", "-config", project}, "the list", "AS"},
 	}
 	for _, step := range steps {
 		stdout.Reset()
@@ -449,8 +449,14 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 			t.Errorf("%s wrote %q, want it to mention %q", step.what, stdout.String(), step.column)
 		}
 	}
-	if got := listColumn(t, stdout.String(), "EXECUTOR"); got != "owner" {
+	if got := listColumn(t, stdout.String(), "AS"); got != "owner" {
 		t.Errorf("the list of the runs has the mode %q under the column of it, want \"owner\"", got)
+	}
+	// The agent that ran the task is a different thing from the account it went under,
+	// and a list says both: a person has to know which agent wrote a run before they
+	// know whose run it was (docs/DESIGN.md §7i).
+	if got := listColumn(t, stdout.String(), "EXECUTOR"); got != "opencode" {
+		t.Errorf("the list of the runs has the agent %q under the column of it, want \"opencode\"", got)
 	}
 }
 
@@ -459,20 +465,23 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 var columnsOfAList = regexp.MustCompile(`\s{2,}`)
 
 // listColumn is the cell of the list under the column with that name, for a test that
-// is about the column of the mode of the run and not about the whole table.
+// is about the column of the mode of the run and not about the whole table. The
+// header of a list is the line with the project on it, and the table is the one under
+// it.
 func listColumn(t *testing.T, list, column string) string {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(list), "\n")
-	if len(lines) < 2 {
-		t.Fatalf("the list is %q, want a header and a line of a run", list)
+	if len(lines) < 3 {
+		t.Fatalf("the list is %q, want a header, a line of names and a line of a run", list)
 	}
-	for i, name := range columnsOfAList.Split(strings.TrimSpace(lines[0]), -1) {
+	names, runs := lines[1], lines[2]
+	for i, name := range columnsOfAList.Split(strings.TrimSpace(names), -1) {
 		if name != column {
 			continue
 		}
-		cells := columnsOfAList.Split(strings.TrimSpace(lines[1]), -1)
+		cells := columnsOfAList.Split(strings.TrimSpace(runs), -1)
 		if i >= len(cells) {
-			t.Fatalf("the line %q has no cell under the column %q", lines[1], column)
+			t.Fatalf("the line %q has no cell under the column %q", runs, column)
 		}
 		return cells[i]
 	}
@@ -542,8 +551,9 @@ func TestRunTaskWatchOfATaskThatWasNeverRun(t *testing.T) {
 }
 
 // TestRunTaskListShowsTheRunsOfTheProject: one command is what a person asks to see
-// what crewflow has been running on this project, and the answer is a line per task
-// with the outcome of its last try and the change request it opened.
+// what crewflow has been running on this project, and the answer says which project it
+// is, one line per task with the outcome of its last try, who ran it and the change
+// request it opened.
 func TestRunTaskListShowsTheRunsOfTheProject(t *testing.T) {
 	host := &host{opened: true, task: taskOf(43)}
 	host.use(t)
@@ -561,12 +571,14 @@ func TestRunTaskListShowsTheRunsOfTheProject(t *testing.T) {
 		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	for _, want := range []string{
-		"43", taskOf(43).Title, "pr-opened",
-		"https://github.com/naghuale/crewflow/pull/44",
+		"naghuale/crewflow · 1 task", "43", taskOf(43).Title, "pr-opened", "#44", "43-1", "opencode",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
 		}
+	}
+	if strings.Contains(stdout.String(), "https://github.com/naghuale/crewflow/pull/44") {
+		t.Errorf("crewflow task list wrote %q, want the number of the change request and not its link", stdout.String())
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("crewflow task list wrote %q to stderr, want nothing", stderr.String())
@@ -574,7 +586,8 @@ func TestRunTaskListShowsTheRunsOfTheProject(t *testing.T) {
 }
 
 // TestRunTaskListJSON is the same list for the orchestrator: an array of the tasks that
-// were run, with the length of the last try in seconds.
+// were run, with the project, the agent, the run and the change request of each of them
+// and the length of the last try in seconds.
 func TestRunTaskListJSON(t *testing.T) {
 	host := &host{opened: true, task: taskOf(43)}
 	host.use(t)
@@ -597,7 +610,13 @@ func TestRunTaskListJSON(t *testing.T) {
 		Attempts        int     `json:"attempts"`
 		Outcome         string  `json:"outcome"`
 		DurationSeconds float64 `json:"duration_seconds"`
-		ChangeURL       string  `json:"change_url"`
+		Repo            string  `json:"repo"`
+		Executor        string  `json:"executor"`
+		Run             string  `json:"run"`
+		Change          *struct {
+			Number int    `json:"number"`
+			URL    string `json:"url"`
+		} `json:"change"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
 		t.Fatalf("crewflow task list -json wrote %q, which is not a list: %v", stdout.String(), err)
@@ -612,14 +631,19 @@ func TestRunTaskListJSON(t *testing.T) {
 	if entry.Attempts != 1 || entry.DurationSeconds < 0 {
 		t.Errorf("the entry = %+v, want one try and a length of it", entry)
 	}
-	if entry.ChangeURL != "https://github.com/naghuale/crewflow/pull/44" {
-		t.Errorf("the change request of the entry = %q, want the one the run opened", entry.ChangeURL)
+	if entry.Repo != "naghuale/crewflow" || entry.Executor != "opencode" || entry.Run != "43-1" {
+		t.Errorf("the entry = %+v, want the project, the agent and the run of the task", entry)
+	}
+	if entry.Change == nil || entry.Change.Number != 44 ||
+		entry.Change.URL != "https://github.com/naghuale/crewflow/pull/44" {
+		t.Errorf("the change request of the entry = %+v, want the one the run opened", entry.Change)
 	}
 }
 
 // TestRunTaskListOfAProjectThatWasNeverRun: a project where crewflow has run nothing
 // has no state at all, and a person who asks is told that instead of being shown an
-// error.
+// error — under the name of the project, because a list of nothing is a list of a
+// project.
 func TestRunTaskListOfAProjectThatWasNeverRun(t *testing.T) {
 	host := &host{task: taskOf(43)}
 	host.use(t)
@@ -631,11 +655,209 @@ func TestRunTaskListOfAProjectThatWasNeverRun(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
-	if want := "no runs yet\n"; stdout.String() != want {
+	if want := "naghuale/crewflow · 0 tasks\nno runs yet\n"; stdout.String() != want {
 		t.Errorf("crewflow task list wrote %q, want %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("crewflow task list wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
+// TestRunTaskListSaysWhatElseRunsOnTheMachine: the owner of a machine runs one project
+// at a time and gets no news of the other, and the runs of the other projects are what
+// a person asks `task list` about most often.
+func TestRunTaskListSaysWhatElseRunsOnTheMachine(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	_, other := host.otherProject(t)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of this project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	host.task = taskOf(50)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "run", "50", "-config", other}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of the other project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	if code := run([]string{"task", "list", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+
+	for _, want := range []string{
+		"naghuale/crewflow · 1 task",
+		"also on this machine: naghuale/telecli — 1 pr-opened",
+		"show everything: crewflow task list -all",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	// The list itself is of the project of the folder, and what the other project is
+	// doing is said under the table and not in it.
+	if table, _, _ := strings.Cut(stdout.String(), "\n\n"); strings.Contains(table, "telecli") {
+		t.Errorf("crewflow task list wrote %q, want the runs of the other project under the table and not in it", table)
+	}
+}
+
+// TestRunTaskListOfEveryProjectOnTheMachine: -all is what a person asks from anywhere
+// and it is every run of every project, with the project as the first column of it.
+func TestRunTaskListOfEveryProjectOnTheMachine(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	_, other := host.otherProject(t)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of this project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	host.task = taskOf(50)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "run", "50", "-config", other}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of the other project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	// The folder crewflow was called in is of no project at all: -all is asked from
+	// any folder, and the state of every project is in one place.
+	t.Chdir(t.TempDir())
+
+	code := run([]string{"task", "list", "-all"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list -all = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("crewflow task list -all wrote\n%s\nwant a line of names and a line of a run of each project",
+			stdout.String())
+	}
+	if !strings.HasPrefix(lines[0], "REPO") {
+		t.Errorf("the first column of a list of the whole machine is %q, want the project first", lines[0])
+	}
+	for _, want := range []string{"naghuale/crewflow", "naghuale/telecli", "43-1", "50-1"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task list -all wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	if unwanted := "also on this machine"; strings.Contains(stdout.String(), unwanted) {
+		t.Errorf("crewflow task list -all wrote %q, want nothing about %q: all of it is there", stdout.String(), unwanted)
+	}
+}
+
+// TestRunTaskListAllWithRepoIsAWrongCall: -all is of every project on the machine and
+// -repo is of the one of a checkout, and a call that names both says two things at
+// once that are not the same thing.
+func TestRunTaskListAllWithRepoIsAWrongCall(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	repo, _ := host.otherProject(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "list", "-all", "-repo", repo, "-config", project}, &stdout, &stderr)
+
+	if code != exitUsage {
+		t.Fatalf("crewflow task list -all -repo = %d, want %d", code, exitUsage)
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("crewflow task list -all -repo wrote %q, want no list at all", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "-all") || !strings.Contains(stderr.String(), "-repo") {
+		t.Errorf("crewflow task list -all -repo wrote %q to stderr, want it to say which of the two is meant", stderr.String())
+	}
+}
+
+// TestRunTaskListStartsNoProgram: a list is a question about the state crewflow kept,
+// and it asks it of the machine and of nobody else — no tracker, no host, no network,
+// no program of a person (docs/DESIGN.md §6, §7). A machine that fails on any call is
+// what proves it.
+func TestRunTaskListStartsNoProgram(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	// Everything that could start a program of a person now fails when it is touched.
+	// The machine of the question whether a run is still going is the one thing a list
+	// does ask, and it was given a machine of its own by the host of the test.
+	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		t.Error("crewflow task list asked for the roles of a project, want the state and nothing else")
+		return forge.Set{}, nil
+	}
+	taskRunEnv = func(string) taskrun.Env {
+		t.Error("crewflow task list asked for the machine a task is run on, want the state and nothing else")
+		return taskrun.Env{}
+	}
+	t.Chdir(t.TempDir())
+
+	for _, args := range [][]string{
+		{"task", "list", "-config", project},
+		{"task", "list", "-config", project, "-json"},
+		{"task", "list", "-all"},
+		{"task", "list", "-all", "-json"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+
+		if code := run(args, &stdout, &stderr); code != exitOK {
+			t.Errorf("run(%v) = %d, want %d (stderr: %q)", args, code, exitOK, stderr.String())
+			continue
+		}
+		if !strings.Contains(stdout.String(), "pr-opened") {
+			t.Errorf("run(%v) wrote %q, want the list of the runs of the machine", args, stdout.String())
+		}
+	}
+	if len(host.started) != 1 {
+		t.Errorf("the lists started %d programs, want the one run of the test and nothing else", len(host.started))
+	}
+}
+
+// TestRunTaskListWithoutATerminal: a list goes into a file and through a pipe as often
+// as it goes onto a screen, and a table of a file that draws over the terminal of
+// whoever reads it is not a table anybody reads.
+func TestRunTaskListWithoutATerminal(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	host.task = taskOf(44)
+	host.task.Title = "a title that paints\x1b[2Jover the screen\r"
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "run", "44", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the second run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	// A pipe is not a terminal: a list written into one is a file, and this is the
+	// same table with no colour and no command to the terminal in it.
+	if code := run([]string{"task", "list", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+
+	list := stdout.String()
+	for _, letter := range list {
+		if letter < ' ' && letter != '\n' {
+			t.Fatalf("crewflow task list wrote the control character %q, want a table of letters:\n%s", letter, list)
+		}
+	}
+	if !strings.Contains(list, "a title that paints") {
+		t.Errorf("crewflow task list wrote %q, want the title of the task in it", list)
 	}
 }
 

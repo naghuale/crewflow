@@ -227,26 +227,33 @@ func runTaskWatch(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
-// runTaskList is `crewflow task list`: every task of the project that was run, the ones
-// that are going right now on top and the rest from the last to the first. It reads
-// the state crewflow kept and nothing else — no tracker, no host, no network — and
-// creates nothing: a list of runs is a question, and a question is not a run
+// runTaskList is `crewflow task list`: the tasks of the project that were run, the ones
+// that want somebody today on top and the rest from the last to the first, and under
+// the table what the other projects of the machine are doing. It reads the state
+// crewflow kept and nothing else — no tracker, no host, no network — and creates
+// nothing: a list of runs is a question, and a question is not a run
 // (docs/DESIGN.md §6, §7).
 //
-// The project is the one the file of the project names, and -repo is the checkout
-// that file is looked for in — the same flag as in `task run`, and the same way it is
-// used: a person points it at the folder they work in.
+// The project is the one the file of the project names, and -repo is the checkout that
+// file is looked for in — the same flag as in `task run`, and the same way it is used:
+// a person points it at the folder they work in. -all is another question: every run
+// of every project of the machine, from any folder, with the project in a column of it.
 func runTaskList(args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("list", stderr)
 	configPath := flags.String("config", "", "path to crewflow.toml, the one in -repo when not named")
 	repo := flags.String("repo", "", "the checkout whose runs to show, the folder crewflow was called in when empty")
 	asJSON := flags.Bool("json", false, "print the list as JSON, for the orchestrator")
-	all := flags.Bool("all", false, "show every run of the project, not only the last ones")
+	all := flags.Bool("all", false, "show the runs of every project on this machine, from any folder")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
 	if flags.NArg() > 0 {
 		fmt.Fprintf(stderr, "crewflow task list: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+	if *all && *repo != "" {
+		fmt.Fprintf(stderr, "crewflow task list: -all is of every project on this machine, -repo is of one of them\n\n")
 		usage(stderr)
 		return exitUsage
 	}
@@ -256,22 +263,9 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	cfg, err := config.Load(projectFile(*configPath, *repo))
-	if err != nil {
-		return failed(stderr, err)
-	}
-	home, err := cfg.ExpandPath(crewflowHome)
-	if err != nil {
-		return failed(stderr, err)
-	}
-	timeout, err := time.ParseDuration(cfg.Executor.Timeout)
-	if err != nil {
-		return failed(stderr, fmt.Errorf("executor.timeout: %w", err))
-	}
-	runs, err := taskrun.List(home, cfg.RepoName(), *all, taskrun.ListEnv{
+	runs, err := listOfRuns(*configPath, *repo, *all, taskrun.ListEnv{
 		Now:     taskClock,
 		Running: taskMachine.Alive,
-		Timeout: timeout,
 	})
 	if err != nil {
 		return failed(stderr, err)
@@ -297,6 +291,56 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		return failed(stderr, err)
 	}
 	return exitOK
+}
+
+// listOfRuns is the list the call asked for: the runs of the project of the folder, or
+// the runs of every project on the machine.
+//
+// -all is asked from any folder, and it reads no file of a project: the state of the
+// runs of every project is under one root whatever project the person stands in.
+func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun.Runs, error) {
+	home, err := whereCrewflowKeeps()
+	if err != nil {
+		return taskrun.Runs{}, err
+	}
+	if !all {
+		cfg, err := config.Load(projectFile(configPath, repo))
+		if err != nil {
+			return taskrun.Runs{}, err
+		}
+		if env.Timeout, err = runLimit(cfg); err != nil {
+			return taskrun.Runs{}, err
+		}
+		return taskrun.List(home, cfg.RepoName(), env)
+	}
+	// The file of the project of the folder, where there is one, is read for one thing
+	// only — how long a run of it may go on — and a folder of no project says nothing
+	// about that. A list of the whole machine is therefore given no limit at all, and
+	// says a run it cannot put an end to for what it is: a run that may be going
+	// (docs/DESIGN.md §7).
+	if cfg, err := config.Load(projectFile(configPath, "")); err == nil {
+		if env.Timeout, err = runLimit(cfg); err != nil {
+			return taskrun.Runs{}, err
+		}
+	}
+	return taskrun.EveryProject(home, env)
+}
+
+// runLimit is how long a run of this project may take, which is what says that a run
+// crewflow kept no process of is over.
+func runLimit(cfg config.Config) (time.Duration, error) {
+	limit, err := time.ParseDuration(cfg.Executor.Timeout)
+	if err != nil {
+		return 0, fmt.Errorf("executor.timeout: %w", err)
+	}
+	return limit, nil
+}
+
+// whereCrewflowKeeps is the root of what crewflow keeps of its own on this machine: the
+// journal of every run and the state of every task, the same for every project whatever
+// folder a command was called in.
+func whereCrewflowKeeps() (string, error) {
+	return config.Config{}.ExpandPath(crewflowHome)
 }
 
 // projectFile is the file of the project whose runs are to be shown: the one that was

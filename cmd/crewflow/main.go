@@ -84,7 +84,7 @@ Subcommands:
   task run <N>   Run one task in a worktree of its own, and say how it ended (§6)
   task check <N> Say whether a task may be run, and what it is missing when it may not
   task watch <N> Show what the executor of a task is doing, as it is doing it
-  task list      List the runs of the project, the ones that are going on top
+  task list      List the runs of the project, and of the whole machine with -all
   auth app       The GitHub App a run works as: import its key, check it (§7i)
   help           Show this message
   version        Print the version, the commit and the build time
@@ -92,7 +92,7 @@ Subcommands:
   crewflow task run <N> [-config path] [-repo path] [-continue "message"] [-json]
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
-  crewflow task list [-config path] [-repo path] [-json] [-all]
+  crewflow task list [-all] [-json] [-config path] [-repo path]
   crewflow auth app import <file.pem> [-config path]
   crewflow auth app check [-config path] [-json]
 `)

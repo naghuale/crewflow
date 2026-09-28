@@ -1,40 +1,52 @@
 [
   {
+    "repo": "naghuale/crewflow",
     "task": 44,
     "title": "идёт сейчас 🚀",
     "attempts": 1,
+    "run": "44-1",
     "outcome": "running",
     "started_at": "2026-09-28T14:00:00Z",
     "duration_seconds": 65,
+    "executor": "opencode",
     "identity": {
       "mode": "owner",
-      "description": "owner — the login gh naghuale (shared rights)"
+      "description": "owner — the account the run of a test went under"
     }
   },
   {
+    "repo": "naghuale/crewflow",
     "task": 49,
     "title": "окно закрыли",
     "attempts": 1,
+    "run": "49-1",
     "outcome": "interrupted",
     "started_at": "2026-09-28T13:00:00Z",
     "duration_seconds": null,
+    "executor": "opencode",
     "identity": {
       "mode": "owner",
-      "description": "owner — the login gh naghuale (shared rights)"
+      "description": "owner — the account the run of a test went under"
     }
   },
   {
+    "repo": "naghuale/crewflow",
     "task": 43,
     "title": "открыл изменение",
     "attempts": 1,
+    "run": "43-1",
     "outcome": "pr-opened",
     "started_at": "2026-09-28T10:00:00Z",
     "ended_at": "2026-09-28T10:42:00Z",
     "duration_seconds": 2520,
-    "change_url": "https://github.com/naghuale/crewflow/pull/44",
+    "executor": "opencode",
+    "change": {
+      "number": 44,
+      "url": "https://github.com/naghuale/crewflow/pull/44"
+    },
     "identity": {
-      "mode": "owner",
-      "description": "owner — the login gh naghuale (shared rights)"
+      "mode": "bot",
+      "description": "bot — the account the run of a test went under"
     }
   }
 ]

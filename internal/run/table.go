@@ -3,6 +3,7 @@ package run
 import (
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,46 +20,151 @@ const when = "2006-01-02 15:04"
 // word from the next in any terminal.
 const gap = "  "
 
-// Write is the list of the runs of a project for a person: the ones that are going on
-// top, the rest from the last to the first, and under the table what did not fit into
-// it. A project where nothing was run yet gets one line instead of an empty table: a
-// person who asked has to be told that there is nothing, not shown nothing.
+// titleColumns is how wide the column of the title of a task is at most. A title is a
+// line of text off the host and can be as long as anybody likes, and a table that
+// grows with every title in it is not a table anybody reads.
+const titleColumns = 40
+
+// ellipsis is what stands where the part of a title that did not fit was cut off.
+const ellipsis = "…"
+
+// escape is a sequence of characters a terminal reads as a command and not as letters:
+// the colours, the moving of the cursor and the wiping of the screen. A title of a
+// task is a line of text off the host, and one that carries a command in it is one
+// that paints over whatever the person who reads the list is looking at.
+var escape = regexp.MustCompile("\x1b(?:[@-Z\\\\-_]|\\[[0-?]*[ -/]*[@-~])")
+
+// Write is the list of the runs of a project for a person: which project it is and how
+// many tasks it has, the runs that want somebody today on top, the rest from the last
+// to the first, and under the table what the other projects of the machine are doing.
+// A list of the whole machine has the project in a column of its own and says nothing
+// under the table, because all of it is in it already. A project where nothing was run
+// yet gets one line instead of an empty table: a person who asked has to be told that
+// there is nothing, not shown nothing.
 func (r Runs) Write(w io.Writer) error {
+	if r.Repo != "" {
+		if _, err := fmt.Fprintf(w, "%s · %s\n", ownerAndRepo(r.Repo), counted(r.Total, "task")); err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+	}
 	if len(r.Entries) == 0 {
 		if _, err := fmt.Fprintln(w, "no runs yet"); err != nil {
 			return fmt.Errorf("write the list: %w", err)
 		}
-		return r.Notes(w)
-	}
-	rows := [][]string{{"#", "TASK", "ATTEMPTS", "OUTCOME", "EXECUTOR", "WHEN", "FOR", "CHANGE"}}
-	for _, entry := range r.Entries {
-		rows = append(rows, []string{
-			strconv.Itoa(entry.Task),
-			line(entry.Title),
-			strconv.Itoa(entry.Attempts),
-			string(entry.Outcome),
-			mode(entry),
-			entry.StartedAt.Local().Format(when),
-			length(entry),
-			entry.ChangeURL,
-		})
-	}
-	if err := writeRows(w, rows); err != nil {
+	} else if err := writeRows(w, r.rows()); err != nil {
 		return err
 	}
-	return r.Notes(w)
+	if err := r.Notes(w); err != nil {
+		return err
+	}
+	return r.beside(w)
 }
 
-// mode is the column of the mode of the executor: a run in the mode of the owner has
-// the rights of the login of the person and a run in the mode of the bot has rights of
-// an account of the host, and a list that does not say which was which cannot answer
-// the question a person asks of it first (docs/DESIGN.md §7i). A run of before crewflow
-// kept the mode says nothing, and a dash is said where there is nothing.
-func mode(entry Entry) string {
-	if entry.Identity.Mode == "" {
+// rows is the table of the list: a line of names and a line of a run, with the project
+// in front of them when the list is of every project of the machine and there is no one
+// project to name over the whole of it.
+func (r Runs) rows() [][]string {
+	names := []string{"#", "TASK", "EXECUTOR", "AS", "OUTCOME", "WHEN", "FOR", "RUN", "CHANGE"}
+	if r.Repo == "" {
+		names = append([]string{"REPO"}, names...)
+	}
+	rows := [][]string{names}
+	for _, entry := range r.Entries {
+		row := []string{
+			strconv.Itoa(entry.Task),
+			cut(line(entry.Title), titleColumns),
+			agent(entry),
+			as(entry),
+			string(entry.Outcome),
+			entry.StartedAt.Local().Format(when),
+			length(entry),
+			entry.Run(),
+			change(entry),
+		}
+		if r.Repo == "" {
+			row = append([]string{ownerAndRepo(entry.Repo)}, row...)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// beside is what a list of one project says about the machine it is on: the other
+// projects that have runs of it and what came of those runs, and how to see all of it
+// at once. A machine with no other project has nothing to say here, and a line about
+// nothing is worse than no line.
+func (r Runs) beside(w io.Writer) error {
+	if r.Repo == "" || len(r.Elsewhere) == 0 {
+		return nil
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return fmt.Errorf("write the list: %w", err)
+	}
+	for _, project := range r.Elsewhere {
+		_, err := fmt.Fprintf(w, "  also on this machine: %s — %s\n", ownerAndRepo(project.Repo), project.said())
+		if err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w, "  show everything: crewflow task list -all"); err != nil {
+		return fmt.Errorf("write the list: %w", err)
+	}
+	return nil
+}
+
+// said is what a project of the machine is doing, in the words of a person: "1 running,
+// 2 pr-opened", in the order the outcomes are worked out in and only the ones there
+// are. A project nothing was run in is not on the machine as far as a list of runs is
+// concerned, and a line of zeros is not what a person reads.
+func (p Project) said() string {
+	var said []string
+	for _, outcome := range kinds {
+		if n := p.Outcomes[outcome]; n > 0 {
+			said = append(said, fmt.Sprintf("%d %s", n, outcome))
+		}
+	}
+	return strings.Join(said, ", ")
+}
+
+// agent is the column of the agent that ran the last try of a task, and a dash where
+// the state of the task names none: a state of before crewflow kept the profile of a
+// run says nothing about who ran it, and a list that invented a name would be lying.
+func agent(entry Entry) string {
+	if entry.Executor == "" {
 		return "-"
 	}
+	return entry.Executor
+}
+
+// as is the column of whose name the executor of the last try worked under: "owner" or
+// "bot", the two modes a run goes under (docs/DESIGN.md §7i). A state of before
+// crewflow kept the mode says nothing, and a run of before was the owner's — there was
+// no other mode to work in then.
+func as(entry Entry) string {
+	if entry.Identity.Mode == "" {
+		return "owner"
+	}
 	return entry.Identity.Mode
+}
+
+// change is the change request of the run as a person says it — the number of it, the
+// way the host and every review of it call it — and an em dash where there is none: a
+// link is too wide to read a table by, and the number is what a person goes and looks
+// for.
+func change(entry Entry) string {
+	if entry.Change == nil {
+		return "—"
+	}
+	return "#" + strconv.Itoa(entry.Change.Number)
+}
+
+// counted is how many of something there are, in the words of a person: "1 task" and
+// "3 tasks", because a list that says "1 tasks" is a list nobody believes.
+func counted(number int, noun string) string {
+	if number == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(number) + " " + noun + "s"
 }
 
 // Notes is what a list could not show in the table: the runs that were left out of a
@@ -114,28 +220,40 @@ func writeRows(w io.Writer, rows [][]string) error {
 // beside it takes no room of its own: a table of titles in any language is a table of
 // words, and the columns of it have to line up.
 func width(word string) int {
-	columns, joined := 0, false
+	var m measure
 	for _, letter := range word {
-		switch {
-		case letter == joiner:
-			// What follows a joiner is drawn on top of what came before it: a family
-			// of three people is one picture and not four.
-			joined = true
-			continue
-		case joined:
-			joined = false
-			continue
-		case isTone(letter):
-			// A tone is a shade of the letter before it and is not a letter of its own.
-			continue
-		case letter == keycap && columns > 0:
-			// A keycap is a sign in a box, and the box is as wide as an emoji is.
-			columns++
-			continue
-		}
-		columns += letterWidth(letter)
+		m.of(letter)
 	}
-	return columns
+	return m.columns
+}
+
+// measure is the width of a word in the columns of a terminal, taken letter by letter,
+// and the state of it that a letter is read in: what is joined to what stands beside it
+// is one picture and not two, a tone is a shade of the letter before it and not a
+// letter of its own, and a keycap is a sign in a box as wide as an emoji is.
+type measure struct {
+	columns int
+	joined  bool
+}
+
+// of is one letter more of the word and the room it takes of it.
+func (m *measure) of(letter rune) int {
+	switch {
+	case letter == joiner:
+		m.joined = true
+		return 0
+	case m.joined:
+		m.joined = false
+		return 0
+	case isTone(letter):
+		return 0
+	case letter == keycap && m.columns > 0:
+		m.columns++
+		return 1
+	}
+	room := letterWidth(letter)
+	m.columns += room
+	return room
 }
 
 // joiner is what glues the emoji of one picture together, a tone is what shades the
@@ -205,6 +323,29 @@ func isWide(letter rune) bool {
 	return false
 }
 
+// cut is a cell that is not wider than the column it stands in: what does not fit is
+// cut off and an ellipsis stands where it was, because a title that stops in the
+// middle of a word is a title nobody can read, and one that stops without saying so is
+// a title a bug has shortened.
+func cut(text string, columns int) string {
+	if columns <= 0 || width(text) <= columns {
+		return text
+	}
+	room := width(ellipsis)
+	var out strings.Builder
+	soFar := measure{}
+	for _, letter := range text {
+		next := soFar
+		next.of(letter)
+		if next.columns+room > columns {
+			break
+		}
+		soFar = next
+		out.WriteRune(letter)
+	}
+	return strings.TrimRight(out.String(), " ") + ellipsis
+}
+
 // length is how long a run took, in the words a person reads a time in, and a dash
 // where nothing kept it: a run whose process is gone was not seen to stop, and a time
 // of zero would be a run that took no time at all.
@@ -235,14 +376,15 @@ func since(took time.Duration) string {
 	}
 }
 
-// line is a cell of a table: a word of it is a word, and whatever else a title holds —
-// a newline, a tab — is put in its place, because a title that breaks the line breaks
-// every column under it.
+// line is a cell of a table that holds a title: a word of it is a word, and whatever
+// else a title holds — a newline, a tab, a command to the terminal — is put in its
+// place or taken out of it, because a title that breaks the line breaks every column
+// under it, and a title that paints over them is a title a person never reads.
 func line(text string) string {
 	return strings.Map(func(letter rune) rune {
-		if letter == '\n' || letter == '\r' || letter == '\t' {
+		if unicode.IsControl(letter) {
 			return ' '
 		}
 		return letter
-	}, text)
+	}, escape.ReplaceAllString(text, ""))
 }

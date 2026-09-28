@@ -71,12 +71,15 @@ crewflow doctor            # tools, requirements, access, the identity of the ex
 crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
 crewflow task watch 12     # follow a run live
-crewflow task list         # runs of this project, the ones going on at the top
+crewflow task list         # runs of this project, the ones that want you on top, and what else runs here
+crewflow task list -all    # every run of every project on this machine
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
-`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`.
+`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `task list` shows
+the agent (`EXECUTOR`), whose name it worked under (`AS`: `owner` or `bot`), the attempt
+(`RUN`, `57-2`) and the change request (`CHANGE`), and reads nothing but the local state.
 
 ## Executors
 

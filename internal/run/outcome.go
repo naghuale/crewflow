@@ -61,6 +61,14 @@ const (
 	OutOfScope Kind = "out-of-scope"
 )
 
+// kinds is every outcome there is, in the order crewflow works them out, which is the
+// order a list of runs counts and says them in: what says the most about a run first,
+// and the ones that mean the same thing beside each other.
+var kinds = []Kind{
+	Running, MaybeRunning, Interrupted, TimedOut, BlockedPermission, Blocked,
+	ExecutorFailed, NoChangeRequest, ChangeRequestOpened, OutOfScope,
+}
+
 // outcome is how the run came out, in the order the kinds above are written in, and
 // the change request of the branch is put into the result when there is one to put
 // it into: a run that opened a request and went outside the boundaries of the task
