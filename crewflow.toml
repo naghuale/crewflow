@@ -1,0 +1,56 @@
+# crewflow settings for crewflow itself. See docs/DESIGN.md §5.
+
+[project]
+repo = "naghuale/crewflow"
+default_branch = "main"
+language = "ru"
+
+[executor]
+command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
+timeout = "120m"
+
+[worktrees]
+root = "~/.crewflow/worktrees/{repo}"
+
+[[gates]]
+name = "format"
+run = ["sh", "-c", "test -z \"$(gofmt -l .)\""]
+
+[[gates]]
+name = "vet"
+run = ["go", "vet", "./..."]
+
+[[gates]]
+name = "test"
+run = ["go", "test", "-race", "-count=1", "./..."]
+
+[[gates]]
+name = "lint"
+run = ["golangci-lint", "run", "--timeout", "5m", "./..."]
+
+[[gates]]
+name = "tidy"
+run = ["go", "mod", "tidy", "-diff"]
+
+[ci]
+required = true
+timeout = "30m"
+
+[merge]
+by = "orchestrator"
+strategy = "ff-only"
+
+[parallel]
+max_tasks = 1
+
+[tasks]
+owner_approval = "risky"
+
+[requirements]
+tools = [
+  { name = "go", check = ["go", "version"], min = "1.27" },
+  { name = "golangci-lint", check = ["golangci-lint", "version"], min = "2.14" },
+]
+
+[isolation]
+mode = "host"
