@@ -19,7 +19,9 @@ Most agent workflows optimise autonomy. crewflow optimises coordination:
 - one approval = one commit SHA;
 - one merge = one verified fast-forward;
 - the executor and the orchestrator have different responsibilities;
-- git hosting stays the source of truth.
+- git hosting stays the source of truth;
+- paid CI is a budget planned before a run, not a free check — a private project once spent a
+  month of GitHub Actions minutes on re-runs of reworked pull requests.
 
 The goal is not to replace the orchestrator. The goal is agent collaboration that follows explicit
 rules, boundaries and responsibilities, on any project, with no loss of quality.
