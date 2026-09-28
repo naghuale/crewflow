@@ -1,26 +1,26 @@
-naghuale/crewflow · 23 tasks
-#   TASK                                      EXECUTOR  AS     OUTCOME             WHEN              FOR  RUN   CHANGE
-44  идёт сейчас 🚀                            opencode  bot    running             2026-09-28 14:00  1m   44-1  —
-49  окно закрыли, и это название не влезает…  opencode  owner  interrupted         2026-09-28 13:00  -    49-1  —
-79  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  79-1  —
-78  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  78-1  —
-77  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  77-1  —
-76  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  76-1  —
-75  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  75-1  —
-74  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  74-1  —
-73  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  73-1  —
-72  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  72-1  —
-71  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  71-1  —
-70  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  70-1  —
-69  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  69-1  —
-68  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  68-1  —
-67  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  67-1  —
-66  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  66-1  —
-65  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  65-1  —
-64  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  64-1  —
-63  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  63-1  —
-62  задача, которую запускали много раз       opencode  owner  blocked-permission  2026-09-28 10:01  35s  62-1  —
+naghuale/crewflow · main · 23 tasks
+ #  TASK                                                          EXECUTOR          OUTCOME             AGE  RUN  CHANGE
+44  идёт сейчас 🚀                                                opencode · bot    running              1m  —    —
+49  окно закрыли, и это название не влезает в колонку             opencode · owner  interrupted          1h  —    —
+79  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+78  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+77  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+76  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+75  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+74  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+73  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+72  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+71  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+70  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+69  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+68  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+67  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+66  задача, которую запускали много раз                           opencode · owner  blocked-permission   3h  —    —
+65  задача, которую запускали много раз                           opencode · owner  blocked-permission   4h  —    —
+64  задача, которую запускали много раз                           opencode · owner  blocked-permission   4h  —    —
+63  задача, которую запускали много раз                           opencode · owner  blocked-permission   4h  —    —
+62  задача, которую запускали много раз                           opencode · owner  blocked-permission   4h  —    —
 and 3 more, show them all with -all
 
-  also on this machine: naghuale/tele — 1 running, 2 pr-opened
-  show everything: crewflow task list -all
+  also: tele (1 running, 2 pr-opened)
+  crewflow task list -all for everything

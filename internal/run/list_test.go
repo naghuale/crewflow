@@ -405,11 +405,11 @@ func TestListSaysWhatTheOtherProjectsOfTheMachineAreDoing(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runs.Write(&stdout); err != nil {
+	if err := runs.Write(&stdout, screenAt(monday)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
-	want := "\n  also on this machine: naghuale/tele — 1 running, 2 pr-opened\n" +
-		"  show everything: crewflow task list -all\n"
+	want := "\n  also: tele (1 running, 2 pr-opened)\n" +
+		"  crewflow task list -all for everything\n"
 	if !strings.HasSuffix(stdout.String(), want) {
 		t.Errorf("the list is\n%swant it to end with\n%s", stdout.String(), want)
 	}
@@ -429,10 +429,10 @@ func TestListOfAMachineWithOneProjectOnly(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := runs.Write(&stdout); err != nil {
+	if err := runs.Write(&stdout, screenAt(monday)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
-	for _, unwanted := range []string{"also on this machine", "show everything"} {
+	for _, unwanted := range []string{"also:", "-all"} {
 		if strings.Contains(stdout.String(), unwanted) {
 			t.Errorf("the list wrote %q, want it to say nothing about %q", stdout.String(), unwanted)
 		}
@@ -452,7 +452,7 @@ func TestListOfAProjectWhereNothingWasRunYet(t *testing.T) {
 		t.Errorf("the list = %+v, want nothing at all", runs)
 	}
 	var stdout bytes.Buffer
-	if err := runs.Write(&stdout); err != nil {
+	if err := runs.Write(&stdout, screenAt(monday)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
 	if want := "naghuale/crewflow · 0 tasks\nno runs yet\n"; stdout.String() != want {
@@ -500,7 +500,7 @@ func TestListWithAStateItCannotRead(t *testing.T) {
 		t.Errorf("the files the list could not read = %v, want %v", runs.Unreadable, want)
 	}
 	var stdout bytes.Buffer
-	if err := runs.Write(&stdout); err != nil {
+	if err := runs.Write(&stdout, screenAt(monday)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
 	for _, want := range []string{"the run of a task", "not read: " + broken} {
@@ -569,21 +569,23 @@ func TestListAsJSON(t *testing.T) {
 	}
 }
 
-// TestListForAPerson is what a person reads: which project it is and how many tasks
-// it has, the runs that want somebody today on top, the rest from the last to the
-// first, the columns lined up however wide the letters of the titles are, and under
-// the table what the other projects of the machine are doing.
+// TestListForAPerson is what a person reads: which project it is, the branch its tasks
+// are counted from and how many it has, the runs that want somebody today on top, the
+// rest from the last to the first, the columns lined up however wide the letters of
+// the titles are, and under the table what the other projects of the machine are doing.
 func TestListForAPerson(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-crewflow"
 	machineOfTest(t, home)
 	utc(t)
+	at := monday.Add(4*time.Hour + 65*time.Second)
 
-	runs, err := List(home, repo, listOf(monday.Add(4*time.Hour+65*time.Second), 100))
+	runs, err := List(home, repo, listOf(at, 100))
 	if err != nil {
 		t.Fatalf("List returned an error: %v", err)
 	}
+	runs.Branch = "main"
 	var stdout bytes.Buffer
-	if err := runs.Write(&stdout); err != nil {
+	if err := runs.Write(&stdout, screenAt(at)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
 
@@ -602,13 +604,14 @@ func TestEveryProjectForAPerson(t *testing.T) {
 	home := t.TempDir()
 	machineOfTest(t, home)
 	utc(t)
+	at := monday.Add(4*time.Hour + 65*time.Second)
 
-	all, err := EveryProject(home, listOf(monday.Add(4*time.Hour+65*time.Second), 100))
+	all, err := EveryProject(home, listOf(at, 100))
 	if err != nil {
 		t.Fatalf("EveryProject returned an error: %v", err)
 	}
 	var stdout bytes.Buffer
-	if err := all.Write(&stdout); err != nil {
+	if err := all.Write(&stdout, screenAt(at)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
 
@@ -617,6 +620,99 @@ func TestEveryProjectForAPerson(t *testing.T) {
 	}
 	if all.Left != 0 {
 		t.Errorf("a list of the whole machine left %d runs out, want none", all.Left)
+	}
+}
+
+// TestTheListOnTheScreenOfATerminal is the same list as a person looks at it: the same
+// words in the same places, with the colours of a terminal around them and an empty
+// line between the runs that want a person and the rest. The colour of a list takes no
+// room of the screen: the words of it are the words of the list in a file, so a golden
+// of the one is the golden of the other with the colours taken out of it.
+func TestTheListOnTheScreenOfATerminal(t *testing.T) {
+	cases := []struct {
+		name   string
+		every  bool
+		golden string
+	}{
+		{name: "one project", golden: "list-terminal.txt"},
+		{name: "every project", every: true, golden: "list-all-terminal.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			machineOfTest(t, home)
+			utc(t)
+			at := monday.Add(4*time.Hour + 65*time.Second)
+
+			runs, err := listOfTest(t, home, tc.every, at)
+			if err != nil {
+				t.Fatalf("the list of the machine returned an error: %v", err)
+			}
+			runs.Branch = "main"
+			screen := Screen{At: at, Columns: 120, Terminal: true, Painted: true}
+			var terminal bytes.Buffer
+			if err := runs.Write(&terminal, screen); err != nil {
+				t.Fatalf("Write returned an error: %v", err)
+			}
+			if want := read(t, filepath.Join("testdata", tc.golden)); terminal.String() != want {
+				t.Errorf("the list on a terminal is\n%q\nwant\n%q", terminal.String(), want)
+			}
+
+			// The words of a list in a terminal are the words of the same list on a
+			// screen that reads no colour, in the same places: a colour takes no room
+			// of a terminal, or a list in colour would be a different table from the
+			// same list in letters. The empty line between the groups stays, for that
+			// is not a colour.
+			plain := Screen{At: at, Columns: 120, Terminal: true}
+			var letters bytes.Buffer
+			if err := runs.Write(&letters, plain); err != nil {
+				t.Fatalf("Write returned an error: %v", err)
+			}
+			if want := escape.ReplaceAllString(terminal.String(), ""); want != letters.String() {
+				t.Errorf("a list in colour is\n%q\nwant the same words as the list in letters\n%q", want, letters.String())
+			}
+		})
+	}
+}
+
+// listOfTest is the list of the project of the tests, or the list of every project of
+// the machine, and the error of asking for it.
+func listOfTest(t *testing.T, home string, every bool, at time.Time) (Runs, error) {
+	t.Helper()
+	if every {
+		return EveryProject(home, listOf(at, 100))
+	}
+	return List(home, "naghuale-crewflow", listOf(at, 100))
+}
+
+// TestAListOfNoColourIsTheSameListOfWords: a person who asked for no colour with
+// NO_COLOR, and a terminal that says it takes none with TERM=dumb, are answered in the
+// plain letters of the list — the colours are taken out of it, and nothing else is
+// changed. The empty line between the groups stays, for that is not a colour.
+func TestAListOfNoColourIsTheSameListOfWords(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	machineOfTest(t, home)
+	utc(t)
+	at := monday.Add(4*time.Hour + 65*time.Second)
+
+	runs, err := List(home, repo, listOf(at, 100))
+	if err != nil {
+		t.Fatalf("List returned an error: %v", err)
+	}
+	runs.Branch = "main"
+	for _, screen := range []Screen{
+		{At: at},
+		{At: at, Columns: 120},
+		{At: at, Columns: 120, Terminal: true},
+		{At: at, Columns: 120, Painted: true},
+	} {
+		var out bytes.Buffer
+		if err := runs.Write(&out, screen); err != nil {
+			t.Fatalf("Write returned an error: %v", err)
+		}
+		if strings.Contains(out.String(), "\x1b") {
+			t.Errorf("the list on a screen of %+v is\n%q\nwant no escape in it at all", screen, out.String())
+		}
 	}
 }
 
@@ -633,7 +729,7 @@ func TestListWithoutATerminal(t *testing.T) {
 		t.Fatalf("List returned an error: %v", err)
 	}
 	var file bytes.Buffer
-	if err := runs.Write(&file); err != nil {
+	if err := runs.Write(&file, screenAt(monday)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
 
@@ -766,6 +862,13 @@ func utc(t *testing.T) {
 	local := time.Local
 	time.Local = time.UTC
 	t.Cleanup(func() { time.Local = local })
+}
+
+// screenAt is the screen a list of runs is written for where no terminal of a person
+// is: a file, or a pipe, or the buffer of a test. It is a screen of no width, and a
+// list is written on it as wide as a person reads.
+func screenAt(at time.Time) Screen {
+	return Screen{At: at}
 }
 
 // tasksOf is the numbers of the tasks of a list, in the order of it.

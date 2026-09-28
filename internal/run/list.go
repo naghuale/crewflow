@@ -57,6 +57,11 @@ type Runs struct {
 	// machine.
 	Repo  string
 	Total int
+	// Branch is the branch the tasks of the project are counted from, which the
+	// header of a list says: a list of tasks is a list of a project at a moment of
+	// it, and a person who reads one wants to know which branch the work of it is on
+	// its way to. It is of no one project in a list of the whole machine.
+	Branch string
 	// Elsewhere is what the other projects of the machine are doing, said under the
 	// table of a list of one project: a person in the folder of a project cannot see
 	// what runs beside it, and a run of another project of the machine is as much of

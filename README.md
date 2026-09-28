@@ -80,9 +80,12 @@ crewflow task run 12 -continue "fix the failing test"   # the same session, afte
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
-`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `task list` shows
-the agent (`EXECUTOR`), whose name it worked under (`AS`: `owner` or `bot`), the attempt
-(`RUN`, `57-2`) and the change request (`CHANGE`), and reads nothing but the local state.
+`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `task list` says which
+project the tasks are counted on, who ran each of them and whose name it worked under
+(`EXECUTOR`, `opencode · bot`), how its last try came out, how long ago that try began
+(`AGE`), the attempt (`RUN`, `57-2`, and `—` where there was only one) and the change
+request (`CHANGE`). It reads nothing but the local state, and nothing it prints changes what
+the next run does: `-json` is the same answer it has always been.
 
 ## The gate
 

@@ -1,0 +1,28 @@
+[2mREPO[0m       [2m#[0m  [2mTASK[0m                                                [2mEXECUTOR[0m          [2mOUTCOME[0m             [2mAGE[0m  [2mRUN[0m  [2mCHANGE[0m
+crewflow  44  идёт сейчас 🚀                                      opencode · bot    [36mrunning[0m              [2m1m[0m  [2m—[0m    [2m—[0m
+crewflow  49  окно закрыли, и это название не влезает в колонку   opencode · owner  [31minterrupted[0m          [2m1h[0m  [2m—[0m    [2m—[0m
+tele       7  починить то, что сломано                            opencode · owner  [36mrunning[0m              [2m2h[0m  [2m—[0m    [2m—[0m
+crewflow  79  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  78  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  77  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  76  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  75  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  74  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  73  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  72  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  71  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  70  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  69  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  68  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  67  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  66  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  65  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+crewflow  64  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+crewflow  63  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+crewflow  62  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+crewflow  61  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+crewflow  60  задача, которую запускали много раз                 opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+
+tele       8  и починить то, что сломается                        opencode · owner  [32mpr-opened[0m            [2m3h[0m  [2m—[0m    [2m—[0m
+tele       9  и ещё одно                                          opencode · owner  [32mpr-opened[0m            [2m3h[0m  [2m—[0m    [2m—[0m
+crewflow  43  открыл изменение                                    opencode · bot    [32mpr-opened[0m            [2m4h[0m  [2m—[0m    [2m#44[0m

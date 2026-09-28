@@ -1,0 +1,26 @@
+[1mnaghuale/crewflow · main · 23 tasks[0m
+ [2m#[0m  [2mTASK[0m                                                          [2mEXECUTOR[0m          [2mOUTCOME[0m             [2mAGE[0m  [2mRUN[0m  [2mCHANGE[0m
+44  идёт сейчас 🚀                                                opencode · bot    [36mrunning[0m              [2m1m[0m  [2m—[0m    [2m—[0m
+49  окно закрыли, и это название не влезает в колонку             opencode · owner  [31minterrupted[0m          [2m1h[0m  [2m—[0m    [2m—[0m
+79  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+78  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+77  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+76  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+75  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+74  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+73  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+72  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+71  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+70  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+69  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+68  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+67  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+66  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m3h[0m  [2m—[0m    [2m—[0m
+65  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+64  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+63  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+62  задача, которую запускали много раз                           opencode · owner  [33mblocked-permission[0m   [2m4h[0m  [2m—[0m    [2m—[0m
+and 3 more, show them all with -all
+
+  also: tele (1 running, 2 pr-opened)
+  crewflow task list -all for everything

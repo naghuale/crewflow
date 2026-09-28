@@ -437,7 +437,7 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 		{[]string{"task", "run", "43", "-config", project, "-continue", "and a test of the timeout"},
 			"the report of the second run", "executor: owner"},
 		{[]string{"task", "watch", "43", "-config", project}, "the watch", "executor: owner"},
-		{[]string{"task", "list", "-config", project}, "the list", "AS"},
+		{[]string{"task", "list", "-config", project}, "the list", "EXECUTOR"},
 	}
 	for _, step := range steps {
 		stdout.Reset()
@@ -449,14 +449,12 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 			t.Errorf("%s wrote %q, want it to mention %q", step.what, stdout.String(), step.column)
 		}
 	}
-	if got := listColumn(t, stdout.String(), "AS"); got != "owner" {
-		t.Errorf("the list of the runs has the mode %q under the column of it, want \"owner\"", got)
-	}
-	// The agent that ran the task is a different thing from the account it went under,
-	// and a list says both: a person has to know which agent wrote a run before they
-	// know whose run it was (docs/DESIGN.md §7i).
-	if got := listColumn(t, stdout.String(), "EXECUTOR"); got != "opencode" {
-		t.Errorf("the list of the runs has the agent %q under the column of it, want \"opencode\"", got)
+	// The agent that ran the task and the account it went under are one question about
+	// a run and one column of the list: a person has to know which agent wrote a run
+	// before they know whose run it was, and the list says both in one place
+	// (docs/DESIGN.md §7i).
+	if got := listColumn(t, stdout.String(), "EXECUTOR"); got != "opencode · owner" {
+		t.Errorf("the list of the runs has %q under the column of the executor, want the agent and the name it went under", got)
 	}
 }
 
@@ -571,7 +569,7 @@ func TestRunTaskListShowsTheRunsOfTheProject(t *testing.T) {
 		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	for _, want := range []string{
-		"naghuale/crewflow · 1 task", "43", taskOf(43).Title, "pr-opened", "#44", "43-1", "opencode",
+		"naghuale/crewflow · main · 1 task", "43", taskOf(43).Title, "pr-opened", "#44", "opencode · owner",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
@@ -655,7 +653,7 @@ func TestRunTaskListOfAProjectThatWasNeverRun(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
-	if want := "naghuale/crewflow · 0 tasks\nno runs yet\n"; stdout.String() != want {
+	if want := "naghuale/crewflow · main · 0 tasks\nno runs yet\n"; stdout.String() != want {
 		t.Errorf("crewflow task list wrote %q, want %q", stdout.String(), want)
 	}
 	if stderr.Len() != 0 {
@@ -690,9 +688,12 @@ func TestRunTaskListSaysWhatElseRunsOnTheMachine(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"naghuale/crewflow · 1 task",
-		"also on this machine: naghuale/telecli — 1 pr-opened",
-		"show everything: crewflow task list -all",
+		"naghuale/crewflow · main · 1 task",
+		// The other project of the machine is said by its name alone: the owner of
+		// this one is in the heading of every list of it, and saying it again in the
+		// line about the projects beside it is noise.
+		"also: telecli (1 pr-opened)",
+		"crewflow task list -all for everything",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
@@ -743,12 +744,15 @@ func TestRunTaskListOfEveryProjectOnTheMachine(t *testing.T) {
 	if !strings.HasPrefix(lines[0], "REPO") {
 		t.Errorf("the first column of a list of the whole machine is %q, want the project first", lines[0])
 	}
-	for _, want := range []string{"naghuale/crewflow", "naghuale/telecli", "43-1", "50-1"} {
+	// Both the projects of the machine are of one owner, and the owner is said nowhere
+	// but in the name of the column: a person who works on both of them reads a list of
+	// them twice a day.
+	for _, want := range []string{"crewflow", "telecli", "43", "50"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow task list -all wrote %q, want it to mention %q", stdout.String(), want)
 		}
 	}
-	if unwanted := "also on this machine"; strings.Contains(stdout.String(), unwanted) {
+	if unwanted := "also:"; strings.Contains(stdout.String(), unwanted) {
 		t.Errorf("crewflow task list -all wrote %q, want nothing about %q: all of it is there", stdout.String(), unwanted)
 	}
 }
@@ -856,8 +860,60 @@ func TestRunTaskListWithoutATerminal(t *testing.T) {
 			t.Fatalf("crewflow task list wrote the control character %q, want a table of letters:\n%s", letter, list)
 		}
 	}
+	if strings.Contains(list, "\x1b") {
+		t.Fatalf("crewflow task list wrote a terminal command of its own:\n%q", list)
+	}
 	if !strings.Contains(list, "a title that paints") {
 		t.Errorf("crewflow task list wrote %q, want the title of the task in it", list)
+	}
+}
+
+// TestRunTaskListWithNoColourIsAFileOfWords: a person who set NO_COLOR, and a terminal
+// that says it takes no colour with TERM=dumb, are answered in the plain letters of the
+// list. The list is the same list either way, and the only thing taken out of it is the
+// colour.
+func TestRunTaskListWithNoColourIsAFileOfWords(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "a person who asked for no colour", env: map[string]string{"NO_COLOR": "1"}},
+		{name: "a terminal that takes no colour", env: map[string]string{"TERM": "dumb"}},
+		{name: "both at once", env: map[string]string{"NO_COLOR": "1", "TERM": "dumb"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &host{opened: true, task: taskOf(43)}
+			host.use(t)
+			for name, value := range tc.env {
+				t.Setenv(name, value)
+			}
+			project := host.config(t)
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+				t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+			}
+			stdout.Reset()
+			stderr.Reset()
+
+			// The screen of a test is the buffer the test writes into, which is a file
+			// and not a terminal of a person: the colours of a list are asked of the
+			// terminal it goes to, and there is none here whatever the environment says.
+			taskScreen = func(w io.Writer, at time.Time) taskrun.Screen {
+				return taskrun.Screen{At: at, Terminal: true, Columns: 120, Painted: wantsColour(os.Getenv)}
+			}
+			stdout.Reset()
+			stderr.Reset()
+			if code := run([]string{"task", "list", "-config", project}, &stdout, &stderr); code != exitOK {
+				t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+			}
+			if strings.Contains(stdout.String(), "\x1b") {
+				t.Errorf("crewflow task list with %v wrote a colour:\n%q", tc.env, stdout.String())
+			}
+			if !strings.Contains(stdout.String(), "pr-opened") {
+				t.Errorf("crewflow task list with %v wrote %q, want the list itself", tc.env, stdout.String())
+			}
+		})
 	}
 }
 
@@ -1186,6 +1242,7 @@ func (h *host) use(t *testing.T) {
 		return "", errors.New("ps: no such file or directory")
 	}}
 	taskClock = time.Now
+	taskScreen = screenOf
 }
 
 // testHome is the home of the machine the tests run on: a folder of TestMain, and

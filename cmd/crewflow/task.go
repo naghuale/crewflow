@@ -287,7 +287,7 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		}
 		return exitOK
 	}
-	if err := runs.Write(stdout); err != nil {
+	if err := runs.Write(stdout, taskScreen(stdout, taskClock())); err != nil {
 		return failed(stderr, err)
 	}
 	return exitOK
@@ -311,7 +311,16 @@ func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun
 		if env.Timeout, err = runLimit(cfg); err != nil {
 			return taskrun.Runs{}, err
 		}
-		return taskrun.List(home, cfg.RepoName(), env)
+		runs, err := taskrun.List(home, cfg.RepoName(), env)
+		if err != nil {
+			return taskrun.Runs{}, err
+		}
+		// The state of a run says nothing of the branch the tasks of the project are
+		// counted from: the file of the project says that, and it is this that read
+		// it, so the header of the list can say which branch the work is on its way
+		// to.
+		runs.Branch = cfg.Project.DefaultBranch
+		return runs, nil
 	}
 	// The file of the project of the folder, where there is one, is read for one thing
 	// only — how long a run of it may go on — and a folder of no project says nothing
