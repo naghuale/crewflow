@@ -17,6 +17,263 @@ func readBody(r *http.Request) (string, error) {
 	return string(body), nil
 }
 
+// TestInstallationIsTheAnswerOfTheDocumentation: the answers of both endpoints of an
+// installation are the same answer, and the fields of it are read as the documentation
+// of the REST API of GitHub (version 2022-11-28) writes them — the account of the
+// owner is an object with a name in it and not a name, the number is a number, and the
+// rights are a map of a name to a level. An answer crewflow cannot read that way is an
+// answer that stops `crewflow auth app check` and `crewflow doctor` for every run of
+// the project (docs/DESIGN.md §7i).
+func TestInstallationIsTheAnswerOfTheDocumentation(t *testing.T) {
+	cases := []struct {
+		name string
+		// named is whether the file of the project names the installation: the number
+		// in it is what a token of a run is asked of, and the whole of that
+		// installation is asked for as well.
+		named bool
+		want  string
+	}{
+		{
+			name:  "the installation the file of the project names",
+			named: true,
+			want:  "/app/installations/165781718",
+		},
+		{
+			name: "the installation found through the repository",
+			want: "/repos/naghuale/crewflow/installation",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, asked := sourceOfTheDocumentation(t)
+			if !tc.named {
+				source.InstallationID = 0
+			}
+
+			installation, err := source.Installation(t.Context())
+			if err != nil {
+				t.Fatalf("Installation: %v", err)
+			}
+
+			if !contains(asked.paths, tc.want) {
+				t.Errorf("the installation was asked for at %v, want %q among them", asked.paths, tc.want)
+			}
+			if installation.ID != 165781718 || installation.AppID != 5107052 {
+				t.Errorf("the installation is %+v, want the installation %d of the app %d of the project",
+					installation, 165781718, 5107052)
+			}
+			// The account of the owner is an object and not a name: this is the field
+			// that stopped every check of a project whose App is installed, and the
+			// value of it is the one the documentation puts there.
+			if installation.Account.Login != "naghuale" || installation.Account.ID != 1 ||
+				installation.Account.Type != "User" {
+				t.Errorf("the account of the installation is %+v, want the owner of the project as an object",
+					installation.Account)
+			}
+		})
+	}
+}
+
+// TestInstallationHoldsTheRightsOfTheAnswerOfTheDocumentation: the rights of an
+// installation are what a report shows about the powers of the executor, and they are
+// read as the map of a name to a level the documentation writes them as.
+func TestInstallationHoldsTheRightsOfTheAnswerOfTheDocumentation(t *testing.T) {
+	source, _ := sourceOfTheDocumentation(t)
+
+	installation, err := source.Installation(t.Context())
+	if err != nil {
+		t.Fatalf("Installation: %v", err)
+	}
+
+	want := []string{"contents write", "issues read", "metadata read", "pull_requests write"}
+	granted := installation.Granted()
+	if len(granted) != len(want) {
+		t.Fatalf("the rights of the installation are %v, want %v", granted, want)
+	}
+	for i := range want {
+		if granted[i] != want[i] {
+			t.Errorf("the rights of the installation are %v, want %v", granted, want)
+			break
+		}
+	}
+	if beyond := installation.BeyondARun(); len(beyond) > 0 {
+		t.Errorf("the rights beyond a run are %v, want none: these are the rights of §7i", beyond)
+	}
+}
+
+// TestInstallationOfTheRepositoryAndOfTheFileAreOneInstallation: a run is handed a
+// token of the number in the file of the project, and a check that showed the rights
+// of another installation would be a report of a machine nobody runs on. When the two
+// are not one, the check says which is which and what to do about it.
+func TestInstallationOfTheRepositoryAndOfTheFileAreOneInstallation(t *testing.T) {
+	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/naghuale/crewflow/installation" {
+			answerOfTest(t, w, map[string]any{"id": 1, "app_id": 5107052})
+			return
+		}
+		answerOfTest(t, w, map[string]any{"id": 165781718, "app_id": 5107052})
+	})
+
+	_, err := source.Installation(t.Context())
+	if err == nil {
+		t.Fatal("Installation returned no error, want the two installations to be told apart")
+	}
+	for _, want := range []string{"installation 165781718", "as 1:", "installation_id"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("Installation = %v, want it to mention %q", err, want)
+		}
+	}
+}
+
+// TestInstallationOfAnAnswerOfAnotherShapeNamesTheFieldAndWhatToDo: an answer in which
+// the account is a name and not an object is an answer of an API of another shape or a
+// shape of an invention, and the person who reads the report has to be told which
+// field it is and what is to be done about it — a run of the project does not start
+// until somebody does.
+func TestInstallationOfAnAnswerOfAnotherShapeNamesTheFieldAndWhatToDo(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer map[string]any
+		want   string
+	}{
+		{
+			name: "the account of the owner is a name and not an object",
+			answer: map[string]any{
+				"id": 165781718, "app_id": 5107052, "account": "naghuale",
+			},
+			want: "account",
+		},
+		{
+			name: "the rights are names and not levels",
+			answer: map[string]any{
+				"id": 165781718, "app_id": 5107052,
+				"permissions": map[string]any{"contents": true},
+			},
+			want: "permissions",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
+				answerOfTest(t, w, tc.answer)
+			})
+
+			_, err := source.Installation(t.Context())
+			if err == nil {
+				t.Fatal("Installation returned no error, want the answer to be refused")
+			}
+			for _, want := range []string{tc.want, apiVersion, "owner of the project"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Installation = %v, want it to mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// TestInstallationBeyondARunIsEveryRightThatIsNotTheOneOfARun: the powers of the
+// executor of every run of the project are the rights of its installation, and §7i
+// names them one by one. A right crewflow did not ask for and a right asked for with a
+// wider level are both more than a run needs, and both are the same thing said in a
+// report a person has to act on.
+func TestInstallationBeyondARunIsEveryRightThatIsNotTheOneOfARun(t *testing.T) {
+	cases := []struct {
+		name   string
+		rights map[string]string
+		want   []string
+	}{
+		{
+			name: "the rights of the design and nothing else",
+			rights: map[string]string{
+				"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
+			},
+		},
+		{
+			name: "a right of the design with a wider level",
+			rights: map[string]string{
+				"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read",
+			},
+			want: []string{"issues write"},
+		},
+		{
+			name: "a right nobody asked for",
+			rights: map[string]string{
+				"contents": "write", "pull_requests": "write", "issues": "read",
+				"metadata": "read", "workflows": "write",
+			},
+			want: []string{"workflows write"},
+		},
+		{
+			name: "a level of an administration of the repository",
+			rights: map[string]string{
+				"contents": "admin", "pull_requests": "write", "issues": "read", "metadata": "read",
+			},
+			want: []string{"contents admin"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installation := Installation{Permissions: tc.rights}
+
+			beyond := installation.BeyondARun()
+
+			if len(beyond) != len(tc.want) {
+				t.Fatalf("the rights beyond a run are %v, want %v", beyond, tc.want)
+			}
+			for i := range tc.want {
+				if beyond[i] != tc.want[i] {
+					t.Errorf("the rights beyond a run are %v, want %v", beyond, tc.want)
+					break
+				}
+			}
+		})
+	}
+}
+
+// TestTheAnswerOfTheDocumentationWithARightTooManyNamesIt: the answer of the
+// documentation of an App somebody gave one right too many to is read whole, and the
+// right is named — a report that said only what it asked for would be a report of an
+// intention, and the executor of every run of the project would hold the right.
+func TestTheAnswerOfTheDocumentationWithARightTooManyNamesIt(t *testing.T) {
+	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
+		writeAnswerOfTheTest(t, w, "installation-wider.json")
+	})
+
+	installation, err := source.Installation(t.Context())
+	if err != nil {
+		t.Fatalf("Installation: %v", err)
+	}
+
+	beyond := installation.BeyondARun()
+	if len(beyond) != 1 || beyond[0] != "workflows write" {
+		t.Errorf("the rights beyond a run are %v, want the one that is too wide", beyond)
+	}
+}
+
+// TestSourceTokenIsTheAnswerOfTheDocumentation: the answer of a token holds the
+// repository it is for and the rights it was given, and crewflow reads the token and
+// the hour it is good until out of it and nothing else — the rest of the answer is
+// there to be ignored and not to be guessed at.
+func TestSourceTokenIsTheAnswerOfTheDocumentation(t *testing.T) {
+	source, asked := sourceOfTheDocumentation(t)
+
+	token, err := source.Token(t.Context())
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+
+	if want := "/app/installations/165781718/access_tokens"; asked.path != want {
+		t.Errorf("the token was asked for at %q, want %q", asked.path, want)
+	}
+	if want := "ghs_16C7e42F292c6912E7710c838347Ae178B4a"; token.Value != want {
+		t.Errorf("the token is %q, want the token of the answer of the API", token.Value)
+	}
+	if want := "2016-07-11 22:14:10 +0000 UTC"; token.ExpiresAt.String() != want {
+		t.Errorf("the token is good until %s, want %s: the life of it is what the API says",
+			token.ExpiresAt, want)
+	}
+}
+
 // TestSourceTokenAsksForOneRepositoryAndTheRightsOfTheDesign: the token of an
 // installation is the whole of the power the executor of a run has on the host, and
 // §7i names its repository and its rights one by one. A token asked for with more of
@@ -39,7 +296,7 @@ func TestSourceTokenAsksForOneRepositoryAndTheRightsOfTheDesign(t *testing.T) {
 	if asked.method != http.MethodPost {
 		t.Errorf("the token was asked for with %s, want POST", asked.method)
 	}
-	if want := "/app/installations/12345/access_tokens"; asked.path != want {
+	if want := "/app/installations/165781718/access_tokens"; asked.path != want {
 		t.Errorf("the token was asked for at %q, want %q", asked.path, want)
 	}
 	if !strings.HasPrefix(asked.authorization, "Bearer ") || asked.authorization == "Bearer " {
@@ -177,16 +434,17 @@ func TestSourceTokenWithoutATokenInTheAnswerSaysSo(t *testing.T) {
 // TestSourceBotIsTheAccountCommitsAreMadeBy: the commits of a run are made by the
 // account of the App, because that is who the review of a person sees, and the
 // address is the one GitHub gives that account so that a commit of a bot is a commit
-// of a bot and not a name somebody chose.
+// of a bot and not a name somebody chose. The answer of `GET /users/{login}` is the
+// account of GitHub as it writes every account, and it holds more than this needs.
 func TestSourceBotIsTheAccountCommitsAreMadeBy(t *testing.T) {
 	var paths []string
 	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		switch r.URL.Path {
 		case appPath:
-			answerOfTest(t, w, map[string]any{"id": 5107052, "slug": "crewflow-executor"})
+			writeAnswerOfTheTest(t, w, "app.json")
 		case "/users/crewflow-executor[bot]":
-			answerOfTest(t, w, map[string]any{"id": 1987, "login": "crewflow-executor[bot]", "type": "Bot"})
+			writeAnswerOfTheTest(t, w, "bot.json")
 		default:
 			answerOfTest(t, w, map[string]any{"token": "ghs_key", "expires_at": "2026-09-28T13:00:00Z"})
 		}
@@ -235,20 +493,10 @@ func TestSourceBotWithoutASlugInTheAnswerSaysSo(t *testing.T) {
 // of the executor, the name and the address its commits are made by, the helper git
 // takes a fresh token from, and the values that must not reach a journal. A run is
 // judged by the one line of the description, so that a person reading a run knows
-// whose name it went under without asking anything.
+// whose name it went under without asking anything. All of it comes out of the answers
+// the documentation of the API of GitHub gives.
 func TestSourceIdentityIsWhatARunInTheModeOfTheBotIsGiven(t *testing.T) {
-	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case appPath:
-			answerOfTest(t, w, map[string]any{"id": 5107052, "slug": "crewflow-executor"})
-		case "/users/crewflow-executor[bot]":
-			answerOfTest(t, w, map[string]any{"id": 1987, "login": "crewflow-executor[bot]", "type": "Bot"})
-		case "/app/installations/12345/access_tokens":
-			answerOfTest(t, w, map[string]any{"token": "ghs_key_of_the_run", "expires_at": "2026-09-28T13:00:00Z"})
-		default:
-			t.Errorf("the API was asked at %q, want one of the paths of the app", r.URL.Path)
-		}
-	})
+	source, _ := sourceOfTheDocumentation(t)
 
 	identity, err := source.Identity(t.Context())
 	if err != nil {
@@ -257,11 +505,11 @@ func TestSourceIdentityIsWhatARunInTheModeOfTheBotIsGiven(t *testing.T) {
 	if identity.Mode != ModeBot {
 		t.Errorf("the mode = %q, want %q", identity.Mode, ModeBot)
 	}
-	if want := "bot — GitHub App crewflow-executor (installation 12345)"; identity.Description != want {
+	if want := "bot — GitHub App crewflow-executor (installation 165781718)"; identity.Description != want {
 		t.Errorf("the description = %q, want %q", identity.Description, want)
 	}
 	for _, want := range []string{
-		"GH_TOKEN=ghs_key_of_the_run",
+		"GH_TOKEN=ghs_16C7e42F292c6912E7710c838347Ae178B4a",
 		"GIT_AUTHOR_NAME=crewflow-executor[bot]",
 		"GIT_AUTHOR_EMAIL=1987+crewflow-executor[bot]@users.noreply.github.com",
 		"GIT_COMMITTER_NAME=crewflow-executor[bot]",
@@ -278,7 +526,7 @@ func TestSourceIdentityIsWhatARunInTheModeOfTheBotIsGiven(t *testing.T) {
 	// is among the secrets a journal is put through: an agent that prints its own
 	// environment is one line of a journal that would carry a token of an hour into a
 	// file kept for ever (docs/DESIGN.md §7e).
-	if !contains(identity.Secrets, "ghs_key_of_the_run") {
+	if !contains(identity.Secrets, "ghs_16C7e42F292c6912E7710c838347Ae178B4a") {
 		t.Errorf("the secrets of the run are %v, want the token of the run in them", identity.Secrets)
 	}
 }
@@ -369,6 +617,7 @@ func TestInstallationGrantedIsWhatAPersonReads(t *testing.T) {
 // method, the headers and the body.
 type asked struct {
 	path          string
+	paths         []string
 	method        string
 	authorization string
 	accept        string
@@ -379,6 +628,7 @@ type asked struct {
 func (a *asked) of(t *testing.T, r *http.Request) {
 	t.Helper()
 	a.path, a.method = r.URL.Path, r.Method
+	a.paths = append(a.paths, r.URL.Path)
 	a.authorization, a.accept = r.Header.Get("Authorization"), r.Header.Get("Accept")
 	if r.Body == nil {
 		return

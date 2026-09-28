@@ -3,7 +3,6 @@ package github
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/forge"
@@ -102,30 +101,16 @@ func (a *Adapter) bot(ctx context.Context) []forge.Check {
 		Detail: fmt.Sprintf("installation %d on %s, rights: %s",
 			installation.ID, a.repo, listed(granted)),
 	}
-	// Rights a run does not ask for are rights the executor of a run holds: a report
-	// that says only what was asked for is a report of an intention and not of a
-	// machine (docs/DESIGN.md §7i).
-	if extra := beyondRun(granted); len(extra) > 0 {
+	// Rights a run does not ask for are rights the executor of a run holds, and a
+	// right asked for with a wider level than §7i is the same thing said in another
+	// way. A report that says only what was asked for is a report of an intention and
+	// not of a machine (docs/DESIGN.md §7i).
+	if extra := installation.BeyondARun(); len(extra) > 0 {
 		check.Status = forge.Fail
 		check.Hint = permissionsW + listed(extra) +
 			"\nchange the permissions of the app in the settings of GitHub: a run of this project only pushes its own branch"
 	}
 	return []forge.Check{key, check}
-}
-
-// beyondRun are the rights an installation holds that a token of a run never asks
-// for: administration of the repository, workflows, and the rest of what an App can be
-// given and a run of a project must not have (docs/DESIGN.md §7i). The four rights of
-// §7i are the rest.
-func beyondRun(granted []string) []string {
-	allowed := []string{"contents", "pull_requests", "issues", "metadata"}
-	var extra []string
-	for _, right := range granted {
-		if !slices.ContainsFunc(allowed, func(name string) bool { return strings.HasPrefix(right, name+" ") }) {
-			extra = append(extra, right)
-		}
-	}
-	return extra
 }
 
 // listed is a list of rights as one line of a report reads: a person reads the line

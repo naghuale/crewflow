@@ -188,25 +188,19 @@ func TestOpenChangeRequestOfAProjectWithoutAnAppRefuses(t *testing.T) {
 func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 	cases := []struct {
 		name string
-		// installation is what the API of the test answers for the installation of the
-		// app, and key is whether the store of the machine holds its key.
-		installation map[string]any
-		key          bool
-		want         []struct {
+		// rights is what the API of the test answers as the rights of the installation
+		// of the app, and key is whether the store of the machine holds its key.
+		rights map[string]any
+		key    bool
+		want   []struct {
 			name   string
 			status forge.Status
 		}
 	}{
 		{
-			name: "the app is installed with the rights of the design",
-			installation: map[string]any{
-				"id": 12345, "app_id": 5107052,
-				"permissions": map[string]any{
-					"contents": "write", "pull_requests": "write",
-					"issues": "read", "metadata": "read",
-				},
-			},
-			key: true,
+			name:   "the app is installed with the rights of the design",
+			rights: rightsOfTheDesign(),
+			key:    true,
 			want: []struct {
 				name   string
 				status forge.Status
@@ -218,8 +212,7 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 			},
 		},
 		{
-			name:         "the key was never imported",
-			installation: map[string]any{"id": 12345, "app_id": 5107052},
+			name: "the key was never imported",
 			want: []struct {
 				name   string
 				status forge.Status
@@ -231,12 +224,26 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 		},
 		{
 			name: "the app may do more than a run needs",
-			installation: map[string]any{
-				"id": 12345, "app_id": 5107052,
-				"permissions": map[string]any{
-					"contents": "write", "pull_requests": "write",
-					"issues": "read", "metadata": "read", "workflows": "write",
-				},
+			rights: map[string]any{
+				"contents": "write", "pull_requests": "write",
+				"issues": "read", "metadata": "read", "workflows": "write",
+			},
+			key: true,
+			want: []struct {
+				name   string
+				status forge.Status
+			}{
+				{"gh", forge.OK},
+				{"gh login", forge.OK},
+				{appKeyCheck, forge.OK},
+				{appCheck, forge.Fail},
+			},
+		},
+		{
+			name: "a right of the design is wider than a run needs it to be",
+			rights: map[string]any{
+				"contents": "write", "pull_requests": "write",
+				"issues": "write", "metadata": "read",
 			},
 			key: true,
 			want: []struct {
@@ -257,7 +264,9 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 			if tc.key {
 				m.secrets.(*storeOfTheTest).key = keyOfTheTest(t)
 			}
-			api.answer["/repos/naghuale/crewflow/installation"] = tc.installation
+			if tc.rights != nil {
+				api.installationOfTheTest(tc.rights)
+			}
 			a := New(repo, "", m.env(t)).WithBot(Bot{AppID: 5107052, InstallationID: 12345, API: api.URL()})
 
 			checks := a.Doctor(t.Context())
@@ -306,6 +315,33 @@ type serverOfTheTest struct {
 // is pointed at: a test of a token is a test of a server of the test.
 func (a *serverOfTheTest) URL() string { return a.server.URL }
 
+// installationOfTheTest answers for the installation of the App on the repository of
+// the project, with the rights given. GitHub answers the question about the repository
+// and the question about the number in the file of the project with the same thing, so
+// both paths are answered with it — and it answers it in the form the documentation of
+// the REST API of GitHub writes it (version 2022-11-28): the account of the owner is an
+// object with a name in it and not a name, and the rights are a map of a name to a
+// level. The answers in the whole of that form are in the testdata of the package of
+// the app, which is the one that reads them.
+func (a *serverOfTheTest) installationOfTheTest(rights map[string]any) {
+	answer := map[string]any{
+		"id": 12345, "app_id": 5107052,
+		"account":              map[string]any{"login": "naghuale", "id": 1, "type": "User", "site_admin": false},
+		"repository_selection": "selected",
+		"permissions":          rights,
+	}
+	a.answer["/repos/naghuale/crewflow/installation"] = answer
+	a.answer["/app/installations/12345"] = answer
+}
+
+// rightsOfTheDesign are the four rights a token of a run is asked for and no more, as
+// the API of GitHub writes them: a name and a level (docs/DESIGN.md §7i).
+func rightsOfTheDesign() map[string]any {
+	return map[string]any{
+		"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
+	}
+}
+
 // machineWithAnApp is a machine of a test that has an App on it: the store holds a key
 // the test generated, and the server of the test answers for the API of GitHub. No
 // test of crewflow asks GitHub for a token, and none opens the keychain of a person
@@ -317,7 +353,7 @@ func machineWithAnApp(t *testing.T) (*machine, *serverOfTheTest) {
 	api.answer["/users/crewflow-executor[bot]"] = map[string]any{"id": 1987, "login": "crewflow-executor[bot]", "type": "Bot"}
 	api.answer["/app/installations/12345/access_tokens"] = map[string]any{
 		"token": "ghs_token_of_the_run", "expires_at": "2026-09-28T13:00:00Z"}
-	api.answer["/repos/naghuale/crewflow/installation"] = map[string]any{"id": 12345, "app_id": 5107052}
+	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")

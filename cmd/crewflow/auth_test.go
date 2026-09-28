@@ -202,24 +202,47 @@ func TestAuthAppCheckSaysWhatIsMissingAndFails(t *testing.T) {
 
 // TestAuthAppCheckRefusesRightsWiderThanARunNeeds: the powers of the executor of every
 // run of the project are the rights of the app, and a check that says only what was
-// asked for is a check of an intention.
+// asked for is a check of an intention. A right asked for with a wider level than §7i
+// is the same thing said in another way, and it is refused as well.
 func TestAuthAppCheckRefusesRightsWiderThanARunNeeds(t *testing.T) {
-	store := &storeOfTheTest{key: keyOfTheTest(t)}
-	api := useMachineOfTheTest(t, store, nil)
-	api.answer["/api/v3/repos/naghuale/crewflow/installation"] = map[string]any{
-		"id": 12345, "app_id": 5107052,
-		"permissions": map[string]any{"contents": "write", "workflows": "write"},
+	cases := []struct {
+		name   string
+		rights map[string]any
+		want   string
+	}{
+		{
+			name: "a right nobody asked for",
+			rights: map[string]any{
+				"contents": "write", "pull_requests": "write",
+				"issues": "read", "metadata": "read", "workflows": "write",
+			},
+			want: "workflows write",
+		},
+		{
+			name: "a right of the design wider than a run needs it",
+			rights: map[string]any{
+				"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read",
+			},
+			want: "issues write",
+		},
 	}
-	project := writeConfig(t, projectConfig+botConfig+"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
-	var stdout, stderr bytes.Buffer
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &storeOfTheTest{key: keyOfTheTest(t)}
+			api := useMachineOfTheTest(t, store, nil)
+			api.installationOfTheTest(tc.rights)
+			project := writeConfig(t, projectConfig+botConfig+"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
+			var stdout, stderr bytes.Buffer
 
-	code := run([]string{"auth", "app", "check", "-config", project}, &stdout, &stderr)
+			code := run([]string{"auth", "app", "check", "-config", project}, &stdout, &stderr)
 
-	if code != exitFailure {
-		t.Fatalf("crewflow auth app check = %d, want %d for rights wider than a run needs", code, exitFailure)
-	}
-	if !strings.Contains(stderr.String(), "workflows write") {
-		t.Errorf("crewflow auth app check wrote %q, want it to name the right that is too wide", stderr.String())
+			if code != exitFailure {
+				t.Fatalf("crewflow auth app check = %d, want %d for rights wider than a run needs", code, exitFailure)
+			}
+			if !strings.Contains(stderr.String(), tc.want) {
+				t.Errorf("crewflow auth app check wrote %q, want it to name the right that is too wide", stderr.String())
+			}
+		})
 	}
 }
 
@@ -425,14 +448,8 @@ func newAPIOfTheTest(t *testing.T) *apiOfTheTest {
 		"/api/v3/app": map[string]any{"id": 5107052, "slug": "crewflow-executor"},
 		"/api/v3/app/installations/12345/access_tokens": map[string]any{
 			"token": "ghs_token_of_the_run", "expires_at": "2026-09-28T13:00:00Z"},
-		"/api/v3/repos/naghuale/crewflow/installation": map[string]any{
-			"id": 12345, "app_id": 5107052,
-			"permissions": map[string]any{
-				"contents": "write", "pull_requests": "write",
-				"issues": "read", "metadata": "read",
-			},
-		},
 	}}
+	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
@@ -454,6 +471,33 @@ type apiOfTheTest struct {
 	answer map[string]any
 	asked  []string
 	server *httptest.Server
+}
+
+// installationOfTheTest answers for the installation of the App on the repository of
+// the project, with the rights given. GitHub answers the question about the repository
+// and the question about the number in the file of the project with the same thing, so
+// both paths are answered with it — and it answers it in the form the documentation of
+// the REST API of GitHub writes it (version 2022-11-28): the account of the owner is an
+// object with a name in it and not a name, and the rights are a map of a name to a
+// level. The answers in the whole of that form are in the testdata of the package of
+// the app, which is the one that reads them.
+func (a *apiOfTheTest) installationOfTheTest(rights map[string]any) {
+	answer := map[string]any{
+		"id": 12345, "app_id": 5107052,
+		"account":              map[string]any{"login": "naghuale", "id": 1, "type": "User", "site_admin": false},
+		"repository_selection": "selected",
+		"permissions":          rights,
+	}
+	a.answer["/api/v3/repos/naghuale/crewflow/installation"] = answer
+	a.answer["/api/v3/app/installations/12345"] = answer
+}
+
+// rightsOfTheDesign are the four rights a token of a run is asked for and no more, as
+// the API of GitHub writes them: a name and a level (docs/DESIGN.md §7i).
+func rightsOfTheDesign() map[string]any {
+	return map[string]any{
+		"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
+	}
 }
 
 func hostOfTest(api *apiOfTheTest) string {

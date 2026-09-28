@@ -93,13 +93,10 @@ func TestRunInTheModeOfTheBotWithoutAKeySaysWhatToDo(t *testing.T) {
 func TestRunInTheModeOfTheBotWithRightsWiderThanARunNeeds(t *testing.T) {
 	m := machineWithAnApp(t)
 	m.holdsTheKey = true
-	m.api.answer["/api/v3/repos/naghuale/crewflow/installation"] = map[string]any{
-		"id": 12345, "app_id": 5107052,
-		"permissions": map[string]any{
-			"contents": "write", "pull_requests": "write",
-			"issues": "read", "metadata": "read", "workflows": "write",
-		},
-	}
+	m.api.installationOfTheTest(map[string]any{
+		"contents": "write", "pull_requests": "write",
+		"issues": "read", "metadata": "read", "workflows": "write",
+	})
 	config := writeConfig(t, m.botProject())
 
 	report := runOn(t, m, config)
@@ -201,14 +198,8 @@ func machineWithAnApp(t *testing.T) *machine {
 	t.Helper()
 	api := &apiOfTheTest{answer: map[string]any{
 		"/api/v3/app": map[string]any{"id": 5107052, "slug": "crewflow-executor"},
-		"/api/v3/repos/naghuale/crewflow/installation": map[string]any{
-			"id": 12345, "app_id": 5107052,
-			"permissions": map[string]any{
-				"contents": "write", "pull_requests": "write",
-				"issues": "read", "metadata": "read",
-			},
-		},
 	}}
+	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
@@ -237,6 +228,33 @@ type apiOfTheTest struct {
 	answer map[string]any
 	asked  []string
 	server *httptest.Server
+}
+
+// installationOfTheTest answers for the installation of the App on the repository of
+// the project, with the rights given. GitHub answers the question about the repository
+// and the question about the number in the file of the project with the same thing, so
+// both paths are answered with it — and it answers it in the form the documentation of
+// the REST API of GitHub writes it (version 2022-11-28): the account of the owner is an
+// object with a name in it and not a name, and the rights are a map of a name to a
+// level. The answers in the whole of that form are in the testdata of the package of
+// the app, which is the one that reads them.
+func (a *apiOfTheTest) installationOfTheTest(rights map[string]any) {
+	answer := map[string]any{
+		"id": 12345, "app_id": 5107052,
+		"account":              map[string]any{"login": "naghuale", "id": 1, "type": "User", "site_admin": false},
+		"repository_selection": "selected",
+		"permissions":          rights,
+	}
+	a.answer["/api/v3/repos/naghuale/crewflow/installation"] = answer
+	a.answer["/api/v3/app/installations/12345"] = answer
+}
+
+// rightsOfTheDesign are the four rights a token of a run is asked for and no more, as
+// the API of GitHub writes them: a name and a level (docs/DESIGN.md §7i).
+func rightsOfTheDesign() map[string]any {
+	return map[string]any{
+		"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
+	}
 }
 
 // botProject is the crewflow.toml of a project whose executor works as an app of the

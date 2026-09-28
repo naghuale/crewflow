@@ -76,20 +76,40 @@ type Token struct {
 	ExpiresAt time.Time
 }
 
-// Installation is the App as it is installed on a repository, and what it may do
-// there: what a report shows about the powers of the executor, and what `crewflow
-// auth app check` prints without printing a token.
+// Account is an account of the host as the API of GitHub writes one: a person, a bot
+// or an organization. It is an object with a name in it and not a name — the account of
+// an installation is written by GitHub as `{"login": …, "id": …, "type": …}`, and an
+// answer in which it is a string is an answer no installation of GitHub ever gives
+// (docs/DESIGN.md §7i).
+type Account struct {
+	// Login is the name the account is known under, and ID is the number the host
+	// knows it by: the two are what an address of a commit of a run is made of.
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+	// Type is what the API says the account is — "User", "Organization", "Bot" — and
+	// a report shows it, so that a person can tell a bot from a person at a glance.
+	Type string `json:"type"`
+}
+
+// Installation is the App as it is installed, and what it may do there: what a report
+// shows about the powers of the executor, and what `crewflow auth app check` prints
+// without printing a token.
+//
+// The fields are those of the answer of `GET /repos/{owner}/{repo}/installation` and
+// of `GET /app/installations/{installation_id}` as the documentation of the REST API
+// of GitHub describes them, of the version crewflow asks for (apiVersion): both
+// endpoints answer the same thing, and one struct reads both. What the answer holds
+// besides them — which repositories, when it was made, who suspended it — is not what
+// a run of a project needs, and a field of an invention is a field nothing checks
+// (docs/DESIGN.md §7i).
 type Installation struct {
-	// ID is the number of the installation, which is what a token is asked of.
-	ID int64 `json:"id"`
+	// ID is the number of the installation, which is what a token is asked of, and
 	// AppID is the number of the App that is installed.
+	ID    int64 `json:"id"`
 	AppID int64 `json:"app_id"`
-	// Account is who the installation is of, as the name GitHub knows it under.
-	Account string `json:"account"`
-	// RepositorySelection is "all" or "selected", and Repositories are the ones of
-	// it when the selection is not all of them.
-	RepositorySelection string   `json:"repository_selection"`
-	Repositories        []string `json:"repositories"`
+	// Account is who the installation is of: the person or the organization that let
+	// the App in.
+	Account Account `json:"account"`
 	// Permissions are the rights the installation was given, as GitHub writes them:
 	// "contents": "write" is a map of a string to a string and not a flag, because
 	// that is how the answer of the API is shaped and a permission crewflow invents
@@ -116,21 +136,21 @@ func (i Installation) Granted() []string {
 }
 
 // BeyondARun are the rights an installation holds that a token of a run never asks
-// for: administration of the repository, workflows, and the rest of what an app can be
-// given and an executor must not have (docs/DESIGN.md §7i). A report of them is worth
-// nothing if it only says what was asked for.
+// for: a right crewflow did not ask for at all — workflows, administration and the
+// rest of what an App can be given — and a right asked for with a level wider than
+// the one of §7i, as `issues write` where a run reads the issues of a task and
+// `contents admin` where a run writes them. Both are the powers the executor of every
+// run of this project has, and a report that lists only the rights of the design is a
+// report of an intention and not of a machine (docs/DESIGN.md §7i).
 func (i Installation) BeyondARun() []string {
-	asked := make([]string, 0, len(rights))
-	for name := range rights {
-		asked = append(asked, name)
-	}
-	var extra []string
+	var beyond []string
 	for _, right := range i.Granted() {
-		if !slices.ContainsFunc(asked, func(name string) bool { return strings.HasPrefix(right, name+" ") }) {
-			extra = append(extra, right)
+		name, level, _ := strings.Cut(right, " ")
+		if asked, known := rights[name]; !known || asked != level {
+			beyond = append(beyond, right)
 		}
 	}
-	return extra
+	return beyond
 }
 
 // API is the address of the API of a host: the public one, and the one of a server of
@@ -151,18 +171,24 @@ func API(host string) string {
 // GitHub writes it, and the address it gives that account so that a commit of a bot
 // is a commit of a bot and not a name somebody chose.
 type Bot struct {
-	// ID is the number of the account, and Login is the name it is known under, with
-	// the [bot] GitHub adds to every account of an app.
-	ID    int64  `json:"id"`
-	Login string `json:"login"`
-	// Email is the address of the account, and Type is what GitHub says it is, which
-	// a report shows so that a person can tell a bot from a person at a glance.
-	Email string `json:"email"`
-	Type  string `json:"type"`
+	// Account is what the answer of the API holds: the name, the number and what
+	// GitHub says the account is. An account of an App is an account like any other,
+	// and it is read as one.
+	Account
+	// Email is the address of the account. GitHub sends no address for an account of
+	// an App, and the one of a person is no address at all, so it is composed of the
+	// number and the name — the form GitHub itself writes in the commits it makes.
+	Email string
 }
 
 // appIDPath is the path of the App itself, which crewflow asks to be let in as.
 const appPath = "/app"
+
+// apiVersion is the version of the REST API of GitHub that every call of crewflow
+// asks for, and the version whose documentation describes every field it reads: an
+// answer of another version is an answer whose shape nobody looked at
+// (docs/DESIGN.md §7i).
+const apiVersion = "2022-11-28"
 
 // Key is the private key of the App, read from the store of the machine. An owner
 // imports it once with `crewflow auth app import`, and from then on crewflow reads it
@@ -212,10 +238,13 @@ func (s *Source) HasKey() (bool, error) {
 	}
 }
 
-// Installation is the App as it is installed on the repository of the project. The
-// number of the installation is the one the file of the project names, and it is
-// found through the repository when the file does not: the question is one call to
-// the API, which crewflow can make with the key of the App.
+// Installation is the App as it is installed on the repository of the project, and
+// what it may do there. The repository is asked about, because that is the question
+// the check exists for: is the App installed here. When the file of the project names
+// an installation, that one is asked for as well and the two numbers have to be the
+// same — a run is handed a token of the number in the file, and the rights of one
+// installation said of another are the rights of a machine nobody runs on
+// (docs/DESIGN.md §7i).
 func (s *Source) Installation(ctx context.Context) (Installation, error) {
 	// The key is read for every request and not kept: it is the one secret of a run
 	// that never outlives the call it signed.
@@ -223,8 +252,30 @@ func (s *Source) Installation(ctx context.Context) (Installation, error) {
 	if err != nil {
 		return Installation{}, err
 	}
+	repository, err := s.installationAt(ctx, key, "/repos/"+s.Repo+"/installation")
+	if err != nil {
+		return Installation{}, err
+	}
+	if s.InstallationID == 0 {
+		return repository, nil
+	}
+	named, err := s.installationAt(ctx, key, fmt.Sprintf("/app/installations/%d", s.InstallationID))
+	if err != nil {
+		return Installation{}, err
+	}
+	if named.ID != repository.ID {
+		return Installation{}, fmt.Errorf("the file of the project names the installation %d of the app %d, "+
+			"and the app is installed on %s as %d: a run of this project is given a token of the number in the "+
+			"file, so change installation_id in the file of the project", s.InstallationID, s.AppID, s.Repo, repository.ID)
+	}
+	return named, nil
+}
+
+// installationAt is one installation as one of the two endpoints of the API answers
+// it: the one of the repository and the one of the number are the same answer, and
+// an answer without an installation in it is an answer crewflow cannot go on with.
+func (s *Source) installationAt(ctx context.Context, key Key, path string) (Installation, error) {
 	var installation Installation
-	path := "/repos/" + s.Repo + "/installation"
 	if err := s.ask(ctx, key, http.MethodGet, path, nil, &installation); err != nil {
 		return Installation{}, fmt.Errorf("the installation of the app %d on %s: %w", s.AppID, s.Repo, err)
 	}
@@ -232,6 +283,17 @@ func (s *Source) Installation(ctx context.Context) (Installation, error) {
 		return Installation{}, fmt.Errorf("the installation of the app %d on %s: the answer of the API names no installation", s.AppID, s.Repo)
 	}
 	return installation, nil
+}
+
+// granted is the answer of `POST /app/installations/{installation_id}/access_tokens`
+// as crewflow reads it: the token and the moment it stops working. The answer holds the
+// repository the token is for and the rights it was given as well, and crewflow asked
+// for both — a field of an invention is a field nothing checks (docs/DESIGN.md §7i).
+type granted struct {
+	// Token is the value itself, and ExpiresAt is the hour it is good until, as the
+	// documentation of the API of GitHub writes both of them (apiVersion).
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // Token is a token of the installation, for the repository of the project and for
@@ -263,10 +325,7 @@ func (s *Source) token(ctx context.Context) (Token, int64, error) {
 		"repositories": []string{s.Repo},
 		"permissions":  rights,
 	}
-	var answer struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
-	}
+	var answer granted
 	path := fmt.Sprintf("/app/installations/%d/access_tokens", installation)
 	if err := s.ask(ctx, key, http.MethodPost, path, body, &answer); err != nil {
 		return Token{}, 0, fmt.Errorf("the token of the app %d on %s: %w", s.AppID, s.Repo, err)
@@ -289,15 +348,18 @@ func (s *Source) store() (secret.Store, error) {
 	return s.Store, nil
 }
 
-// App is the App itself as the API of GitHub describes it: its number and the name
-// its accounts come under. The endpoint is one of the App and is asked for with the
-// key of it, because there is no installation to ask with before one is found.
+// App is the App itself as the API of GitHub describes it: its number and the name its
+// accounts come under. The endpoint is one of the App and is asked for with the key of
+// it, because there is no installation to ask with before one is found.
+//
+// The answer holds more — the name of the App, the number it signs its calls with, its
+// owner, the rights it may be given and the events it subscribes to — and a run needs
+// the name alone: the name is the account a commit of a run is made by.
 type App struct {
 	// ID is the number of the App, and Slug is the name an account of it is
 	// "slug[bot]" under: the name is where a report says who the executor is.
 	ID   int64  `json:"id"`
 	Slug string `json:"slug"`
-	Name string `json:"name"`
 }
 
 // App is the App of the project as the API of GitHub describes it.
@@ -319,30 +381,23 @@ func (s *Source) App(ctx context.Context) (App, error) {
 // Bot is the account the commits of a run are made by. It is asked for by its name,
 // and the number of the account is asked for and not guessed: the number is part of
 // the address of the account, and an address with a guessed number is an address of
-// nobody.
+// nobody. The answer of `GET /users/{login}` is the account of GitHub as it writes
+// every account — a person, a bot or an organization — and it holds more than crewflow
+// shows; the name, the number and the type are the whole of what a run needs.
 func (s *Source) Bot(ctx context.Context) (Bot, error) {
 	app, err := s.App(ctx)
 	if err != nil {
 		return Bot{}, err
 	}
-	login := app.Slug + "[bot]"
-	var bot struct {
-		ID    int64  `json:"id"`
-		Login string `json:"login"`
-		Type  string `json:"type"`
-	}
-	if err := s.askAsInstallation(ctx, http.MethodGet, "/users/"+url.PathEscape(login), nil, &bot); err != nil {
+	var bot Bot
+	if err := s.askAsInstallation(ctx, http.MethodGet, "/users/"+url.PathEscape(app.Slug+"[bot]"), nil, &bot); err != nil {
 		return Bot{}, fmt.Errorf("the account of the app %d: %w", s.AppID, err)
 	}
 	if bot.Login == "" {
 		return Bot{}, fmt.Errorf("the account of the app %d: the answer of the API holds no login", s.AppID)
 	}
-	return Bot{
-		ID:    bot.ID,
-		Login: bot.Login,
-		Email: strconv.FormatInt(bot.ID, 10) + "+" + bot.Login + "@users.noreply.github.com",
-		Type:  bot.Type,
-	}, nil
+	bot.Email = strconv.FormatInt(bot.ID, 10) + "+" + bot.Login + "@users.noreply.github.com"
+	return bot, nil
 }
 
 // Describe is whose name the executor of a run of this project works under, in one
@@ -458,7 +513,7 @@ func (s *Source) call(ctx context.Context, method, path, token string, body, out
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	request.Header.Set("X-GitHub-Api-Version", apiVersion)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -478,7 +533,16 @@ func (s *Source) call(ctx context.Context, method, path, token string, body, out
 		return nil
 	}
 	if err := json.Unmarshal(answer, out); err != nil {
-		return fmt.Errorf("%s %s: the answer of the API is not a JSON crewflow knows: %w", method, path, err)
+		// The decoder names the field it could not read, and a person who reads this
+		// has to be told what it means: a field of a type of its own is a change of
+		// the API and not a mistake of theirs, so the owner of the project is the one
+		// to tell — crewflow reads the fields the documentation of apiVersion
+		// describes, and an answer of a shape of its own is one of them to look at
+		// (docs/DESIGN.md §7i).
+		return fmt.Errorf("%s %s: the answer of the API is not a JSON crewflow knows: %w; "+
+			"the fields crewflow reads are the fields of the documentation of the API of GitHub of the version %s, "+
+			"so a field of another type is a change of the API: tell the owner of the project",
+			method, path, err, apiVersion)
 	}
 	return nil
 }

@@ -11,6 +11,8 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -284,12 +286,63 @@ func sourceOfTest(t *testing.T, handler http.HandlerFunc) *Source {
 	t.Cleanup(server.Close)
 	return &Source{
 		AppID:          5107052,
-		InstallationID: 12345,
+		InstallationID: 165781718,
 		Repo:           "naghuale/crewflow",
 		BaseURL:        server.URL,
 		Store:          &storeOfTest{key: Key{key: keyOfTheTest(t)}.PEM()},
 		HTTP:           server.Client(),
 		Now:            func() time.Time { return time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC) },
+	}
+}
+
+// sourceOfTheDocumentation is a Source whose server answers as the documentation of
+// the REST API of GitHub answers, of the version crewflow asks for: the answers are
+// the examples of that documentation, with the numbers of the App of this project in
+// them, and the asked of it is every path the API was asked at (docs/DESIGN.md §7i).
+//
+// The whole point of it is that a test of this package is a test of reading the
+// answers GitHub gives and not of reading answers a test made up: an invented answer
+// is one that keeps agreeing with the code that reads it.
+func sourceOfTheDocumentation(t *testing.T) (*Source, *asked) {
+	t.Helper()
+	asked := &asked{}
+	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
+		asked.of(t, r)
+		name, known := answerOfTheDocumentation[r.URL.Path]
+		w.Header().Set("Content-Type", "application/json")
+		if !known {
+			w.WriteHeader(http.StatusNotFound)
+			answerOfTest(t, w, map[string]any{"message": "Not Found"})
+			return
+		}
+		writeAnswerOfTheTest(t, w, name)
+	})
+	return source, asked
+}
+
+// answerOfTheDocumentation is the example of the documentation that answers every
+// question crewflow asks, by the path it is asked at. The installation is the answer
+// of two paths — the one of the repository and the one of the number — because GitHub
+// answers both with the same thing.
+var answerOfTheDocumentation = map[string]string{
+	appPath:                        "app.json",
+	"/app/installations/165781718": "installation.json",
+	"/app/installations/165781718/access_tokens": "access-token.json",
+	"/repos/naghuale/crewflow/installation":      "installation.json",
+	"/users/crewflow-executor[bot]":              "bot.json",
+}
+
+// writeAnswerOfTheTest is one of the answers of the documentation as it was on the
+// wire: the bytes of the example, and not an object a test built out of the fields it
+// happens to read.
+func writeAnswerOfTheTest(t *testing.T, w http.ResponseWriter, name string) {
+	t.Helper()
+	answer, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read the answer %s of the documentation: %v", name, err)
+	}
+	if _, err := w.Write(answer); err != nil {
+		t.Errorf("write the answer %s of the documentation: %v", name, err)
 	}
 }
 
