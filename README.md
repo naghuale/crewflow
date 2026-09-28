@@ -35,7 +35,7 @@ commands in `crewflow.toml`.
 
 ## Status
 
-Used daily on real projects ([telecli](https://github.com/naghuale/tele) and crewflow itself).
+Used daily on real projects (telecli, a Telegram client for the terminal, and crewflow itself).
 
 Works today:
 
