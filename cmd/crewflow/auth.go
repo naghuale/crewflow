@@ -136,7 +136,7 @@ func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 	}
 	if _, err := app.ReadKey(kept); err != nil {
 		return authFailed(stderr, fmt.Errorf("the key of the app %d that was kept is not one: %w; "+
-			"import it again, and let crewflow write it to the store without a window of macOS in the way", appID, err))
+			"import it again from the file GitHub gave you", appID, err))
 	}
 	fmt.Fprintf(stdout, "the key of the app %d is in the store of this machine\n", appID)
 	fmt.Fprintf(stdout, "delete %s: it is a private key in a folder of your own, and nothing of it belongs in a file\n", path)

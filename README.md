@@ -65,9 +65,11 @@ attributable.
 - **`bot`** is the separated one: the executor works as a [GitHub
   App](https://docs.github.com/en/apps) with narrow rights (contents and pull requests
   write, issues and metadata read), a token of an hour for this repository only, commits
-  made by `crewflow-executor[bot]`, and a `pre-push` hook that lets nothing but the
-  branch of the task through. Together with a branch rule on `main` that the App cannot
-  bypass, the executor cannot push there even if the task talks it into it.
+  made by `crewflow-executor[bot]`, and a `pre-push` hook in a folder of its own that
+  lets nothing but the branch of the task through — the checkout of the person and every
+  other worktree of the repository keep their own hooks and push what they like. Together
+  with a branch rule on `main` that the App cannot bypass, the executor cannot push there
+  even if the task talks it into it.
 
 ```toml
 [identity]

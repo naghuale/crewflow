@@ -2,6 +2,8 @@ package secret
 
 import (
 	"bytes"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -124,5 +126,42 @@ func TestRedactorWithoutSecretsWritesWhatItIsGiven(t *testing.T) {
 func TestAppKeyIsNamedAfterTheApp(t *testing.T) {
 	if got, want := AppKey(5107052), "github-app-5107052"; got != want {
 		t.Errorf("AppKey(5107052) = %q, want %q", got, want)
+	}
+}
+
+// noKeychainIsTheNameOfTheStoreOfThisMachine is the pattern of the guard below, written
+// in two parts so that this test does not match itself.
+var noKeychainIsTheNameOfTheStoreOfThisMachine = regexp.MustCompile(`\bSys` + `tem\(\)`)
+
+// TestNoTestOfThisPackageOpensTheKeychain: the store of this machine is the keychain of
+// the person who runs the tests, and a test that read or wrote there would either wait
+// for a window of macOS or leave a key of a test run in a store kept for ever. Every
+// test of crewflow hands a run a store of its own instead, and the store that [System]
+// hands out is built and never used in a test — which is what this keeps true, by
+// looking at the tests of this package instead of trusting a promise in a comment
+// (docs/DESIGN.md §7i).
+func TestNoTestOfThisPackageOpensTheKeychain(t *testing.T) {
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the folder of the package: %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") || name == "secret_test.go" {
+			continue
+		}
+		test, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		// A test of the store of a machine that has none is built only where the
+		// keychain of macOS is not there, and it may ask the store of the machine: what
+		// it checks is the refusal, and there is nothing to refuse here.
+		if strings.Contains(string(test), "!darwin") {
+			continue
+		}
+		if noKeychainIsTheNameOfTheStoreOfThisMachine.Match(test) {
+			t.Errorf("%s calls the store of this machine, want a store of the test: the keychain of a person is not a fixture", name)
+		}
 	}
 }

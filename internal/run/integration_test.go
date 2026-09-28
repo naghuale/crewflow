@@ -467,11 +467,14 @@ func split(out string) []string {
 
 // TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask runs a task in the mode of the
 // bot against a real repository with a real origin, and looks at what the run left in
-// the worktree: the helper git takes its credentials from, and the hook that lets the
-// branch of the task through and refuses everything else. The hook is a guard behind
-// the rules of the branch on the host, and it is the only one that lives in the
-// worktree of a run — the rules of the host are what an app cannot go around
-// (docs/DESIGN.md §7i).
+// the worktree: the helper git takes its credentials from, and the folder of hooks that
+// lets the branch of the task through and refuses everything else.
+//
+// The hook is a guard behind the rules of the branch on the host, and it is the only one
+// that lives in the worktree of a run — the rules of the host are what an app cannot go
+// around. The folder of hooks belongs to the worktree of that task alone: the checkout
+// of the person, a worktree of the orchestrator and a second task of the same project
+// push whatever they like, and the hook of the person is not touched (docs/DESIGN.md §7i).
 func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skipf("git is not installed: %v", err)
@@ -480,6 +483,17 @@ func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 		t.Skipf("sh is not installed: %v", err)
 	}
 	repo, _ := repository(t)
+	// The hook of the person is in the common folder of hooks of the repository, and a
+	// run of a task writes its hook into a folder of crewflow of its own: a repository
+	// a person works in is not a part of a run (§7a, §7i).
+	hookOfThePerson := filepath.Join(repo, ".git", "hooks", "pre-push")
+	if err := os.MkdirAll(filepath.Dir(hookOfThePerson), 0o700); err != nil {
+		t.Fatalf("make the folder of hooks of the repository: %v", err)
+	}
+	own := "#!/bin/sh\nexit 0\n"
+	if err := os.WriteFile(hookOfThePerson, []byte(own), 0o700); err != nil {
+		t.Fatalf("write the hook of the person: %v", err)
+	}
 	// The fake executor writes down the environment it was given and leaves work on
 	// the branch of the task, as an agent that pushes would.
 	executor := fakeExecutor(t, "agent",
@@ -489,20 +503,45 @@ func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 	host := &host{task: taskOf(43), opened: true, identity: theBot()}
 	cfg := projectOf(t, t.TempDir(), "1h")
 	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	home := t.TempDir()
 
-	result, err := Run(t.Context(), System(t.TempDir()), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	result, err := Run(t.Context(), System(home), cfg, host.set(), Request{Number: 43, RepoDir: repo})
 	if err != nil {
 		t.Fatalf("Run returned an error: %v", err)
 	}
 
-	// The helper of the credentials is a setting of the worktree of the run and not of
-	// the repository: the checkout of the person pushes with the login of the person,
-	// and the one of a run pushes with a token of the app.
+	// The helper of the credentials and the path of the hooks are settings of the
+	// worktree of the run and not of the repository: the checkout of the person pushes
+	// with the login of the person, and the one of a run pushes with a token of the app.
 	if got := gitOut(t, result.Worktree, "config", "--get", "credential.helper"); got != "crewflow auth git-credential" {
 		t.Errorf("the worktree of the run has the helper %q, want the one of crewflow", got)
 	}
-	if got := gitOut(t, repo, "config", "--get", "credential.helper"); strings.Contains(got, "crewflow") {
+	hooks := gitOut(t, result.Worktree, "config", "--get", "core.hooksPath")
+	if !strings.Contains(hooks, filepath.Join("hooks", "naghuale-crewflow", "43")) {
+		t.Errorf("the folder of hooks of the run is %q, want one of crewflow for the task 43", hooks)
+	}
+	// Nothing a run sets is in the settings of the checkout of the person, whatever
+	// else the machine holds there. A setting that is not there is not an error of a
+	// test: git says so with a code of an exit, and this machine may well have a
+	// helper of its own.
+	if got := gitSetting(repo, "core.hooksPath"); got != "" {
+		t.Errorf("the checkout of the person has core.hooksPath = %q, want none of it", got)
+	}
+	if got := gitSetting(repo, "credential.helper"); strings.Contains(got, "crewflow") {
 		t.Errorf("the checkout of the person has the helper %q, want the one it had", got)
+	}
+	for _, value := range []string{
+		"crewflow auth git-credential",
+		filepath.Join("hooks", "naghuale-crewflow"),
+		"crewflow-executor[bot]",
+		"users.noreply.github.com",
+	} {
+		if listed := gitConfigOf(repo); strings.Contains(listed, value) {
+			t.Errorf("the settings of the checkout of the person hold %q:\n%s", value, listed)
+		}
+	}
+	if got := read(t, hookOfThePerson); got != own {
+		t.Errorf("the hook of the person holds %q, want the one they had", got)
 	}
 	// The executor is handed the token of the app and signs its commits with the
 	// account of the app, and the journal holds neither: a journal is a file kept for
@@ -516,8 +555,8 @@ func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 	}
 
 	// The hook refuses a push of the branch of the project and lets the branch of the
-	// task through, and it says why: an executor that was talked into pushing into
-	// main is refused by the machine as well and not only by the words of the task.
+	// task through, and it says why: an executor that was talked into pushing into main
+	// is refused by the machine as well and not only by the words of the task.
 	pushed, err := runGit(result.Worktree, "push", "origin", "HEAD:refs/heads/main")
 	if err == nil {
 		t.Errorf("the hook let a push into main through:\n%s", pushed)
@@ -528,9 +567,106 @@ func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 	if out, err := runGit(result.Worktree, "push", "origin", "HEAD:refs/heads/"+result.Branch); err != nil {
 		t.Errorf("the hook refused the push of the branch of the task:\n%s\n%s", result.Branch, out)
 	}
-	// The same hook sits in the checkout of the person, and the pushes of a person
-	// are not a run of crewflow.
+
+	// A worktree of the same repository that is not a task — the review of the
+	// orchestrator, the work of a person in another clone of it — pushes whatever it
+	// likes: the folder of hooks of a task belongs to the worktree of that task.
+	review := filepath.Join(t.TempDir(), "review")
+	gitOf(t, repo, "worktree", "add", "-b", "review/44-the-review", review, "main")
+	if out, err := runGit(review, "push", "origin", "HEAD:refs/heads/review/44-the-review"); err != nil {
+		t.Errorf("the worktree of a review could not push its own branch:\n%s\n%s", "review/44-the-review", out)
+	}
+	// And the checkout of the person is not a worktree of a run at all.
 	gitOf(t, repo, "checkout", "main")
 	gitOf(t, repo, "merge", "--ff-only", "origin/"+result.Branch)
 	gitOf(t, repo, "push", "origin", "main")
+
+	// Two tasks of one project have a folder of hooks each, and neither of them may
+	// push the branch of the other.
+	secondCfg := cfg
+	secondCfg.Executor.Command = []string{
+		fakeExecutor(t, "agent", "printf '%s' '"+theEvents+"'\n"+
+			commit("internal/run/run.go", "package run // the work of the second task\n")),
+		"{worktree}", "--prompt", "{prompt}"}
+	another := *host
+	another.task = taskOf(44)
+	second, err := Run(t.Context(), System(home), secondCfg, another.set(), Request{Number: 44, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("the run of the second task returned an error: %v", err)
+	}
+	if out, err := runGit(second.Worktree, "push", "origin", "HEAD:refs/heads/"+second.Branch); err != nil {
+		t.Errorf("the worktree of the second task could not push its own branch %q:\n%s", second.Branch, out)
+	}
+	if out, err := runGit(second.Worktree, "push", "origin", "HEAD:refs/heads/"+result.Branch); err == nil {
+		t.Errorf("the worktree of the second task could push the branch of the first:\n%s", out)
+	} else if !strings.Contains(out, "pushes only") {
+		t.Errorf("the second task was refused with %q, want the hook of its own worktree to refuse it", out)
+	}
+	// The hook of the first task is still the one of the first task.
+	if got := read(t, filepath.Join(hooks, "pre-push")); !strings.Contains(got, result.Branch) {
+		t.Errorf("the hook of the first task holds %q, want the branch of the first task in it", got)
+	}
+}
+
+// TestRunTakesTheHooksOfTheTaskAwayWithItsWorktree: the folder of hooks of a task
+// goes with the worktree of that task, because a folder that nothing points at any more
+// is what is left of a task that was cleaned up by hand (docs/DESIGN.md §7i).
+func TestRunTakesTheHooksOfTheTaskAwayWithItsWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	executor := fakeExecutor(t, "agent", "printf '%s' '"+theEvents+"'\n")
+	host := &host{task: taskOf(43), opened: true, identity: theBot()}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	home := t.TempDir()
+
+	result, err := Run(t.Context(), System(home), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("the first run returned an error: %v", err)
+	}
+	folder := filepath.Join(home, "hooks", "naghuale-crewflow", "43")
+	if _, err := os.Stat(folder); err != nil {
+		t.Fatalf("the folder of hooks of the task is not there: %v", err)
+	}
+	// The worktree of the task is taken away by hand, and the run of the task is asked
+	// to go on in it: there is nothing to go on in, and the folder of hooks goes too.
+	if err := os.RemoveAll(result.Worktree); err != nil {
+		t.Fatalf("take the worktree away: %v", err)
+	}
+	_, err = Run(t.Context(), System(home), cfg, host.set(),
+		Request{Number: 43, RepoDir: repo, Continue: "the review asked for a test"})
+	if err == nil {
+		t.Fatal("the run of a task with no worktree returned no error, want the refusal")
+	}
+	if !strings.Contains(err.Error(), "is not there any more") {
+		t.Errorf("the run = %v, want it to say the worktree of the task is gone", err)
+	}
+	if _, err := os.Stat(folder); !os.IsNotExist(err) {
+		t.Errorf("the folder of hooks of the task is still there after its worktree is gone: %v", err)
+	}
+}
+
+// gitSetting is what a setting of a repository is on this machine, and an empty string
+// where there is none: git says "not there" with a code of an exit, and a test that
+// waited for words of a setting that may be absent would fail on a machine that never
+// had it.
+func gitSetting(dir, key string) string {
+	out, err := runGit(dir, "config", "--get", key)
+	if err != nil {
+		return ""
+	}
+	return out
+}
+
+// gitConfigOf is every setting of a repository, as a person would read it with
+// `git config --list`: a test that looks for one setting of a run in it reads them
+// all, and there is no way to ask git for the keys alone.
+func gitConfigOf(dir string) string {
+	out, err := runGit(dir, "config", "--list")
+	if err != nil {
+		return ""
+	}
+	return out
 }

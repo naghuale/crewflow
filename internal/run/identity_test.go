@@ -297,23 +297,25 @@ func (m *machine) askedFor(program string) bool {
 
 // The pre-push hook of a run is a guard behind the rules of the branch on the host, and
 // it is the only guard that lives in the worktree of the run itself: the rules of the
-// host are the ones an app cannot go around, and a hook is a script of a machine that
+// host are the ones an app cannot go around, and a hook is a file of a machine that
 // anyone may delete. What it has to do is refuse a push of anything but the branch of
-// the task, and keep its hands off the checkout of the person (docs/DESIGN.md §7i).
+// the task; that it says nothing about anybody else's worktree is what the folder of
+// hooks of this task alone is for, and a test against a real git proves it
+// (docs/DESIGN.md §7i).
 func TestPrePushRefusesEverythingButTheBranchOfTheTask(t *testing.T) {
 	branch := "crewflow/43-the-run-of-a-task"
 	// The hook of a worktree of a run is a program of its own, and a test of it
-	// starts it as git starts one: with GIT_DIR of a worktree and the lines of a
-	// push on its standard input.
+	// starts it as git starts one: with the lines of a push on its standard input.
 	lines := []string{
 		"refs/heads/" + branch + " 9f1c0de refs/heads/" + branch + " 9e37237",
 		"refs/heads/main 9f1c0de refs/heads/main 9e37237",
 		"refs/heads/" + branch + " 9f1c0de refs/heads/tags/v1",
+		"refs/heads/crewflow/44-other-task 9f1c0de refs/heads/crewflow/44-other-task 9e37237",
 		"(delete) 0000000000000000000000000000000000000000 refs/heads/" + branch,
 	}
-	want := []bool{false, true, true, true}
+	want := []bool{false, true, true, true, true}
 	for i, line := range lines {
-		refused, out, err := pushOfTheTest(t, prePush(branch), filepath.Join("repo", ".git", "worktrees", "wt"), line)
+		refused, out, err := pushOfTheTest(t, prePush(branch), line)
 		if err != nil {
 			t.Fatalf("the hook on %q: %v", line, err)
 		}
@@ -321,22 +323,13 @@ func TestPrePushRefusesEverythingButTheBranchOfTheTask(t *testing.T) {
 			t.Errorf("the hook refused %q: %t, want %t (it said %q)", line, refused, want[i], out)
 		}
 	}
-	// The checkout of the person is not a worktree of a run, and its own pushes are
-	// not a run of crewflow: the hooks folder is the one of that checkout, and a
-	// hook that stopped a person from pushing would be a bug, not a guard.
-	if refused, out, err := pushOfTheTest(t, prePush(branch), filepath.Join("repo", ".git"), lines[1]); err != nil {
-		t.Fatalf("the hook in the checkout of the person: %v", err)
-	} else if refused {
-		t.Errorf("the hook refused a push of the checkout of the person (it said %q), want it to keep its hands off", out)
-	}
 }
 
-// pushOfTheTest runs a pre-push hook the way git runs one: in a folder of the test,
-// with GIT_DIR of the checkout it belongs to and one line of a push on its standard
-// input. It says whether the push was refused, what the hook printed and what went
-// wrong — a hook of a test is a program of the test, and a test of it is a test of
-// that program.
-func pushOfTheTest(t *testing.T, hook, gitDir, line string) (refused bool, said string, err error) {
+// pushOfTheTest runs a pre-push hook the way git runs one: with one line of a push on
+// its standard input. It says whether the push was refused, what the hook printed and
+// what went wrong — a hook of a test is a program of the test, and a test of it is a
+// test of that program.
+func pushOfTheTest(t *testing.T, hook, line string) (refused bool, said string, err error) {
 	t.Helper()
 	if _, err := exec.LookPath("sh"); err != nil {
 		t.Skipf("sh is not installed: %v", err)
@@ -346,7 +339,6 @@ func pushOfTheTest(t *testing.T, hook, gitDir, line string) (refused bool, said 
 		t.Fatalf("write the hook of the test: %v", err)
 	}
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), "GIT_DIR="+gitDir)
 	cmd.Stdin = strings.NewReader(line + "\n")
 	out, err := cmd.CombinedOutput()
 	refused = err != nil

@@ -268,8 +268,14 @@ func (r *runner) findWorktree() error {
 		return err
 	}
 	if _, err := os.Stat(state.Worktree); err != nil {
-		return fmt.Errorf("the worktree %s of task %d is not there any more, so its run cannot be continued: %w",
-			state.Worktree, r.task.Number, err)
+		// The worktree of the task is gone, and the hook that went with it goes with
+		// it: a folder of hooks that nothing points at any more is what is left of a
+		// task that was cleaned up by hand, and a run of this task writes a new one
+		// where it belongs (docs/DESIGN.md §7i).
+		return errors.Join(
+			fmt.Errorf("the worktree %s of task %d is not there any more, so its run cannot be continued: %w",
+				state.Worktree, state.Number, err),
+			r.takeHooksAway())
 	}
 	r.worktree = state.Worktree
 	r.branch = state.Branch

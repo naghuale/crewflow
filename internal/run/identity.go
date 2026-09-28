@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/forge"
@@ -48,8 +49,9 @@ func (r *runner) identityOf(ctx context.Context) (forge.Identity, error) {
 //
 // Two things go into the worktree: the helper git takes its credentials from, because a
 // run of an agent is longer than the life of a token and git asks for a password every
-// time it pushes; and the hook that lets nothing but the branch of the task through, as
-// a second line of defence behind the rules of the branch of the host.
+// time it pushes; and the folder of hooks of this task, because an executor that is
+// talked into pushing into the default branch is refused by the machine as well and not
+// only by the words of the task.
 func (r *runner) bot(ctx context.Context) error {
 	if r.identity.Mode != forge.ModeBot {
 		return nil
@@ -67,69 +69,67 @@ func (r *runner) bot(ctx context.Context) error {
 			return fmt.Errorf("the settings of git in the worktree: %w", err)
 		}
 	}
-	return r.hook(ctx)
-}
-
-// hook is the pre-push hook of the worktree of the task: it lets the branch of the
-// task through and refuses everything else, so that an executor that was talked into
-// pushing into the default branch is refused by the machine as well and not only by
-// the words of the task (docs/DESIGN.md §7i).
-//
-// It is a guard and not the guard: the rules of the branch of the host are what an App
-// cannot go around, and a hook is a script of the machine of a person that a person
-// may delete. It refuses a push only from a worktree of a run — the common directory of
-// a linked worktree holds its name — because the same hooks folder is the one of the
-// checkout of the person, and their own pushes are not a run of crewflow.
-func (r *runner) hook(ctx context.Context) error {
-	common, err := r.commonDir(ctx)
+	// The path of the hooks is the last thing written, so that a worktree is never left
+	// pointing at a folder of hooks that is not there.
+	hooks, err := r.hooks()
 	if err != nil {
 		return err
 	}
-	folder := filepath.Join(common, "hooks")
+	if err := r.git(ctx, r.worktree, "config", "--worktree", "core.hooksPath", hooks); err != nil {
+		return fmt.Errorf("the path of the hooks of the worktree: %w", err)
+	}
+	return nil
+}
+
+// hooks writes the pre-push hook of the task into a folder of crewflow of its own and
+// answers with that folder, which the worktree of the task is then pointed at.
+//
+// It is a folder of its own and not a file in the common hooks directory of the
+// repository, because that directory is one file for every worktree of it: the review
+// worktree of the orchestrator and the checkout of a person who works in the same clone
+// would be refused the branch of the last task, and two tasks of one project would write
+// over each other. The folder is outside the worktree, so that the tools of the executor
+// do not see it as a part of the tree of the task (docs/DESIGN.md §7i).
+func (r *runner) hooks() (string, error) {
+	folder := r.hooksFolder()
+	// What is under that name is the hook of the last run of this task, and a task
+	// that is run again has a branch of its own: the hook is written afresh every run.
+	if err := os.RemoveAll(folder); err != nil {
+		return "", fmt.Errorf("take the hooks of the task away: %w", err)
+	}
 	if err := os.MkdirAll(folder, 0o700); err != nil {
-		return fmt.Errorf("make %s: %w", folder, err)
+		return "", fmt.Errorf("make %s: %w", folder, err)
 	}
-	return os.WriteFile(filepath.Join(folder, "pre-push"), []byte(prePush(r.branch)), 0o700)
+	hook := filepath.Join(folder, "pre-push")
+	if err := os.WriteFile(hook, []byte(prePush(r.branch)), 0o700); err != nil {
+		return "", fmt.Errorf("write %s: %w", hook, err)
+	}
+	return folder, nil
 }
 
-// commonDir is the directory git holds the objects, the references and the hooks of
-// every worktree of the repository in, as this machine spells it: a relative answer is
-// resolved against the folder it was asked in, because a path built out of nothing
-// would be written where crewflow happens to be called from (§7a).
-func (r *runner) commonDir(ctx context.Context) (string, error) {
-	asked, err := r.output(ctx, r.worktree, "rev-parse", "--git-common-dir")
-	if err != nil {
-		return "", err
-	}
-	common := strings.TrimSpace(asked)
-	switch {
-	case common == "":
-		return "", fmt.Errorf("git rev-parse --git-common-dir: named no repository, so there is nowhere to keep the hooks of the run")
-	case filepath.IsAbs(common):
-		return common, nil
-	default:
-		return filepath.Join(r.worktree, common), nil
-	}
+// hooksFolder is where the hook of this task is kept: under what crewflow keeps of its
+// own, by the project and by the number of the task, so that the worktrees of two tasks
+// of one project have a hook each and the checkout of a person has none
+// (docs/DESIGN.md §7).
+func (r *runner) hooksFolder() string {
+	return filepath.Join(r.journals.home, "hooks", r.cfg.RepoName(), strconv.Itoa(r.task.Number))
 }
 
-// prePush is the hook crewflow writes into the worktree of a run. It reads the lines
-// git writes to a pre-push hook — the local reference, its two shas and the reference
-// on the host, four words to a line — and refuses every push of anything but the
-// branch of the task, a deletion of it among them: a branch of a run is pushed and
-// fetched, and deleting it is what a rewrite of a task's history looks like from the
-// host (§7h).
+// prePush is the hook crewflow writes into the folder of hooks of a run. It reads the
+// lines git writes to a pre-push hook — the local reference, its two shas and the
+// reference on the host, four words to a line — and refuses every push of anything but
+// the branch of the task, a deletion of it among them: a branch of a run is pushed and
+// fetched, and deleting it is what a rewrite of the history of a task looks like from
+// the host (§7h).
 func prePush(branch string) string {
 	allowed := "refs/heads/" + branch
 	return `#!/bin/sh
 # Written by crewflow before a run: the executor of a task pushes the branch of
-# that task and nothing else (docs/DESIGN.md §7i). The rules of the branch on the
-# host are what an app cannot go around; this hook refuses a push from a worktree
-# of a run, and says nothing about the checkout of the person.
+# that task and nothing else (docs/DESIGN.md §7i). This hook is a guard and not
+# the guard: the rules of the branch on the host are what an app cannot go around,
+# and a hook is a file of a machine that anyone may delete. It is in a folder of
+# this worktree alone, so no other worktree of this repository is touched by it.
 branch='` + allowed + `'
-case "$GIT_DIR" in
-*/worktrees/*) ;;
-*) exit 0 ;;
-esac
 while read -r local localSHA remote remoteSHA; do
 	if [ "$local" = '(delete)' ] || [ "$remote" != "$branch" ]; then
 		echo "crewflow: the executor of a task pushes only $branch, not $remote" >&2
@@ -138,6 +138,17 @@ while read -r local localSHA remote remoteSHA; do
 done
 exit 0
 `
+}
+
+// takeHooksAway is the folder of hooks of this task gone. It is a folder of crewflow of
+// its own, and a run that goes on in this worktree writes a new one where it belongs —
+// which is why this is only said where nothing of the run is left to be read anyway
+// (docs/DESIGN.md §7i).
+func (r *runner) takeHooksAway() error {
+	if err := os.RemoveAll(r.hooksFolder()); err != nil {
+		return fmt.Errorf("take the hooks of the task away: %w", err)
+	}
+	return nil
 }
 
 // openRequest is the change request of a run whose executor did not open one, and
