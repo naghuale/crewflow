@@ -1,21 +1,58 @@
 # crewflow
 
-A small, project-agnostic framework for developing with two roles: an **orchestrator** that
-plans, reviews and merges, and an **executor** that writes code for one task at a time. Both
-roles are played by whatever agents you configure, with whatever models they are set up to use:
-crewflow does not depend on a particular agent, model, language or stack.
+**A fail-closed coordination protocol for coding agents: one task, one worktree, one reviewed SHA,
+one verified merge.**
 
-- The executor is launched **headless** in its own `git worktree` for each task.
-- A task is an issue written as a **readable spec** for a human, with a collapsed technical part
-  for the executor.
-- Issues and pull requests are the source of truth. A review is a comment
-  `REVIEW: APPROVED <sha>`; a merge is **fast-forward only**, of exactly the approved commit, on
-  green CI.
-- Project gates (format, lint, tests, build…) and requirements are plain commands in
-  `crewflow.toml`.
+An executor implements one task in its own git worktree. An orchestrator reviews the result and
+decides what gets merged. Issues and pull requests remain the source of truth, approvals are
+bound to a specific commit SHA, and a merge is a fast-forward of exactly that commit on green CI.
 
-Status: early. The first milestone works and is used daily on a real project; the design and
-the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian).
+```
+Issue → Run → Pull request → Review → Approval(SHA) → Merge gate → Verify
+```
+
+## Why
+
+Most agent workflows optimise autonomy. crewflow optimises coordination:
+
+- one task = one worktree;
+- one approval = one commit SHA;
+- one merge = one verified fast-forward;
+- the executor and the orchestrator have different responsibilities;
+- git hosting stays the source of truth.
+
+The goal is not to replace the orchestrator. The goal is agent collaboration that follows explicit
+rules, boundaries and responsibilities, on any project, with no loss of quality.
+
+## What crewflow is not
+
+- not a coding agent: it writes no code itself;
+- not a CI replacement: it reads the result of CI;
+- not a workflow database or a multi-user service: one person, one orchestrator, one machine.
+
+It is project-, agent- and language-agnostic: the gates, requirements and executor are plain
+commands in `crewflow.toml`.
+
+## Status
+
+Used daily on real projects ([telecli](https://github.com/naghuale/tele) and crewflow itself).
+
+Works today:
+
+- ✅ a worktree per task, a headless executor, a named outcome for every run
+- ✅ the review → changes requested → continue cycle, in the same session
+- ✅ tasks as readable specs, with boundaries and owner approval for risky ones
+- ✅ the executor reads the dependencies the project names and never a secret
+- ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
+
+In progress:
+
+- ⏳ the merge gate in code (`crewflow review`, `merge`, `verify`); until then the orchestrator
+  applies the same rules by hand
+- ⏳ the owner's acceptance of a review build before a merge
+- ⏳ `crewflow init` and recovery of an interrupted task
+
+The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian).
 
 ## Install
 
@@ -27,101 +64,67 @@ go install github.com/naghuale/crewflow/cmd/crewflow@latest
 
 ## Use
 
-Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml) and
-§5 of the design), then:
+Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml)), then:
 
 ```sh
-crewflow doctor            # check tools, requirements and access
-crewflow task check 12     # is issue #12 ready to be worked on?
-crewflow task run 12       # run the executor on it in its own worktree; opens a PR
+crewflow doctor            # tools, requirements, access, the identity of the executor
+crewflow task check 12     # is issue #12 ready and, if risky, approved?
+crewflow task run 12       # the executor works on it in its own worktree and opens a PR
 crewflow task watch 12     # follow a run live
-crewflow task list         # what has been run here, and what is going on right now
-crewflow task run 12 -continue "fix the failing test"   # continue the same session
+crewflow task list         # runs of this project, the ones going on at the top
+crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
-`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. Journals live in
-`~/.crewflow/runs`, worktrees in `~/.crewflow/worktrees`.
-
-`crewflow task list` shows the runs of the project from those journals and the state in
-`~/.crewflow/state`: the ones that are going on top, the rest from the last to the first,
-with the outcome of the last try, how long it took and the change request it opened. A run
-whose state says "running" while its process is gone (a closed window, a rebooted machine) is
-shown as `interrupted`. `-all` shows every run instead of the last twenty, and `-json` is the
-same list for an orchestrator.
-
-## Whose name the executor works under
-
-crewflow has two modes, and it says in every report which one a run went under
-(`executor: bot — GitHub App crewflow-executor (installation 12345)` or
-`executor: owner — the login gh naghuale (shared rights)`): in `crewflow doctor` and in
-its JSON, at the top of `task run` and `task watch`, in a column of `task list`, as the
-first line of a run's journal and in the state of the task, so that every attempt is
-attributable.
-
-- **`owner` (the default)** is what crewflow has always done: the executor works under the
-  login of the person (`gh auth`), nothing has to be set up, and `crewflow doctor` warns
-  that the powers of the executor are the powers of that login.
-- **`bot`** is the separated one: the executor works as a [GitHub
-  App](https://docs.github.com/en/apps) with narrow rights (contents and pull requests
-  write, issues and metadata read), a token of an hour for this repository only, commits
-  made by `crewflow-executor[bot]`, and a `pre-push` hook in a folder of its own that
-  lets nothing but the branch of the task through — the checkout of the person and every
-  other worktree of the repository keep their own hooks and push what they like. Together
-  with a branch rule on `main` that the App cannot bypass, the executor cannot push there
-  even if the task talks it into it.
-
-```toml
-[identity]
-mode = "bot"
-
-[identity.github_app]
-app_id = 5107052        # the number of the app in the settings of GitHub
-installation_id = 0     # 0: crewflow finds the installation on the repository
-```
-
-```sh
-crewflow auth app import ~/Downloads/crewflow-app.pem   # into the macOS keychain, then delete the file
-crewflow auth app check                                  # key, installation, rights — never a token
-```
-
-The private key of the App lives in the macOS keychain, is read only to sign a token, and
-never reaches the executor, a journal, an error or a terminal. The token itself is in the
-environment of the executor (which is why it is short, for one repository and with narrow
-rights) and is taken out of everything crewflow writes. Bot modes for other hosts and a
-Linux secret store are M7/M8; on Linux the mode `bot` for GitHub says it is not supported.
-See §7i of the design.
+`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`.
 
 ## Executors
 
-Any command-line agent that can run without a window works; the command is configured in
-`crewflow.toml`. [OpenCode](https://opencode.ai) is tested first:
+Any command-line agent that can run without a window. [OpenCode](https://opencode.ai) is tested
+first:
 
 ```toml
 [executor]
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
 ```
 
+## Whose name the executor works under
+
+- **`owner`** (default): the login of the person (`gh auth`); `crewflow doctor` warns that the
+  executor has the same powers.
+- **`bot`**: a [GitHub App](https://docs.github.com/en/apps) with narrow rights, a token of an
+  hour for one repository, commits by `crewflow-executor[bot]`, and a `pre-push` hook for the
+  branch of the task. With a branch rule on `main` the App cannot bypass, the executor cannot push
+  there even if a task talks it into it.
+
+```toml
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 5107052
+installation_id = 0     # 0: found on the repository
+```
+
+```sh
+crewflow auth app import ~/Downloads/<app>.pem   # into the macOS keychain; then delete the file
+crewflow auth app check                          # key, installation, rights — never a token
+```
+
+The private key stays in the macOS keychain and never reaches the executor, a journal or a
+terminal. See §7i of the design.
+
 ## What the executor may read
 
-The executor works in its worktree and is refused a permission for anything outside it — including
-the sources of the libraries it depends on. A project says in `[access]` **how to find** them, with
-commands rather than paths, because the paths are different on every machine:
+Only its worktree, plus the folders the project names **by commands**, read-only:
 
 ```toml
 [access]
 read_from = [["go", "env", "GOMODCACHE"], ["go", "env", "GOROOT"]]
-read = ["/opt/homebrew/include"]
 ```
 
-crewflow runs those commands before the run and opens the folders it is given to **read only**, in
-both spellings of every path: `/var` and `/private/var` are one folder in two names, and an agent
-asks in the one it wrote. The places that hold secrets — `~/.ssh`, `~/.gnupg`,
-`~/Library/Keychains`, `~/.config/gh`, `~/.aws`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`,
-`.env` files — stay closed whatever a project says, to reading and to writing, as does the `.env`
-of the worktree itself; so do the root of a disk, the home folder and anything a secret sits in.
-`crewflow doctor` shows what is open on this machine and what was refused and why; the first line
-of the journal of a run is the policy it was started with. See §7d of the design.
+Places of secrets (`~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`, `~/.aws`,
+`~/.netrc`, `.env` files…) stay closed whatever a project says. See §7d of the design.
 
 ## License
 
