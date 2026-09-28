@@ -133,14 +133,15 @@ func TestAppKeyIsNamedAfterTheApp(t *testing.T) {
 // in two parts so that this test does not match itself.
 var noKeychainIsTheNameOfTheStoreOfThisMachine = regexp.MustCompile(`\bSys` + `tem\(\)`)
 
-// TestNoTestOfThisPackageOpensTheKeychain: the store of this machine is the keychain of
-// the person who runs the tests, and a test that read or wrote there would either wait
-// for a window of macOS or leave a key of a test run in a store kept for ever. Every
-// test of crewflow hands a run a store of its own instead, and the store that [System]
-// hands out is built and never used in a test — which is what this keeps true, by
-// looking at the tests of this package instead of trusting a promise in a comment
-// (docs/DESIGN.md §7i).
-func TestNoTestOfThisPackageOpensTheKeychain(t *testing.T) {
+// TestNoTestOfThisPackageTouchesTheKeychainUnasked: the store of this machine is the
+// keychain of the person who runs the tests, and a test that read or wrote there would
+// leave a key of a test run in a store kept for ever. A test of this package may reach
+// it in exactly two ways: it is built only where the machine has no keychain at all, or
+// it is skipped unless the owner says so with the variable of the test of the framework —
+// which the CI and a run of a task never set. Every other test hands a run a store of
+// its own, and this looks at the tests of the package to keep it that way instead of
+// trusting a promise in a comment (docs/DESIGN.md §7i).
+func TestNoTestOfThisPackageTouchesTheKeychainUnasked(t *testing.T) {
 	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read the folder of the package: %v", err)
@@ -154,14 +155,19 @@ func TestNoTestOfThisPackageOpensTheKeychain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
 		}
-		// A test of the store of a machine that has none is built only where the
-		// keychain of macOS is not there, and it may ask the store of the machine: what
-		// it checks is the refusal, and there is nothing to refuse here.
-		if strings.Contains(string(test), "!darwin") {
+		if !noKeychainIsTheNameOfTheStoreOfThisMachine.Match(test) {
 			continue
 		}
-		if noKeychainIsTheNameOfTheStoreOfThisMachine.Match(test) {
-			t.Errorf("%s calls the store of this machine, want a store of the test: the keychain of a person is not a fixture", name)
+		// A test of the store of a machine that has none is built only where the keychain
+		// of macOS is not there, and it may ask the store of the machine: what it checks
+		// is the refusal, and there is nothing to refuse here. A test of the framework
+		// itself is skipped unless the owner says so.
+		switch text := string(test); {
+		case strings.Contains(text, "!darwin"):
+		case strings.Contains(text, keychainTestVariable):
+		default:
+			t.Errorf("%s asks the store of this machine and nothing tells the owner that it does: "+
+				"build it only where there is no keychain, or skip it unless %s=1", name, keychainTestVariable)
 		}
 	}
 }

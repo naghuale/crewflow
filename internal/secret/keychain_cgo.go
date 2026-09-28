@@ -22,7 +22,12 @@ static CFStringRef crewflowString(const char *text) {
 static CFDictionaryRef crewflowMatch(const char *service, const char *account, int withData) {
 	CFStringRef name = crewflowString(service);
 	CFStringRef who = crewflowString(account);
-	CFMutableDictionaryRef match = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, NULL, NULL);
+	// The key and the value callbacks are what make the dictionary hold on to what is
+	// put into it: a mutable dictionary made with NULL callbacks keeps no reference at
+	// all, and the two strings below would be released with the pointers to them still
+	// inside the match that goes to the framework.
+	CFMutableDictionaryRef match = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	CFDictionarySetValue(match, kSecClass, kSecClassGenericPassword);
 	CFDictionarySetValue(match, kSecAttrService, name);
 	CFDictionarySetValue(match, kSecAttrAccount, who);
@@ -30,6 +35,7 @@ static CFDictionaryRef crewflowMatch(const char *service, const char *account, i
 		CFDictionarySetValue(match, kSecMatchLimit, kSecMatchLimitOne);
 		CFDictionarySetValue(match, kSecReturnData, kCFBooleanTrue);
 	}
+	// The dictionary holds its own reference now, and this one is not its own.
 	CFRelease(name);
 	CFRelease(who);
 	return match;
@@ -44,6 +50,13 @@ static int crewflowGet(const char *service, const char *account, unsigned char *
 	CFRelease(query);
 	if (status != errSecSuccess) {
 		return (int)status;
+	}
+	if (CFGetTypeID(found) != CFDataGetTypeID()) {
+		// The framework answered with something that is not data. Reading it as data
+		// would be a guess, and the guess is released here on the way out: nothing of
+		// the answer of the framework is left behind, whatever it was.
+		CFRelease(found);
+		return (int)errSecInternalError;
 	}
 	CFDataRef data = (CFDataRef)found;
 	long length = (long)CFDataGetLength(data);
@@ -68,14 +81,20 @@ static int crewflowSet(const char *service, const char *account, const unsigned 
 	CFStringRef who = crewflowString(account);
 	CFDataRef data = CFDataCreate(kCFAllocatorDefault, (const UInt8 *)value, (CFIndex)length);
 	CFDictionaryRef match = crewflowMatch(service, account, 0);
-	CFMutableDictionaryRef only = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, NULL, NULL);
+	// The callbacks are what keep the value alive for as long as the attributes are
+	// there — the same reason as in crewflowMatch, and the value below is released
+	// only at the end of this function.
+	CFMutableDictionaryRef only = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	CFDictionarySetValue(only, kSecValueData, data);
 	OSStatus status = SecItemUpdate(match, only);
 	if (status == errSecItemNotFound) {
 		// There is no item of this name yet, and a whole item is made of the class,
 		// the name and the value: the framework refuses a match that carries a search
-		// limit, which is why this dictionary is not the match of the call above.
-		CFMutableDictionaryRef add = CFDictionaryCreateMutable(kCFAllocatorDefault, 0, NULL, NULL);
+		// limit, which is why this dictionary is not the match of the call above. The
+		// callbacks keep every value of it alive while SecItemAdd is reading it.
+		CFMutableDictionaryRef add = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+			&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 		CFDictionarySetValue(add, kSecClass, kSecClassGenericPassword);
 		CFDictionarySetValue(add, kSecAttrService, name);
 		CFDictionarySetValue(add, kSecAttrAccount, who);
@@ -123,6 +142,23 @@ static char *crewflowError(int status) {
 	}
 	strcpy(copy, buffer);
 	return copy;
+}
+
+// crewflowDelete takes one item of the keychain away: what the store of a secret has no
+// reason to do, and the one test of this package has every reason to.
+static int crewflowDelete(const char *service, const char *account) {
+	CFStringRef name = crewflowString(service);
+	CFStringRef who = crewflowString(account);
+	CFMutableDictionaryRef match = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	CFDictionarySetValue(match, kSecClass, kSecClassGenericPassword);
+	CFDictionarySetValue(match, kSecAttrService, name);
+	CFDictionarySetValue(match, kSecAttrAccount, who);
+	OSStatus status = SecItemDelete(match);
+	CFRelease(match);
+	CFRelease(name);
+	CFRelease(who);
+	return (int)status;
 }
 
 static void crewflowFree(void *memory) { free(memory); }
@@ -213,6 +249,22 @@ func (keychain) Has(service, account string) (bool, error) {
 		return false, nil
 	default:
 		return false, keychainRefused("look for", service, account, status)
+	}
+}
+
+// delete takes an item of the keychain away. It is not a part of [Store] and crewflow
+// has no reason to take a secret away: what it does with a key of an App is to keep it.
+// It is here for the one test of this package that writes into the keychain of the
+// person who runs it, because an item of a test has to be gone when the test is over.
+func (keychain) delete(service, account string) error {
+	name, who := C.CString(service), C.CString(account)
+	defer C.free(unsafe.Pointer(name))
+	defer C.free(unsafe.Pointer(who))
+	switch status := int(C.crewflowDelete(name, who)); status {
+	case statusYes, statusNoItem:
+		return nil
+	default:
+		return keychainRefused("take", service, account, status)
 	}
 }
 
