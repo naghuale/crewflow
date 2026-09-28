@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,7 +66,9 @@ func (s State) Attempt(number int) (Attempt, bool) {
 }
 
 // NextAttempt is the number the next start of the executor of this task gets, and
-// the state with that attempt added and not written anywhere yet.
+// the state with that attempt added and not written anywhere yet. The attempt is
+// running from the moment it is added: it is what the state of a task says while the
+// executor works, and what a run that is cut short leaves behind.
 func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool) State {
 	next := len(s.Attempts) + 1
 	s.Attempts = append(s.Attempts, Attempt{
@@ -73,6 +76,7 @@ func (s State) NextAttempt(started time.Time, journal, errorJournal string, cont
 		StartedAt:    started,
 		Journal:      journal,
 		ErrorJournal: errorJournal,
+		Outcome:      Running,
 		Continued:    continued,
 	})
 	return s
@@ -127,16 +131,57 @@ func (j Journals) file(number, attempt int, suffix string) string {
 	return strconv.Itoa(number) + "-" + strconv.Itoa(attempt) + suffix
 }
 
-// WriteJournal writes what the executor wrote into the file of the attempt, and
-// what it said on the way out into the one next to it. Nothing of a run is kept in
-// the state: the journals are what a person reads to see what the agent did, and
-// they grow by the megabyte (docs/DESIGN.md §7a).
-func (j Journals) WriteJournal(number, attempt int, stdout, stderr []byte) (journal, errorJournal string, err error) {
-	journal, errorJournal = j.JournalPath(number, attempt), j.errorJournalPath(number, attempt)
-	if err := writeFile(journal, stdout); err != nil {
-		return "", "", err
+// AttemptFiles are the two files of one attempt, open and ready to be written to
+// while the executor is writing: the journal of what it wrote and the way out of it,
+// next to each other.
+type AttemptFiles struct {
+	// Journal and ErrorJournal are where the files are, which is what a person is
+	// sent to and what `crewflow task watch` reads.
+	Journal      string
+	ErrorJournal string
+	// Out and ErrOut are the open files. Everything written to them goes to the
+	// files above as well: a journal that is written only at the end of a run is a
+	// journal of a run that was cut short with nothing in it.
+	Out, ErrOut *os.File
+}
+
+// Begin opens the two files of an attempt, before the executor is started. What a
+// run writes is in them from its first line, so that a run that is cut short leaves
+// its journal behind (docs/DESIGN.md §7).
+func (j Journals) Begin(number, attempt int) (*AttemptFiles, error) {
+	files := &AttemptFiles{
+		Journal:      j.JournalPath(number, attempt),
+		ErrorJournal: j.errorJournalPath(number, attempt),
 	}
-	return journal, errorJournal, writeFile(errorJournal, stderr)
+	var err error
+	if files.Out, err = openForWriting(files.Journal); err != nil {
+		return nil, err
+	}
+	if files.ErrOut, err = openForWriting(files.ErrorJournal); err != nil {
+		_ = files.Out.Close()
+		return nil, err
+	}
+	return files, nil
+}
+
+// Close is what a run does with the files of its attempt when the executor is done:
+// the journal of a run is closed before anything is read out of it.
+func (f *AttemptFiles) Close() error {
+	return errors.Join(f.Out.Close(), f.ErrOut.Close())
+}
+
+// openForWriting makes the file of a journal and empties it: the file of an attempt
+// is written by one run, and what a run of an earlier attempt wrote is in the file of
+// that attempt.
+func openForWriting(path string) (*os.File, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("make %s: %w", filepath.Dir(path), err)
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("write %s: %w", path, err)
+	}
+	return file, nil
 }
 
 // LoadState reads what crewflow kept of a task. A task with no state is not an

@@ -1,0 +1,7 @@
+[project]
+repo = "naghuale/crewflow"
+language = "en"
+commit_style = "conventional: type(scope): subject"
+
+[executor]
+command = ["opencode", "run", "{prompt}"]

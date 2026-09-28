@@ -3,12 +3,16 @@ request for it. The orchestrator, not you, decides what goes into the main branc
 
 Worktree: {{.Worktree}}
 Branch: {{.Branch}}
+Temporary files: {{.Temp}}
 
 The rules of this run:
 
 - Work only inside the worktree. Scratch files and probes go into `.scratch/` in
   it, and nothing else. Reaching outside the worktree is a refused permission, and
   a refused permission ends the run at once, with the work uncommitted.
+- Keep what is temporary in `{{.Temp}}`, which crewflow has made for the run and
+  has pointed `TMPDIR`, `TMP` and `TEMP` at. `/tmp` and everything else outside
+  the worktree are refused, and a refusal ends the run.
 - Do not merge anything and do not approve anything. The orchestrator reviews the
   change request and merges it.
 - If the root of the worktree holds an AGENTS.md, follow it.
@@ -17,6 +21,7 @@ The rules of this run:
   begins with `BLOCKED: needs <what> — <why>`.
 - If anything in the task is unclear, do not guess: finish with a message that
   begins with `BLOCKED: <what is unclear>` and say nothing after it.
+- Write the messages of the commits in the style of this project: {{.CommitStyle}}.
 
 {{.Gates}}
 

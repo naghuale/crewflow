@@ -34,21 +34,37 @@ type assignment struct {
 	// Branch and Worktree are where the work is to be done.
 	Branch   string
 	Worktree string
+	// Temp is the folder in the worktree where the executor may keep its temporary
+	// files, named as a path: an agent that was told where it may write keeps its
+	// temporary files there and does not have to be refused a permission for it.
+	Temp string
+	// CommitStyle is how the messages of the commits of this project are written.
+	CommitStyle string
 	// Gates is what the project says has to pass before the work is reviewed.
 	Gates string
 }
+
+// defaultCommitStyle is the rule the executor is given when the project says nothing
+// about the style of its commits: the style of the last commits of the repository
+// itself. The pilot of M1.4 wrote a commit with a paragraph of text in it because
+// the assignment said nothing about the style, and a person who writes the messages of
+// the commits is the only one who knows what the project calls a message.
+const defaultCommitStyle = "follow the style of the last commits of the project " +
+	"(`git log --oneline -20`): a short first line of at most 72 characters, an empty line, and then the body"
 
 // Prompt is what the executor of a run is asked to do: the rules of the run, the
 // commands of the project that must pass, and the whole task. The task goes last,
 // because the rules are what the agent has to hold while it works through it.
 func Prompt(t forge.Task, cfg config.Config, branch, worktree string) (string, error) {
 	return fill(assignment{
-		Number:   t.Number,
-		Title:    t.Title,
-		Body:     t.Body,
-		Branch:   branch,
-		Worktree: worktree,
-		Gates:    gates(cfg.Gates),
+		Number:      t.Number,
+		Title:       t.Title,
+		Body:        t.Body,
+		Branch:      branch,
+		Worktree:    worktree,
+		Temp:        Scratch(worktree),
+		CommitStyle: commitStyle(cfg),
+		Gates:       gates(cfg.Gates),
 	})
 }
 
@@ -58,17 +74,28 @@ func Prompt(t forge.Task, cfg config.Config, branch, worktree string) (string, e
 // the task again, or it would begin from nothing (docs/DESIGN.md §7a).
 func Continuation(message string, t forge.Task, cfg config.Config, branch, worktree string) (string, error) {
 	assignment := assignment{
-		Number:   t.Number,
-		Title:    t.Title,
-		Body:     t.Body,
-		Branch:   branch,
-		Worktree: worktree,
-		Gates:    gates(cfg.Gates),
+		Number:      t.Number,
+		Title:       t.Title,
+		Body:        t.Body,
+		Branch:      branch,
+		Worktree:    worktree,
+		Temp:        Scratch(worktree),
+		CommitStyle: commitStyle(cfg),
+		Gates:       gates(cfg.Gates),
 	}
 	// The message comes before the task for the same reason the task comes last in
 	// a first run: what the orchestrator asks for now is what the agent reads
 	// first, and the task is what it works by.
 	return fill(assignment, message+"\n\n")
+}
+
+// commitStyle is the rule the executor is given about the messages of the commits:
+// what the project wrote in its settings, or the style of its last commits.
+func commitStyle(cfg config.Config) string {
+	if style := strings.TrimSpace(cfg.Project.CommitStyle); style != "" {
+		return style
+	}
+	return defaultCommitStyle
 }
 
 // fill writes the template of the run into the text that goes before it, and is the

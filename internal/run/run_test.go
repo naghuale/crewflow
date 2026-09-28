@@ -215,6 +215,7 @@ func TestRunMakesTheWorktree(t *testing.T) {
 	want := []string{
 		"git fetch origin main",
 		"git worktree add -b " + result.Branch + " " + result.Worktree + " origin/main",
+		"git rev-parse --git-common-dir",
 		"git diff --name-only origin/main...HEAD",
 	}
 	var got []string
@@ -226,14 +227,17 @@ func TestRunMakesTheWorktree(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("the commands of git = %v, want %v", got, want)
 	}
-	for _, command := range m.ran {
+	for _, command := range m.all() {
 		if !strings.HasPrefix(command.program, "git") {
 			continue
 		}
 		want := m.repo
-		if slices.Contains(command.args, "diff") {
-			// What the run changed is asked in the worktree, which is where the
-			// changes are: git of the repository knows nothing of them yet.
+		switch {
+		// What the run changed is asked in the worktree, which is where the changes
+		// are: git of the repository knows nothing of them yet. The repository the
+		// scratch of a run is kept out of is asked in the worktree too, which is a
+		// worktree of it.
+		case slices.Contains(command.args, "diff"), slices.Contains(command.args, "rev-parse"):
 			want = result.Worktree
 		}
 		if command.dir != want {

@@ -49,21 +49,63 @@ func TestJournalsPaths(t *testing.T) {
 	}
 }
 
-// TestWriteJournal checks that both files of an attempt are written, and that they
-// hold what the executor wrote and what it said on the way out: a run is read after
-// it is over, and nobody reads it out of the memory of the process that ran it.
-func TestWriteJournal(t *testing.T) {
+// TestBeginOpensTheFilesOfAnAttempt checks that the two files of an attempt are
+// there before the executor writes a line into them, and that what is written to
+// them is in them right away: a run that crewflow is killed in the middle of leaves
+// its journal behind, and a journal written at the end of a run is empty for exactly
+// that run (docs/DESIGN.md §7).
+func TestBeginOpensTheFilesOfAnAttempt(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 
-	journal, errorJournal, err := journals.WriteJournal(43, 1, []byte("events\n"), []byte("refusals\n"))
+	files, err := journals.Begin(43, 1)
 	if err != nil {
-		t.Fatalf("WriteJournal returned an error: %v", err)
+		t.Fatalf("Begin returned an error: %v", err)
 	}
-	if got := read(t, journal); got != "events\n" {
-		t.Errorf("the journal holds %q, want what the executor wrote", got)
+	if _, err := files.Out.WriteString("I did the work.\n"); err != nil {
+		t.Fatalf("write the journal: %v", err)
 	}
-	if got := read(t, errorJournal); got != "refusals\n" {
-		t.Errorf("the journal of the way out holds %q, want what the executor said", got)
+	if _, err := files.ErrOut.WriteString("a refusal\n"); err != nil {
+		t.Fatalf("write the way out: %v", err)
+	}
+
+	if got := read(t, files.Journal); got != "I did the work.\n" {
+		t.Errorf("the journal holds %q before the run is over, want what the executor wrote", got)
+	}
+	if got := read(t, files.ErrorJournal); got != "a refusal\n" {
+		t.Errorf("the journal of the way out holds %q before the run is over, want what the executor said", got)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatalf("Close returned an error: %v", err)
+	}
+	if got := read(t, files.Journal); got != "I did the work.\n" {
+		t.Errorf("the journal holds %q after the run, want what the executor wrote", got)
+	}
+}
+
+// TestBeginEmptiesTheFilesOfAnAttempt: the file of an attempt is written by one
+// run, and what the run of another attempt wrote is in the file of that attempt.
+func TestBeginEmptiesTheFilesOfAnAttempt(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	first, err := journals.Begin(43, 1)
+	if err != nil {
+		t.Fatalf("Begin returned an error: %v", err)
+	}
+	if _, err := first.Out.WriteString("the first attempt\n"); err != nil {
+		t.Fatalf("write the journal: %v", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("Close returned an error: %v", err)
+	}
+
+	again, err := journals.Begin(43, 1)
+	if err != nil {
+		t.Fatalf("Begin of the same attempt returned an error: %v", err)
+	}
+	if err := again.Close(); err != nil {
+		t.Fatalf("Close returned an error: %v", err)
+	}
+	if got := read(t, again.Journal); got != "" {
+		t.Errorf("the journal of the attempt holds %q, want nothing: a run starts with an empty file", got)
 	}
 }
 

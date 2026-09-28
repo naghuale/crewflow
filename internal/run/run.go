@@ -9,8 +9,11 @@
 package run
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -30,9 +33,15 @@ type Env struct {
 	// and the state of every task (§7).
 	Home string
 	// Command starts a program in dir and returns what it wrote and the code it
-	// exited with. Both git and the executor go through it, the way they do in
+	// exited with. Git and the tools of a project go through it, the way they do in
 	// doctor (§7d).
 	Command func(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error)
+	// Stream starts a program in dir and writes what it writes to stdout and stderr
+	// as it comes, with the given environment added to the one of the process. The
+	// executor goes through it and nothing else does: the journal of a run is written
+	// while the run goes on, and nothing of a run is only in the memory of the
+	// process that ran it (§7).
+	Stream func(ctx context.Context, name string, args []string, dir string, env []string, stdout, stderr io.Writer) (exitCode int, err error)
 	// Now is the clock of a run, so that a report says when a thing happened and a
 	// test does not have to wait for it to happen.
 	Now func() time.Time
@@ -41,7 +50,7 @@ type Env struct {
 // System is the machine this process runs on, with the given root of what crewflow
 // keeps of its own.
 func System(home string) Env {
-	return Env{Home: home, Command: Start, Now: time.Now}
+	return Env{Home: home, Command: Start, Stream: Stream, Now: time.Now}
 }
 
 // Start starts a program in dir and returns what it wrote and the code it exited
@@ -271,6 +280,10 @@ func (r *runner) stateOf(started time.Time) State {
 // start runs the executor in the worktree of the task and says what came of it. The
 // time limit of the run is the one of the project: a hang is an outcome of a run and
 // not a reason to wait for ever (docs/DESIGN.md §7a).
+//
+// The state of the task is written before the executor is started and again when it
+// is done: a run that crewflow is killed in the middle of has to leave behind the
+// attempt, the worktree and the journal of what it was doing (§7).
 func (r *runner) start(ctx context.Context) (Result, error) {
 	timeout, err := time.ParseDuration(r.cfg.Executor.Timeout)
 	if err != nil {
@@ -282,18 +295,32 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	}
 	state := r.stateOf(r.env.Now())
 	attempt := state.Attempts[len(state.Attempts)-1]
+	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+		return Result{}, err
+	}
+	files, err := r.journals.Begin(r.task.Number, attempt.Number)
+	if err != nil {
+		return r.stopBeforeStart(state, err)
+	}
+	if err := r.scratch(ctx); err != nil {
+		_ = files.Close()
+		return r.stopBeforeStart(state, err)
+	}
 
 	// The time limit of the run is on the context, and a program that is still
-	// going when it is out is killed with it: the run has an end whatever the
+	// going when it is out is asked to stop with it: the run has an end whatever the
 	// executor thinks of it.
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	stdout, stderr, code, err := r.env.Command(ctx, command[0], command[1:], r.worktree)
-	timedOut := ctx.Err() == context.DeadlineExceeded
-	ended := r.env.Now()
-
-	journal, errorJournal, writeErr := r.journals.WriteJournal(r.task.Number, attempt.Number, stdout, stderr)
+	// What the executor wrote is in the journal from its first line and is also kept
+	// in memory, because a run is judged out of what the agent said, and the file is
+	// the only one of the two a person and a watch can read (docs/DESIGN.md §7a).
+	var out, errOut bytes.Buffer
+	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, tempEnv(r.worktree),
+		io.MultiWriter(&out, files.Out), io.MultiWriter(&errOut, files.ErrOut))
+	ended := r.endOf(ctx, runCtx)
+	closeErr := files.Close()
 	result := Result{
 		Task:         r.task.Number,
 		Title:        r.task.Title,
@@ -304,25 +331,52 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		Attempt:      attempt.Number,
 		Continued:    r.req.Continue != "",
 		StartedAt:    attempt.StartedAt,
-		EndedAt:      ended,
-		Journal:      journal,
-		ErrorJournal: errorJournal,
+		EndedAt:      r.env.Now(),
+		Journal:      files.Journal,
+		ErrorJournal: files.ErrorJournal,
 		ExitCode:     code,
 	}
 	if err != nil {
 		// The executor could not be started at all. That is said where a person
 		// reads the way out of a run, and the outcome is a run that failed.
-		result.ErrorJournal = r.noteError(errorJournal, err)
+		result.ErrorJournal = r.noteError(files.ErrorJournal, err)
 	}
-	if writeErr != nil {
-		return result, writeErr
+	if closeErr != nil {
+		return result, closeErr
 	}
 	// The session of the run is what a continuation goes on in, and it is found in
 	// what the executor wrote even when the run ended badly.
-	result.Session = r.profile.SessionID(stdout)
+	result.Session = r.profile.SessionID(out.Bytes())
 
-	result, err = r.outcome(ctx, result, stdout, stderr, code, timedOut)
+	result, err = r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended)
 	return result, r.keep(state, result, err)
+}
+
+// stopBeforeStart is what a run does when the executor could not be started at all:
+// the attempt ends here, and the state of the task says so. An attempt left running
+// would be a run that goes on in every watch of the task, and there is none.
+func (r *runner) stopBeforeStart(state State, err error) (Result, error) {
+	ended := state.Ended(r.env.Now(), ExecutorFailed)
+	if keepErr := SaveState(r.journals.StatePath(r.task.Number), ended); keepErr != nil {
+		return Result{}, errors.Join(err, keepErr)
+	}
+	return Result{}, err
+}
+
+// endOf is how a run that has just stopped ended, asked of the two contexts of the
+// run: the one of the caller, which a signal of a person cancels, and the one with
+// the time limit of the project on it, which says that the run ran out of time. A
+// person who stopped a run is told so, and the run of a project that ran out of
+// time is told that (docs/DESIGN.md §7a).
+func (r *runner) endOf(caller, run context.Context) Kind {
+	switch {
+	case errors.Is(caller.Err(), context.Canceled):
+		return Interrupted
+	case errors.Is(run.Err(), context.DeadlineExceeded):
+		return TimedOut
+	default:
+		return ""
+	}
 }
 
 // keep writes what happened down, so that after an interruption it is visible where

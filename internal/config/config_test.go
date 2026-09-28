@@ -150,6 +150,31 @@ owner_approval = "`+want+`"
 	}
 }
 
+// TestLoadCommitStyle checks the key that says how the messages of the commits of a
+// project are written, and that a project which says nothing about it has none: the
+// rule crewflow falls back on is the one that works in every repository
+// (docs/DESIGN.md §5).
+func TestLoadCommitStyle(t *testing.T) {
+	t.Run("the style of the project", func(t *testing.T) {
+		cfg, err := loadFile(t, "commit_style.toml")
+		if err != nil {
+			t.Fatalf("Load(commit_style.toml) returned an error: %v", err)
+		}
+		if got, want := cfg.Project.CommitStyle, "conventional: type(scope): subject"; got != want {
+			t.Errorf("project.commit_style = %q, want %q", got, want)
+		}
+	})
+	t.Run("a project that says nothing", func(t *testing.T) {
+		cfg, err := loadFile(t, "minimal.toml")
+		if err != nil {
+			t.Fatalf("Load(minimal.toml) returned an error: %v", err)
+		}
+		if got := cfg.Project.CommitStyle; got != "" {
+			t.Errorf("project.commit_style = %q, want none: the style of the last commits stands", got)
+		}
+	})
+}
+
 // TestLoadCIRequiredFalse is the other way round: a key written as false must
 // not be mistaken for a missing key and turned back into the default.
 func TestLoadCIRequiredFalse(t *testing.T) {

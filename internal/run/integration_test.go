@@ -179,6 +179,75 @@ func TestRunAgainstRealGitContinuesTheSession(t *testing.T) {
 	}
 }
 
+// TestRunKeepsTheScratchOfTheExecutorOutOfTheProject runs a task against a real
+// repository, twice, and looks at what a run leaves in it: the folder the executor
+// keeps its temporary files in, the environment it was pointed at, and the local
+// ignore of git that keeps that folder out of the project. The `.gitignore` of the
+// repository is not touched: a repository a person owns is not changed because a task
+// was run in it.
+func TestRunKeepsTheScratchOfTheExecutorOutOfTheProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	ignore := filepath.Join(repo, ".gitignore")
+	if err := os.WriteFile(ignore, []byte("dist/\n"), 0o600); err != nil {
+		t.Fatalf("write the .gitignore of the project: %v", err)
+	}
+	gitOf(t, repo, "add", ".gitignore")
+	gitOf(t, repo, "commit", "-m", "chore: the ignore of the project")
+	// The fake executor writes down the temporary folder it was given and the
+	// arguments it was run with, as a program of a real run would find them.
+	executor := fakeExecutor(t, "agent",
+		"printf '%s\\n' \"$*\" > args\n"+
+			"printf 'TMPDIR=%s\\nTMP=%s\\nTEMP=%s\\n' \"$TMPDIR\" \"$TMP\" \"$TEMP\" > tempdir\n"+
+			"printf '%s' '"+theEvents+"'\n")
+	host := &host{task: taskOf(43)}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	home := t.TempDir()
+
+	var result Result
+	for _, request := range []Request{
+		{Number: 43, RepoDir: repo},
+		{Number: 43, RepoDir: repo, Continue: "the review asked for a test of the scratch"},
+	} {
+		run, err := Run(t.Context(), System(home), cfg, host.set(), request)
+		if err != nil {
+			t.Fatalf("Run returned an error: %v", err)
+		}
+		result = run
+	}
+
+	scratch := filepath.Join(result.Worktree, ".scratch", "tmp")
+	if info, err := os.Stat(scratch); err != nil {
+		t.Errorf("the folder %s of the temporary files of the executor is not there: %v", scratch, err)
+	} else if !info.IsDir() {
+		t.Errorf("%s is not a folder, want the folder the executor keeps its temporary files in", scratch)
+	}
+	want := fmt.Sprintf("TMPDIR=%s\nTMP=%s\nTEMP=%s\n", scratch, scratch, scratch)
+	if got := read(t, filepath.Join(result.Worktree, "tempdir")); got != want {
+		t.Errorf("the executor was started with the temporary folder %q, want %q", got, want)
+	}
+	// The assignment names the folder as a path, so that the agent is not left to
+	// work out where it may write.
+	if asked := read(t, filepath.Join(result.Worktree, "args")); !strings.Contains(asked, scratch) {
+		t.Errorf("what the executor was asked does not name %s:\n%s", scratch, asked)
+	}
+	// The scratch of every worktree of the repository is ignored once, in the local
+	// ignore of git, and the .gitignore of the project is as the person left it.
+	exclude := filepath.Join(repo, ".git", "info", "exclude")
+	if got := strings.Count(read(t, exclude), scratchIgnore); got != 1 {
+		t.Errorf("%s holds the scratch %d times after two runs, want it once", exclude, got)
+	}
+	if got := read(t, ignore); got != "dist/\n" {
+		t.Errorf("the .gitignore of the project holds %q, want it as it was", got)
+	}
+	if status := gitOut(t, result.Worktree, "status", "--porcelain"); strings.Contains(status, scratchIgnore) {
+		t.Errorf("git in the worktree holds the scratch of the run:\n%s, want it out of the way", status)
+	}
+}
+
 // repository is a git repository with a commit in it and an origin of its own, so
 // that a worktree can be made out of the default branch of it as a real one. It is
 // made in a folder of the test and thrown away with it.

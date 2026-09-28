@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -38,6 +39,154 @@ const refusalsOfRun = "" +
 const opencodeBlocked = `{"type":"text","sessionID":"ses_3Kd8","part":{"type":"text","text":"I cannot install a package."}}
 {"type":"text","sessionID":"ses_3Kd8","part":{"type":"text","text":"BLOCKED: needs libtdjson — the build cannot find it"}}
 `
+
+// TestRead checks what a person sees while a run of OpenCode goes on: the words of
+// the agent, every tool it called with the argument that names the call and the state
+// of it, and the permissions it was refused. The answers are the fixtures of what a
+// run writes, so that the reading follows the output of the agent and not a guess
+// about it (docs/DESIGN.md §7a).
+func TestRead(t *testing.T) {
+	journal := linesOf(t, "testdata/run.jsonl")
+	refusals := linesOf(t, "testdata/refusals.err")
+
+	got := (opencode{}).Read(journal, refusals)
+	want := []string{
+		"I read the task and started on it.",
+		"bash: go test -race -count=1 ./... (running)",
+		"read: internal/run/run.go (completed)",
+		"grep: func \\w+ run (completed)",
+		"The change request is open.",
+		"external_directory /tmp/*",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Read = %q,\nwant %q", got, want)
+	}
+}
+
+// TestReadWalksTheOtherShapesOfAToolCall: an agent calls its tools under a name that
+// has changed once already, and a field crewflow does not read today may change
+// tomorrow. A call is recognized by what it carries, not by the spelling of the word
+// that says it is a call.
+func TestReadWalksTheOtherShapesOfAToolCall(t *testing.T) {
+	cases := []struct {
+		name   string
+		events string
+		want   string
+	}{
+		{
+			name:   "the name of the run of the pilot",
+			events: `{"type":"tool-use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"go build ./..."}}}}`,
+			want:   "bash: go build ./... (completed)",
+		},
+		{
+			name:   "the tool named in the type alone",
+			events: `{"type":"tool_use","part":{"type":"tool_use","state":{"status":"error","input":{"filePath":"go.mod"}}}}`,
+			want:   "tool: go.mod (error)",
+		},
+		{
+			name:   "a call with no argument crewflow knows",
+			events: `{"type":"tool_use","part":{"type":"tool","tool":"todowrite","state":{"status":"completed","input":{"content":"a plan"}}}}`,
+			want:   "todowrite (completed)",
+		},
+		{
+			name:   "a call of a state with no status",
+			events: `{"type":"tool_use","part":{"type":"tool","tool":"read","state":{"input":{"filePath":"main.go"}}}}`,
+			want:   "read: main.go",
+		},
+		{
+			name:   "a long argument is cut short, not the line",
+			events: `{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"` + strings.Repeat("go test ./... && ", 40) + `true"}}}}`,
+			want:   "bash: " + strings.Repeat("go test ./... && ", 40)[:argLimit] + "... (completed)",
+		},
+		{
+			name:   "a line the agent wrote that is not an event",
+			events: "starting the model\n",
+			want:   "starting the model",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := (opencode{}).Read(linesOfText(tc.events), nil)
+
+			if !slices.Equal(got, []string{tc.want}) {
+				t.Errorf("Read = %q, want [%q]", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestGenericReadsEveryLineAsItIs: an agent crewflow knows nothing about has its
+// lines shown as they are, the words of the agent and the way out alike, because the
+// only shape crewflow may rely on is the shape of a line of text.
+func TestGenericReadsEveryLineAsItIs(t *testing.T) {
+	journal := []string{"I did the work.", ""}
+	refusals := []string{"the provider is out of funds"}
+
+	got := (generic{}).Read(journal, refusals)
+
+	want := []string{"I did the work.", "the provider is out of funds"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Read = %q, want %q", got, want)
+	}
+}
+
+// TestReadOfAnAgentThatSaidNothing: a run whose journal is empty yet, which is what a
+// run that has just started looks like, has no lines to show and is not an error.
+func TestReadOfAnAgentThatSaidNothing(t *testing.T) {
+	if got := (opencode{}).Read(nil, nil); got != nil {
+		t.Errorf("Read = %q, want no lines", got)
+	}
+}
+
+// TestNamed walks how a journal is read after the project has changed its executor:
+// the state of a task names the profile an attempt was run with, and its journal is
+// read by that one, whatever the project says today.
+func TestNamed(t *testing.T) {
+	cases := []struct {
+		name string
+		want string
+	}{
+		{name: "opencode", want: "opencode"},
+		{name: "generic", want: "generic"},
+		{name: "a profile crewflow knows no more of", want: "generic"},
+		{name: "", want: "generic"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Named(tc.name).Name(); got != tc.want {
+				t.Errorf("Named(%q).Name() = %q, want %q", tc.name, got, tc.want)
+			}
+		})
+	}
+
+	run := linesOfText(opencodeRun)
+	if got, want := Named("opencode").Read(run, nil), (opencode{}).Read(run, nil); !slices.Equal(got, want) {
+		t.Errorf("Named(\"opencode\") read %q, want %q", got, want)
+	}
+}
+
+// linesOf are the lines of a fixture of what a run of an agent writes, and
+// linesOfText the lines of a text in the middle of a test.
+func linesOf(t *testing.T, name string) []string {
+	t.Helper()
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatalf("read %s: %v", name, err)
+	}
+	return linesOfText(string(data))
+}
+
+// linesOfText is a text as the lines of a journal, with the empty ones left out: a
+// journal of a run is read line by line, and an empty line says nothing.
+func linesOfText(text string) []string {
+	var lines []string
+	for raw := range strings.Lines(text) {
+		if line := strings.TrimRight(raw, "\r\n"); strings.TrimSpace(line) != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
 
 // TestSessionID checks that the session of a run is found in the stream of events
 // of the agent: a run that knows its session can be continued in it, and one that

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/task"
 )
 
 // wholeTask is a task as the template of the project asks a person to write it.
@@ -288,6 +290,173 @@ func TestRunTaskKeepsEveryFileInItsOwnFolders(t *testing.T) {
 	}
 }
 
+// TestRunTaskCheck walks what a check of a task answers: a task that is ready, a task
+// nobody filled in, and a risky task nobody approved. Nothing is created for either
+// answer, which is the whole point of a check.
+func TestRunTaskCheck(t *testing.T) {
+	cases := []struct {
+		name string
+		task forge.Task
+		// wantCode is the code of the command: zero for a task that may be run and
+		// one for one that may not.
+		wantCode int
+		want     string
+	}{
+		{
+			name:     "a task that is ready",
+			task:     taskOf(43),
+			wantCode: exitOK,
+			want:     "ready",
+		},
+		{
+			name: "a section nobody wrote",
+			task: func() forge.Task {
+				t := taskOf(43)
+				t.Body = strings.Replace(wholeTask, "## How to check it yourself\n\n1. Run it on a task that is not there.\n", "", 1)
+				return t
+			}(),
+			wantCode: exitFailure,
+			want:     "How to check it yourself",
+		},
+		{
+			name: "a risky task nobody approved",
+			task: func() forge.Task {
+				t := taskOf(43)
+				t.Labels = []string{"risky"}
+				return t
+			}(),
+			wantCode: exitFailure,
+			want:     "approved",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &host{task: tc.task}
+			host.use(t)
+			project := host.config(t)
+			var stdout, stderr bytes.Buffer
+
+			code := run([]string{"task", "check", "43", "-config", project}, &stdout, &stderr)
+
+			if code != tc.wantCode {
+				t.Errorf("crewflow task check = %d, want %d (stdout: %q, stderr: %q)",
+					code, tc.wantCode, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Errorf("crewflow task check wrote %q, want it to mention %q", stdout.String(), tc.want)
+			}
+			if len(host.started) != 0 {
+				t.Errorf("the executor was started %d times by a check, want nothing to be started", len(host.started))
+			}
+			// A check is a question, and a question that left anything behind would
+			// already be a run of the task.
+			if entries, _ := os.ReadDir(host.home); len(entries) != 0 {
+				t.Errorf("the check left %v in the home of crewflow, want nothing", entries)
+			}
+			if _, err := os.Stat(host.worktrees); !os.IsNotExist(err) {
+				t.Errorf("the check made the root of the worktrees: %v", err)
+			}
+		})
+	}
+}
+
+// TestRunTaskCheckJSON is the answer of a check for the orchestrator: the same as the
+// text shows, in a shape a program can read.
+func TestRunTaskCheckJSON(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "check", "43", "-config", project, "-json"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task check -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	var readiness task.Readiness
+	if err := json.Unmarshal(stdout.Bytes(), &readiness); err != nil {
+		t.Fatalf("crewflow task check -json wrote %q, which is not JSON: %v", stdout.String(), err)
+	}
+	if readiness.Number != 43 || !readiness.Ready || len(readiness.Missing) != 0 {
+		t.Errorf("the answer = %+v, want task 43 that is ready", readiness)
+	}
+}
+
+// TestRunTaskCheckOfATaskThatIsNotThere: a number the tracker does not know is an
+// error that says so, and nothing is created.
+func TestRunTaskCheckOfATaskThatIsNotThere(t *testing.T) {
+	host := &host{noTask: fmt.Errorf("could not find issue 999")}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "check", "999", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task check = %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(stderr.String(), "could not find issue 999") {
+		t.Errorf("crewflow task check wrote %q to stderr, want what the tracker said", stderr.String())
+	}
+	if entries, _ := os.ReadDir(host.home); len(entries) != 0 {
+		t.Errorf("the check left %v in the home of crewflow, want nothing", entries)
+	}
+}
+
+// TestRunTaskWatchShowsWhatTheRunWrote: a watch in another terminal is the journal of
+// the last attempt of a task, read through the profile of the run, and it is over as
+// soon as the run is.
+func TestRunTaskWatchShowsWhatTheRunWrote(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "watch", "43", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task watch = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	for _, want := range []string{
+		"task 43, attempt 1", "pr-opened", "done",
+		filepath.Join(host.home, "runs", "naghuale-crewflow", "43-1.jsonl"),
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task watch wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task watch wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
+// TestRunTaskWatchOfATaskThatWasNeverRun: there is no journal to show, and a person
+// is told that instead of being shown nothing.
+func TestRunTaskWatchOfATaskThatWasNeverRun(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "watch", "43", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task watch = %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(stderr.String(), "never run") {
+		t.Errorf("crewflow task watch wrote %q to stderr, want it to say that the task was never run", stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("crewflow task watch wrote %q to stdout, want nothing", stdout.String())
+	}
+}
+
 // TestRunTaskCalledWrong walks what a script gets when crewflow is called wrong:
 // the code of a wrong call, the usage, and no work.
 func TestRunTaskCalledWrong(t *testing.T) {
@@ -296,6 +465,14 @@ func TestRunTaskCalledWrong(t *testing.T) {
 		{"task", "run", "forty-three"},
 		{"task", "run", "43", "-nope"},
 		{"task", "run", "43", "extra"},
+		{"task", "check"},
+		{"task", "check", "forty-three"},
+		{"task", "check", "43", "-nope"},
+		{"task", "check", "43", "extra"},
+		{"task", "watch"},
+		{"task", "watch", "forty-three"},
+		{"task", "watch", "43", "-nope"},
+		{"task", "watch", "43", "extra"},
 		{"task", "fly", "43"},
 		{"task"},
 	}
@@ -365,7 +542,7 @@ func TestUsageMentionsTaskRun(t *testing.T) {
 	if code := run([]string{"help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("run(help) = %d, want 0", code)
 	}
-	for _, want := range []string{"task", "run", "doctor", "version"} {
+	for _, want := range []string{"task", "run", "check", "watch", "doctor", "version"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("the usage does not mention %q:\n%s", want, stdout.String())
 		}
@@ -417,10 +594,13 @@ type host struct {
 	// refusal is what the executor says on the way out, which is how a run that was
 	// refused a permission looks from the outside.
 	refusal string
-	// home is the root of what crewflow keeps on this machine, and worktrees the
-	// root the worktrees of its tasks are made under.
+	// home is the root of what crewflow keeps on this machine, worktrees the root
+	// the worktrees of its tasks are made under, and git the folder of the repository
+	// of the project as git names it: the local ignore of the scratch of a run is
+	// written into it.
 	home      string
 	worktrees string
+	git       string
 }
 
 // use makes the task command run on this host, and puts the machine back when the
@@ -438,11 +618,12 @@ func (h *host) use(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	h.home = filepath.Join(home, ".crewflow")
 	h.worktrees = filepath.Join(t.TempDir(), "worktrees")
+	h.git = filepath.Join(t.TempDir(), "git")
 	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Tracker: h, Forge: h}, nil
 	}
 	taskRunEnv = func(home string) taskrun.Env {
-		return taskrun.Env{Home: home, Command: h.exec, Now: time.Now}
+		return taskrun.Env{Home: home, Command: h.exec, Stream: h.stream, Now: time.Now}
 	}
 }
 
@@ -478,12 +659,32 @@ func (h *host) exec(_ context.Context, name string, args []string, dir string) (
 			return nil, nil, 0, nil
 		case len(args) > 2 && args[0] == "diff":
 			return []byte(h.changed), nil, 0, nil
+		case len(args) > 1 && args[0] == "rev-parse":
+			// Where the repository of the project is, which a run asks for to keep
+			// the scratch of the task out of it.
+			return []byte(h.git + "\n"), nil, 0, nil
 		}
 		return nil, nil, 0, nil
 	}
 	h.started = append(h.started, strings.Join(args, " "))
 	return []byte(`{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","text":"done"}}`),
 		[]byte(h.refusal), 0, nil
+}
+
+// stream starts the executor of a test: it writes what it says to the journal of the
+// run as it says it, which is how a run of a test leaves a journal a watch can show.
+func (h *host) stream(_ context.Context, name string, args []string, _ string, _ []string, stdout, stderr io.Writer) (int, error) {
+	out, errOut, code, err := h.exec(context.Background(), name, args, "")
+	if err != nil {
+		return code, err
+	}
+	if _, err := stdout.Write(out); err != nil {
+		return code, err
+	}
+	if _, err := stderr.Write(errOut); err != nil {
+		return code, err
+	}
+	return code, nil
 }
 
 // continuedIn says whether the executor was run with the session among its

@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -37,6 +38,12 @@ type Profile interface {
 	// Blocked returns the reason of the last message that began with "BLOCKED:",
 	// and an empty string when the run was not stopped by the agent itself.
 	Blocked(stdout []byte) string
+	// Read returns the lines a person reads while a run goes on: the words of the
+	// agent, the tools it called with the argument that names the call and the state
+	// of it, and the permissions it was refused. Both of its arguments are the lines
+	// of a journal rather than the whole of it, because a journal is read as it grows
+	// and a line the agent has not finished writing is not a line yet.
+	Read(journal, errorJournal []string) []string
 	// ContinueArgs returns the arguments that go on in the session, and nothing at
 	// all for an agent that has no sessions to continue: a run of such an agent
 	// begins again, in the same worktree and with the task in hand.
@@ -53,6 +60,17 @@ const opencodeProgram = "opencode"
 // program is OpenCode, and the generic one for anything else.
 func For(command []string) Profile {
 	if len(command) > 0 && filepath.Base(command[0]) == opencodeProgram {
+		return opencode{}
+	}
+	return generic{}
+}
+
+// Named is the profile a state file calls, so that the journal of an attempt is read
+// the way the run that wrote it was read even where the project has changed its
+// executor since. A name crewflow knows no more of is the profile of an agent it has
+// never read.
+func Named(name string) Profile {
+	if name == opencodeProgram {
 		return opencode{}
 	}
 	return generic{}
@@ -83,12 +101,34 @@ func (opencode) SessionID(stdout []byte) string {
 // Rejections are the lines of the way out that say a question about a permission
 // was asked and answered without a person. Each of them ended the run, and each of
 // them names what was refused (docs/DESIGN.md §7a).
-func (o opencode) Rejections(_, stderr []byte) []string {
-	var rejections []string
-	for _, match := range rejectionPattern.FindAllStringSubmatch(string(stderr), -1) {
-		rejections = append(rejections, refusal(match[1]))
+func (opencode) Rejections(_, stderr []byte) []string {
+	return refusals(lines(stderr))
+}
+
+// Read is what a person watches while a run goes on: the words of the agent as it
+// writes them, every call of a tool with the argument that names it and the state of
+// it, and then the permissions it was refused. A line the agent wrote that is not an
+// event crewflow knows is shown as it is: it said something, and what a person
+// cannot read is not better than nothing.
+func (opencode) Read(journal, errorJournal []string) []string {
+	var read []string
+	for _, raw := range journal {
+		line := strings.TrimSpace(raw)
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "{") {
+			read = append(read, line)
+			continue
+		}
+		var one event
+		if err := json.Unmarshal([]byte(line), &one); err != nil {
+			read = append(read, line)
+			continue
+		}
+		read = append(read, one.read()...)
 	}
-	return rejections
+	return append(read, refusals(errorJournal)...)
 }
 
 // Blocked is the reason the agent itself gave, in the last text of the answer that
@@ -140,19 +180,107 @@ func (generic) Blocked(stdout []byte) string {
 	return reason
 }
 
+// Read is every line as it is: an agent crewflow has never read is not read through a
+// shape, and the way out of a run of it is shown as it was written, because that is
+// what a person watching the run has to work with.
+func (generic) Read(journal, errorJournal []string) []string {
+	read := make([]string, 0, len(journal)+len(errorJournal))
+	for _, line := range append(slices.Clone(journal), errorJournal...) {
+		if strings.TrimSpace(line) != "" {
+			read = append(read, line)
+		}
+	}
+	return read
+}
+
 // ContinueArgs is nothing: a run of an agent of this kind begins again, in the
 // same worktree and with the task in hand.
 func (generic) ContinueArgs(string) []string { return nil }
 
 // event is one line of the stream of an agent, as far as a run is concerned: which
-// session it belongs to, and the part of the answer it carries.
+// session it belongs to, and the part of the answer it carries. The state of a tool
+// call is read down to the argument that names the call and nothing below it: the
+// whole of what a tool was given is the answer of the agent, and a run only shows a
+// line of it (docs/DESIGN.md §7a).
 type event struct {
 	Type      string `json:"type"`
 	SessionID string `json:"sessionID"`
 	Part      struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
+		Type  string `json:"type"`
+		Text  string `json:"text"`
+		Tool  string `json:"tool"`
+		State struct {
+			Status string `json:"status"`
+			Input  struct {
+				Command  string `json:"command"`
+				FilePath string `json:"filePath"`
+				Pattern  string `json:"pattern"`
+			} `json:"input"`
+		} `json:"state"`
 	} `json:"part"`
+}
+
+// read is the line a person sees of one event of a run: what the agent said, or the
+// call of a tool with the argument that names it and the state of the call.
+func (e event) read() []string {
+	switch {
+	case e.isTool():
+		return []string{e.toolLine()}
+	case e.Part.Text != "":
+		return []string{e.Part.Text}
+	default:
+		return nil
+	}
+}
+
+// isTool says whether an event is a call of a tool, whatever the agent calls it in
+// there: the type of the event and the type of its part have both named a call
+// differently, and the fields the call carries are what a call is.
+func (e event) isTool() bool {
+	return e.Part.Tool != "" || e.Part.State.Status != "" ||
+		kind(e.Type) == "tooluse" || kind(e.Part.Type) == "tooluse"
+}
+
+// toolLine is the call as a person reads it while the run goes on: what was called,
+// the one argument that says what for, and the state of the call. An argument long
+// enough to fill the line is cut short: a watch is read, not measured.
+func (e event) toolLine() string {
+	line := e.Part.Tool
+	if line == "" {
+		line = "tool"
+	}
+	if argument := e.argument(); argument != "" {
+		line += ": " + argument
+	}
+	if e.Part.State.Status != "" {
+		line += " (" + e.Part.State.Status + ")"
+	}
+	return line
+}
+
+// argument is the one field of what a tool was given that says which call it is, in
+// the order the calls of the runs of the pilot came in: a command, a path, a pattern.
+func (e event) argument() string {
+	for _, argument := range []string{e.Part.State.Input.Command, e.Part.State.Input.FilePath, e.Part.State.Input.Pattern} {
+		if argument = strings.TrimSpace(argument); argument != "" {
+			if len(argument) > argLimit {
+				return argument[:argLimit] + "..."
+			}
+			return argument
+		}
+	}
+	return ""
+}
+
+// argLimit is how much of the argument of a tool call a line of a watch holds.
+const argLimit = 80
+
+// kind is the name of a thing as it is compared, with the marks of the naming of the
+// agents left out: a call of a tool is "tool-use" in one version of an agent and
+// "tool_use" in the next, and a profile that reads one of the two reads neither after
+// an update.
+func kind(name string) string {
+	return strings.ToLower(strings.NewReplacer("-", "", "_", "", " ", "").Replace(name))
 }
 
 // events are the events of a stream crewflow can read, and nothing else: a line
@@ -160,8 +288,8 @@ type event struct {
 // agent that said something else.
 func events(stdout []byte) []event {
 	var read []event
-	for raw := range strings.Lines(string(stdout)) {
-		line := strings.TrimSpace(raw)
+	for _, line := range lines(stdout) {
+		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "{") {
 			continue
 		}
@@ -174,10 +302,34 @@ func events(stdout []byte) []event {
 	return read
 }
 
+// lines is the text of a stream as the lines of a journal, with the empty ones left
+// out: a journal is read line by line, and an empty line says nothing.
+func lines(out []byte) []string {
+	var found []string
+	for raw := range strings.Lines(string(out)) {
+		if line := strings.TrimRight(raw, "\r\n"); strings.TrimSpace(line) != "" {
+			found = append(found, line)
+		}
+	}
+	return found
+}
+
 // rejectionPattern finds a line that says a question about a permission was asked
 // and answered without a person. The answer of a refusal is the whole reason: what
 // kind of permission it was and what it was about (docs/DESIGN.md §7a).
-var rejectionPattern = regexp.MustCompile(`(?m)^.*permission requested:\s*(.+?)\s*;\s*auto-rejecting.*$`)
+var rejectionPattern = regexp.MustCompile(`^.*permission requested:\s*(.+?)\s*;\s*auto-rejecting.*$`)
+
+// refusals are the permissions the agent was refused, one entry per refusal, in the
+// lines they were written in.
+func refusals(lines []string) []string {
+	var found []string
+	for _, line := range lines {
+		if match := rejectionPattern.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			found = append(found, refusal(match[1]))
+		}
+	}
+	return found
+}
 
 // refusal is the reason of a refusal without the parentheses around what it was
 // about, which is how an orchestrator reads it: the kind of the permission, then

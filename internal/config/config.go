@@ -36,6 +36,11 @@ type Project struct {
 	DefaultBranch string `toml:"default_branch"`
 	// Language is the language of tasks, reviews and messages to the human.
 	Language string `toml:"language"`
+	// CommitStyle is how the messages of the commits of this project are written, in
+	// the words of the project, as in "conventional: type(scope): subject". Empty
+	// leaves the executor with the rule that holds in every repository: the style of
+	// the last commits (docs/DESIGN.md §5).
+	CommitStyle string `toml:"commit_style"`
 }
 
 // Forge is where the code of the project is hosted and reviewed: the requests to
