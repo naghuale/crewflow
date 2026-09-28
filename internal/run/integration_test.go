@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/naghuale/crewflow/internal/proc"
 )
 
 // theEvents is what an agent of a real run writes: one line of JSON per event, each
@@ -112,6 +114,15 @@ func TestRunAgainstRealGit(t *testing.T) {
 			}
 			if len(state.Attempts) != 1 || state.Attempts[0].Outcome != tc.want {
 				t.Errorf("the state holds %+v, want one attempt that ended as %q", state.Attempts, tc.want)
+			}
+			// The state names the process the run was in, and the machine agrees: it
+			// is the process that is running this test, and a list of runs reads that
+			// process to tell a run that is going from one that is over.
+			process, named := state.Attempts[0].Process()
+			if !named {
+				t.Error("the state of the task names no process, want the one the run was in")
+			} else if !proc.System().Alive(process) {
+				t.Errorf("the machine does not know of the process %+v the run was in", process)
 			}
 
 			// The worktree is a worktree of a real repository: it is on the branch of

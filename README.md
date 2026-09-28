@@ -35,12 +35,20 @@ crewflow doctor            # check tools, requirements and access
 crewflow task check 12     # is issue #12 ready to be worked on?
 crewflow task run 12       # run the executor on it in its own worktree; opens a PR
 crewflow task watch 12     # follow a run live
+crewflow task list         # what has been run here, and what is going on right now
 crewflow task run 12 -continue "fix the failing test"   # continue the same session
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
 `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. Journals live in
 `~/.crewflow/runs`, worktrees in `~/.crewflow/worktrees`.
+
+`crewflow task list` shows the runs of the project from those journals and the state in
+`~/.crewflow/state`: the ones that are going on top, the rest from the last to the first,
+with the outcome of the last try, how long it took and the change request it opened. A run
+whose state says "running" while its process is gone (a closed window, a rebooted machine) is
+shown as `interrupted`. `-all` shows every run instead of the last twenty, and `-json` is the
+same list for an orchestrator.
 
 ## Executors
 

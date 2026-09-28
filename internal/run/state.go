@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/proc"
 )
 
 // State is what crewflow keeps of a task between its runs, so that after an
@@ -31,8 +33,19 @@ type State struct {
 	// Session is the id of the session the executor went on, and the way a run of
 	// the same task is continued in the same one.
 	Session string `json:"session,omitempty"`
+	// Change is the change request a run of the task opened, so that a list of the
+	// runs of a project points at the work without asking the host anything
+	// (docs/DESIGN.md §7).
+	Change *Change `json:"change,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
+}
+
+// Change is the change request a run of a task opened: its number and where it is,
+// which is all a list of runs says about it.
+type Change struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
 }
 
 // Attempt is one start of the executor on a task: when it was, where it wrote, and
@@ -53,6 +66,22 @@ type Attempt struct {
 	Outcome Kind `json:"outcome"`
 	// Continued says that the attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
+	// PID and ProcessStartedAt are the process the run happened in: its number and
+	// when that process started. The state of a task says "running" until something
+	// says otherwise, and after a reboot of the machine nothing does but the
+	// process itself (docs/DESIGN.md §7).
+	PID              int        `json:"pid,omitempty"`
+	ProcessStartedAt *time.Time `json:"process_started_at,omitempty"`
+}
+
+// Process is the process the attempt is run in, and whether the state names one at
+// all: a state written before crewflow kept the number of a process names none, and
+// the machine cannot be asked about a number it does not have.
+func (a Attempt) Process() (proc.Process, bool) {
+	if a.PID <= 0 || a.ProcessStartedAt == nil {
+		return proc.Process{}, false
+	}
+	return proc.Process{Pid: a.PID, StartedAt: *a.ProcessStartedAt}, true
 }
 
 // Attempt returns the attempt with the number, and whether there is one.
@@ -68,17 +97,23 @@ func (s State) Attempt(number int) (Attempt, bool) {
 // NextAttempt is the number the next start of the executor of this task gets, and
 // the state with that attempt added and not written anywhere yet. The attempt is
 // running from the moment it is added: it is what the state of a task says while the
-// executor works, and what a run that is cut short leaves behind.
-func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool) State {
+// executor works, and what a run that is cut short leaves behind. The process is the
+// one the run is happening in, which is what a later list asks the machine about.
+func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool, process proc.Process) State {
 	next := len(s.Attempts) + 1
-	s.Attempts = append(s.Attempts, Attempt{
+	attempt := Attempt{
 		Number:       next,
 		StartedAt:    started,
 		Journal:      journal,
 		ErrorJournal: errorJournal,
 		Outcome:      Running,
 		Continued:    continued,
-	})
+	}
+	if process.Pid > 0 {
+		started := process.StartedAt
+		attempt.PID, attempt.ProcessStartedAt = process.Pid, &started
+	}
+	s.Attempts = append(s.Attempts, attempt)
 	return s
 }
 
@@ -111,7 +146,13 @@ func newJournals(home, repo string) Journals {
 
 // StatePath is the file that says where the last run of a task stopped.
 func (j Journals) StatePath(number int) string {
-	return filepath.Join(j.home, "state", j.repo, strconv.Itoa(number)+".json")
+	return filepath.Join(j.stateFolder(), strconv.Itoa(number)+".json")
+}
+
+// stateFolder is the folder the states of the tasks of the project are kept in, which
+// is what `crewflow task list` reads and no network is needed for.
+func (j Journals) stateFolder() string {
+	return filepath.Join(j.home, "state", j.repo)
 }
 
 // JournalPath is what an attempt wrote, and errorJournalPath what it said on the

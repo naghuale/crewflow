@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/proc"
 )
 
 // TestMain points the home directory of the machine at a folder of the run of the
@@ -134,7 +136,14 @@ func (m *machine) has(paths ...string) *machine {
 
 // env is the machine a run of a test happens on.
 func (m *machine) env() Env {
-	return Env{Home: m.home, Command: m.exec, Stream: m.stream, Now: m.now}
+	return Env{Home: m.home, Command: m.exec, Stream: m.stream, Now: m.now, Process: m.process}
+}
+
+// process is the process a run of a test happens in: a number and the moment it was
+// started, both of the machine of the test, so that no test of a run asks the machine
+// it happens to run on.
+func (m *machine) process() (proc.Process, bool) {
+	return proc.Process{Pid: 4242, StartedAt: m.clock}, true
 }
 
 // now is the clock of the machine. Every question moves it a minute on, so that the

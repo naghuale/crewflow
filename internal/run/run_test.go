@@ -593,6 +593,53 @@ func TestRunWhenGitSaysNo(t *testing.T) {
 	}
 }
 
+// TestRunKeepsWhatAListOfRunsNeeds: the state of a task is all that
+// `crewflow task list` reads, so a run writes into it which process it was in and
+// which change request it opened. A machine that cannot say which process it is runs
+// the task as crewflow did before: the state names no process, and a list reads that
+// the old way (docs/DESIGN.md §7).
+func TestRunKeepsWhatAListOfRunsNeeds(t *testing.T) {
+	cases := []struct {
+		name string
+		// blind is a machine that cannot say what process the run is in.
+		blind bool
+		want  bool
+	}{
+		{name: "the machine knows the process of the run", want: true},
+		{name: "the machine cannot be asked", blind: true, want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t)
+			m.answers["opencode"] = answer{stdout: theRun}
+			host := &host{task: taskOf(43), opened: true}
+			cfg := projectOf(t, m.worktrees, "")
+			env := m.env()
+			if tc.blind {
+				env.Process = nil
+			}
+
+			result, err := Run(t.Context(), env, cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			state := stateOf(t, m, 43)
+			process, named := state.Attempts[0].Process()
+			if named != tc.want {
+				t.Fatalf("the state names a process %+v: %t, want it named: %t", process, named, tc.want)
+			}
+			if tc.want && (process.Pid != 4242 || process.StartedAt.IsZero()) {
+				t.Errorf("the state holds the process %+v, want the one the run was in", process)
+			}
+			if state.Change == nil || state.Change.Number != result.ChangeRequest.Number ||
+				state.Change.URL != result.ChangeRequest.URL {
+				t.Errorf("the state holds the change request %+v, want the one the run opened", state.Change)
+			}
+		})
+	}
+}
+
 // taskOf is a whole task of a test: the number, a title, and a body written the way
 // the template asks.
 func taskOf(number int) forge.Task {

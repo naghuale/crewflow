@@ -21,6 +21,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/proc"
 	"github.com/naghuale/crewflow/internal/run/profile"
 	"github.com/naghuale/crewflow/internal/task"
 )
@@ -45,12 +46,19 @@ type Env struct {
 	// Now is the clock of a run, so that a report says when a thing happened and a
 	// test does not have to wait for it to happen.
 	Now func() time.Time
+	// Process is the process this run happens in — its number and when it started —
+	// which is what the state of the task is told, so that `crewflow task list` can
+	// ask the machine later whether this run is still going (docs/DESIGN.md §7).
+	// A machine that cannot say leaves the state of the task as it was written
+	// before: an attempt that names no process, which a list reads the old way.
+	Process func() (proc.Process, bool)
 }
 
 // System is the machine this process runs on, with the given root of what crewflow
 // keeps of its own.
 func System(home string) Env {
-	return Env{Home: home, Command: Start, Stream: Stream, Now: time.Now}
+	machine := proc.System()
+	return Env{Home: home, Command: Start, Stream: Stream, Now: time.Now, Process: machine.Self}
 }
 
 // Start starts a program in dir and returns what it wrote and the code it exited
@@ -261,7 +269,9 @@ func (r *runner) output(ctx context.Context, dir string, args ...string) (string
 
 // stateOf is what crewflow keeps of the task with one attempt more in it: a first
 // run of a task starts a state of its own, and every run after it is the next
-// attempt of the same task.
+// attempt of the same task. The attempt is told which process the run is happening
+// in, before the executor is started, because that is all that is left of a run that
+// crewflow is killed in the middle of (docs/DESIGN.md §7).
 func (r *runner) stateOf(started time.Time) State {
 	state, err := LoadState(r.journals.StatePath(r.task.Number))
 	if err != nil {
@@ -271,10 +281,23 @@ func (r *runner) stateOf(started time.Time) State {
 	state.Number, state.Title = r.task.Number, r.task.Title
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
 	state.Session = r.session
+	process, _ := r.process()
 	return state.NextAttempt(started,
 		r.journals.JournalPath(r.task.Number, attempt),
 		r.journals.errorJournalPath(r.task.Number, attempt),
-		r.req.Continue != "")
+		r.req.Continue != "",
+		process)
+}
+
+// process is the process this run is happening in, and whether the machine could say
+// so at all. It is a question, not a fact: a machine that cannot be asked is a
+// machine whose state of the task is written without a process in it, which is how
+// every state of crewflow was written before.
+func (r *runner) process() (proc.Process, bool) {
+	if r.env.Process == nil {
+		return proc.Process{}, false
+	}
+	return r.env.Process()
 }
 
 // start runs the executor in the worktree of the task and says what came of it. The
@@ -382,11 +405,16 @@ func (r *runner) endOf(caller, run context.Context) Kind {
 // keep writes what happened down, so that after an interruption it is visible where
 // the run stopped (docs/DESIGN.md §7). The state is written even when a run could
 // not be judged: what a person then reads is the attempt, and the reason comes back
-// as the error of the run.
+// as the error of the run. The change request of the run is written into it as well,
+// so that a list of the runs of a project points at the work and not only at the
+// outcome of the run.
 func (r *runner) keep(state State, result Result, judgeErr error) error {
 	state = state.Ended(result.EndedAt, result.Outcome)
 	if result.Session != "" {
 		state.Session = result.Session
+	}
+	if change := result.ChangeRequest; change != nil {
+		state.Change = &Change{Number: change.Number, URL: change.URL}
 	}
 	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
 		return err

@@ -1,0 +1,235 @@
+package run
+
+import (
+	"fmt"
+	"io"
+	"strconv"
+	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
+)
+
+// when is how a moment of a run is written in a list: the date of the machine of the
+// person reading it, because a run of last week and a run of an hour ago are the same
+// date far more often than not, and a person reads their own clock.
+const when = "2006-01-02 15:04"
+
+// gap is what is between two columns of a list, and two spaces are enough to tell one
+// word from the next in any terminal.
+const gap = "  "
+
+// Write is the list of the runs of a project for a person: the ones that are going on
+// top, the rest from the last to the first, and under the table what did not fit into
+// it. A project where nothing was run yet gets one line instead of an empty table: a
+// person who asked has to be told that there is nothing, not shown nothing.
+func (r Runs) Write(w io.Writer) error {
+	if len(r.Entries) == 0 {
+		if _, err := fmt.Fprintln(w, "no runs yet"); err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+		return r.Notes(w)
+	}
+	rows := [][]string{{"#", "TASK", "ATTEMPTS", "OUTCOME", "WHEN", "FOR", "CHANGE"}}
+	for _, entry := range r.Entries {
+		rows = append(rows, []string{
+			strconv.Itoa(entry.Task),
+			line(entry.Title),
+			strconv.Itoa(entry.Attempts),
+			string(entry.Outcome),
+			entry.StartedAt.Local().Format(when),
+			length(entry),
+			entry.ChangeURL,
+		})
+	}
+	if err := writeRows(w, rows); err != nil {
+		return err
+	}
+	return r.Notes(w)
+}
+
+// Notes is what a list could not show in the table: the runs that were left out of a
+// short one, and the state files that say nothing about a run. It is written to the
+// standard error of a command that answers in JSON, because the answer of a command is
+// the thing an orchestrator reads, and a broken file is not an answer.
+func (r Runs) Notes(w io.Writer) error {
+	if r.Left > 0 {
+		if _, err := fmt.Fprintf(w, "and %d more, show them all with -all\n", r.Left); err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+	}
+	for _, path := range r.Unreadable {
+		if _, err := fmt.Fprintf(w, "not read: %s\n", path); err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+	}
+	return nil
+}
+
+// writeRows writes a table with its columns lined up, the way a terminal draws words:
+// by how many columns they take, not by how many bytes or letters they are made of.
+func writeRows(w io.Writer, rows [][]string) error {
+	widths := make([]int, len(rows[0]))
+	for _, row := range rows {
+		for column, cell := range row {
+			widths[column] = max(widths[column], width(cell))
+		}
+	}
+	for _, row := range rows {
+		var out strings.Builder
+		for column, cell := range row {
+			if column > 0 {
+				out.WriteString(gap)
+			}
+			// The last column of a line is not padded: a terminal shows the space at
+			// the end of a line as nothing, and a file of it is harder to read.
+			if column < len(row)-1 {
+				out.WriteString(cell + strings.Repeat(" ", widths[column]-width(cell)))
+				continue
+			}
+			out.WriteString(cell)
+		}
+		if _, err := fmt.Fprintln(w, strings.TrimRight(out.String(), " ")); err != nil {
+			return fmt.Errorf("write the list: %w", err)
+		}
+	}
+	return nil
+}
+
+// width is how many columns of a terminal a word takes. A Cyrillic letter is a letter
+// and takes one, an emoji is a picture and takes two, and what is joined to what stands
+// beside it takes no room of its own: a table of titles in any language is a table of
+// words, and the columns of it have to line up.
+func width(word string) int {
+	columns, joined := 0, false
+	for _, letter := range word {
+		switch {
+		case letter == joiner:
+			// What follows a joiner is drawn on top of what came before it: a family
+			// of three people is one picture and not four.
+			joined = true
+			continue
+		case joined:
+			joined = false
+			continue
+		case isTone(letter):
+			// A tone is a shade of the letter before it and is not a letter of its own.
+			continue
+		case letter == keycap && columns > 0:
+			// A keycap is a sign in a box, and the box is as wide as an emoji is.
+			columns++
+			continue
+		}
+		columns += letterWidth(letter)
+	}
+	return columns
+}
+
+// joiner is what glues the emoji of one picture together, a tone is what shades the
+// emoji it follows, and a keycap is the box around a sign.
+const (
+	joiner   = '\u200d'
+	toneFrom = '\U0001f3fb'
+	toneTo   = '\U0001f3ff'
+	keycap   = '\u20e3'
+)
+
+// isTone is whether the rune is one of the shades a person may have, which stand on the
+// emoji before them and are not a picture of their own.
+func isTone(letter rune) bool {
+	return letter >= toneFrom && letter <= toneTo
+}
+
+// letterWidth is how many columns one rune takes in a terminal.
+func letterWidth(letter rune) int {
+	switch {
+	case letter < 0x20, letter == 0x7f:
+		// A letter that is a command to the terminal is no letter at all.
+		return 0
+	case unicode.In(letter, unicode.Mn, unicode.Me, unicode.Cf):
+		// A mark on a letter, a selector of how a letter looks and an instruction
+		// between letters are all drawn on top of the letters around them.
+		return 0
+	case isWide(letter):
+		return 2
+	default:
+		return 1
+	}
+}
+
+// wide is the letters a terminal draws in two columns: the scripts of the wide and full
+// width classes of Unicode and the emoji. It is not every letter of the wide classes —
+// a rare one is drawn in one and only mislines a table that has it in a title.
+var wide = []rune{
+	0x1100, 0x115f, // Hangul Jamo
+	0x2e80, 0x303e, // CJK radicals, Kangxi, CJK symbols and punctuation
+	0x3041, 0x33ff, // Kana, Bopomofo, Hangul compatibility, CJK compatibility
+	0x3400, 0x4dbf, // CJK unified ideographs, extension A
+	0x4e00, 0x9fff, // CJK unified ideographs
+	0xa000, 0xa4cf, // Yi
+	0xa960, 0xa97f, // Hangul Jamo, extended A
+	0xac00, 0xd7a3, // Hangul syllables
+	0xf900, 0xfaff, // CJK compatibility ideographs
+	0xfe10, 0xfe19, // vertical forms
+	0xfe30, 0xfe6f, // CJK compatibility forms, small form variants
+	0xff00, 0xff60, // fullwidth forms
+	0xffe0, 0xffe6, // fullwidth signs
+	0x1f000, 0x1faff, // the emoji, and the symbols that are drawn like them
+	0x20000, 0x3fffd, // CJK unified ideographs, extensions B to F
+}
+
+// isWide is whether a terminal draws the letter in two columns.
+func isWide(letter rune) bool {
+	if letter > utf8.MaxRune {
+		return false
+	}
+	for pair := 0; pair < len(wide); pair += 2 {
+		if letter > wide[pair+1] {
+			continue
+		}
+		return letter >= wide[pair]
+	}
+	return false
+}
+
+// length is how long a run took, in the words a person reads a time in, and a dash
+// where nothing kept it: a run whose process is gone was not seen to stop, and a time
+// of zero would be a run that took no time at all.
+func length(entry Entry) string {
+	took, known := entry.Length()
+	if !known {
+		return "-"
+	}
+	return since(took)
+}
+
+// since is how long a run took, in the words a person reads a time in: "35s", "42m",
+// "1h 05m". A run of less than a second, or of less than nothing — a machine whose clock
+// is behind the one the state was written on — is a run that has just been started.
+func since(took time.Duration) string {
+	if took < 0 {
+		took = 0
+	}
+	switch {
+	case took < time.Minute:
+		return strconv.Itoa(int(took.Seconds())) + "s"
+	case took < time.Hour:
+		return strconv.Itoa(int(took.Minutes())) + "m"
+	case took < 24*time.Hour:
+		return fmt.Sprintf("%dh %02dm", int(took.Hours()), int(took.Minutes())%60)
+	default:
+		return fmt.Sprintf("%dd %02dh", int(took.Hours())/24, int(took.Hours())%24)
+	}
+}
+
+// line is a cell of a table: a word of it is a word, and whatever else a title holds —
+// a newline, a tab — is put in its place, because a title that breaks the line breaks
+// every column under it.
+func line(text string) string {
+	return strings.Map(func(letter rune) rune {
+		if letter == '\n' || letter == '\r' || letter == '\t' {
+			return ' '
+		}
+		return letter
+	}, text)
+}

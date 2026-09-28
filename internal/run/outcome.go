@@ -17,6 +17,14 @@ type Kind string
 // was killed in the middle of leaves a record of where it was (docs/DESIGN.md §7).
 const Running Kind = "running"
 
+// MaybeRunning is what a list of runs says of an attempt that says it is running and
+// names no process to ask about: a state of before crewflow kept the number of the
+// process of a run, of a run that has not been going for longer than any run may go
+// on. It is not one of the outcomes of a run — nothing came of it — and it is not
+// "running" either, because crewflow cannot tell that it is, and a report that says
+// what it does not know is worth more than one that does not (docs/DESIGN.md §7).
+const MaybeRunning Kind = "maybe-running"
+
 // The seven outcomes of a run, in the order crewflow works them out, which is the
 // order of what says the most: a run that ran out of time tells nothing about what
 // it was refused in its last second, and a run that was refused tells nothing about

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/proc"
 )
 
 // theWork is what an executor of a test writes: the words of the agent and a call of
@@ -525,7 +527,8 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 		state = state.NextAttempt(started.Add(time.Duration(before)*time.Minute),
 			journals.JournalPath(number, before),
 			journals.errorJournalPath(number, before),
-			false)
+			false,
+			proc.Process{Pid: 4242, StartedAt: started})
 		if before < attempt {
 			state = state.Ended(started.Add(time.Duration(before+1)*time.Minute), ChangeRequestOpened)
 		}

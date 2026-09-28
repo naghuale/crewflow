@@ -67,8 +67,9 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 }
 
 // usage lists the subcommands: a check of the machine, a run of a task, what a check
-// of a task is missing before it is run, a watch of a run that is going on, and the
-// version. The rest of the cycle arrives with the next steps of docs/DESIGN.md §11.
+// of a task is missing before it is run, a watch of a run that is going on, a list of
+// the runs of the project, and the version. The rest of the cycle arrives with the
+// next steps of docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
 merges, and an executor that writes the code of one task at a time.
@@ -81,11 +82,13 @@ Subcommands:
   task run <N>   Run one task in a worktree of its own, and say how it ended (§6)
   task check <N> Say whether a task may be run, and what it is missing when it may not
   task watch <N> Show what the executor of a task is doing, as it is doing it
+  task list      List the runs of the project, the ones that are going on top
   help           Show this message
   version        Print the version, the commit and the build time
 
   crewflow task run <N> [-config path] [-repo path] [-continue "message"] [-json]
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
+  crewflow task list [-config path] [-repo owner/name] [-json] [-all]
 `)
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
+	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/task"
 )
@@ -457,6 +459,161 @@ func TestRunTaskWatchOfATaskThatWasNeverRun(t *testing.T) {
 	}
 }
 
+// TestRunTaskListShowsTheRunsOfTheProject: one command is what a person asks to see
+// what crewflow has been running on this project, and the answer is a line per task
+// with the outcome of its last try and the change request it opened.
+func TestRunTaskListShowsTheRunsOfTheProject(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "list", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	for _, want := range []string{
+		"43", taskOf(43).Title, "pr-opened",
+		"https://github.com/naghuale/crewflow/pull/44",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task list wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
+// TestRunTaskListJSON is the same list for the orchestrator: an array of the tasks that
+// were run, with the length of the last try in seconds.
+func TestRunTaskListJSON(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "list", "-config", project, "-json"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	var entries []struct {
+		Task            int     `json:"task"`
+		Title           string  `json:"title"`
+		Attempts        int     `json:"attempts"`
+		Outcome         string  `json:"outcome"`
+		DurationSeconds float64 `json:"duration_seconds"`
+		ChangeURL       string  `json:"change_url"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
+		t.Fatalf("crewflow task list -json wrote %q, which is not a list: %v", stdout.String(), err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("the list holds %+v, want the one task that was run", entries)
+	}
+	entry := entries[0]
+	if entry.Task != 43 || entry.Title != taskOf(43).Title || entry.Outcome != "pr-opened" {
+		t.Errorf("the entry = %+v, want the task 43 that opened its change request", entry)
+	}
+	if entry.Attempts != 1 || entry.DurationSeconds < 0 {
+		t.Errorf("the entry = %+v, want one try and a length of it", entry)
+	}
+	if entry.ChangeURL != "https://github.com/naghuale/crewflow/pull/44" {
+		t.Errorf("the change request of the entry = %q, want the one the run opened", entry.ChangeURL)
+	}
+}
+
+// TestRunTaskListOfAProjectThatWasNeverRun: a project where crewflow has run nothing
+// has no state at all, and a person who asks is told that instead of being shown an
+// error.
+func TestRunTaskListOfAProjectThatWasNeverRun(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "list", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if want := "no runs yet\n"; stdout.String() != want {
+		t.Errorf("crewflow task list wrote %q, want %q", stdout.String(), want)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task list wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
+// TestRunTaskListOfAnotherProject: the runs are kept by the name of the project, and a
+// person who asks about the runs of another one gets the answer about that one: there
+// are none here.
+func TestRunTaskListOfAnotherProject(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "list", "-config", project, "-repo", "naghuale/telecli"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list -repo = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if want := "no runs yet\n"; stdout.String() != want {
+		t.Errorf("crewflow task list -repo wrote %q, want the runs of the other project: %q", stdout.String(), want)
+	}
+}
+
+// TestRunTaskListOfAStateItCannotRead: one file crewflow cannot read does not take the
+// list down, and the file is named in the answer.
+func TestRunTaskListOfAStateItCannotRead(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	broken := filepath.Join(host.home, "state", "naghuale-crewflow", "44.json")
+	if err := os.MkdirAll(filepath.Dir(broken), 0o700); err != nil {
+		t.Fatalf("make the folder of the state: %v", err)
+	}
+	if err := os.WriteFile(broken, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("write a state crewflow cannot read: %v", err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "list", "-config", project, "-json"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "[") {
+		t.Errorf("crewflow task list -json wrote %q, want the list and nothing else", stdout.String())
+	}
+	if want := "not read: " + broken + "\n"; stderr.String() != want {
+		t.Errorf("crewflow task list -json wrote %q to stderr, want %q", stderr.String(), want)
+	}
+}
+
 // TestRunTaskCalledWrong walks what a script gets when crewflow is called wrong:
 // the code of a wrong call, the usage, and no work.
 func TestRunTaskCalledWrong(t *testing.T) {
@@ -473,6 +630,8 @@ func TestRunTaskCalledWrong(t *testing.T) {
 		{"task", "watch", "forty-three"},
 		{"task", "watch", "43", "-nope"},
 		{"task", "watch", "43", "extra"},
+		{"task", "list", "-nope"},
+		{"task", "list", "extra"},
 		{"task", "fly", "43"},
 		{"task"},
 	}
@@ -542,7 +701,7 @@ func TestUsageMentionsTaskRun(t *testing.T) {
 	if code := run([]string{"help"}, &stdout, &stderr); code != exitOK {
 		t.Fatalf("run(help) = %d, want 0", code)
 	}
-	for _, want := range []string{"task", "run", "check", "watch", "doctor", "version"} {
+	for _, want := range []string{"task", "run", "check", "watch", "list", "doctor", "version"} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("the usage does not mention %q:\n%s", want, stdout.String())
 		}
@@ -612,6 +771,8 @@ func (h *host) use(t *testing.T) {
 	t.Cleanup(func() {
 		taskRoles = roles.New
 		taskRunEnv = taskrun.System
+		taskMachine = proc.System()
+		taskClock = time.Now
 	})
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -623,8 +784,22 @@ func (h *host) use(t *testing.T) {
 		return forge.Set{Tracker: h, Forge: h}, nil
 	}
 	taskRunEnv = func(home string) taskrun.Env {
-		return taskrun.Env{Home: home, Command: h.exec, Stream: h.stream, Now: time.Now}
+		return taskrun.Env{
+			Home:    home,
+			Command: h.exec,
+			Stream:  h.stream,
+			Now:     time.Now,
+			// A run of a test happens in the process of the test, and a list of runs
+			// of a test never asks the machine the test runs on.
+			Process: func() (proc.Process, bool) {
+				return proc.Process{Pid: 4242, StartedAt: time.Now()}, true
+			},
+		}
 	}
+	taskMachine = proc.Env{Ask: func(string, []string) (string, error) {
+		return "", errors.New("ps: no such file or directory")
+	}}
+	taskClock = time.Now
 }
 
 // testHome is the home of the machine the tests run on: a folder of TestMain, and

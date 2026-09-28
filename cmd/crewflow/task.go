@@ -19,6 +19,7 @@ import (
 	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
+	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/task"
 )
@@ -39,6 +40,12 @@ const watchTick = 500 * time.Millisecond
 var (
 	taskRoles  = roles.New
 	taskRunEnv = taskrun.System
+	// taskMachine is how a list of runs asks the machine whether a run is still going,
+	// and taskClock is the clock it says how long that run has been going. They are
+	// variables so that a test of the command never looks at the process of a run it
+	// did not start.
+	taskMachine = proc.System()
+	taskClock   = time.Now
 )
 
 // runTask runs one task, in a worktree of its own, and says how the run ended.
@@ -55,6 +62,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return runTaskCheck(args[1:], stdout, stderr)
 	case "watch":
 		return runTaskWatch(args[1:], stdout, stderr)
+	case "list":
+		return runTaskList(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return exitOK
@@ -209,6 +218,73 @@ func runTaskWatch(args []string, stdout, stderr io.Writer) int {
 	// A person who stops a watch stops watching: the run of the task goes on in its
 	// own terminal and in the worktree of its own.
 	if err := watch.Follow(ctx, stdout, ticker.C); err != nil && !errors.Is(err, context.Canceled) {
+		return failed(stderr, err)
+	}
+	return exitOK
+}
+
+// runTaskList is `crewflow task list`: every task of the project that was run, the ones
+// that are going right now on top and the rest from the last to the first. It reads
+// the state crewflow kept and nothing else — no tracker, no host, no network — and
+// creates nothing: a list of runs is a question, and a question is not a run
+// (docs/DESIGN.md §6, §7).
+func runTaskList(args []string, stdout, stderr io.Writer) int {
+	flags := taskFlags("list", stderr)
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	repo := flags.String("repo", "", "the project whose runs to show, as owner/name; the project of the file when empty")
+	asJSON := flags.Bool("json", false, "print the list as JSON, for the orchestrator")
+	all := flags.Bool("all", false, "show every run of the project, not only the last ones")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "crewflow task list: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := cfg.ExpandPath(crewflowHome)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	timeout, err := time.ParseDuration(cfg.Executor.Timeout)
+	if err != nil {
+		return failed(stderr, fmt.Errorf("executor.timeout: %w", err))
+	}
+	project := *repo
+	if project == "" {
+		project = cfg.RepoName()
+	}
+	runs, err := taskrun.List(home, project, *all, taskrun.ListEnv{
+		Now:     taskClock,
+		Running: taskMachine.Alive,
+		Timeout: timeout,
+	})
+	if err != nil {
+		return failed(stderr, err)
+	}
+
+	if *asJSON {
+		// The answer of a command is what an orchestrator reads, and a state file
+		// that could not be read and a list that was left short are not part of it:
+		// they go beside it, where the answer stays whole.
+		entries := runs.Entries
+		if entries == nil {
+			entries = []taskrun.Entry{}
+		}
+		if err := printJSON(stdout, entries); err != nil {
+			return failed(stderr, err)
+		}
+		if err := runs.Notes(stderr); err != nil {
+			return failed(stderr, err)
+		}
+		return exitOK
+	}
+	if err := runs.Write(stdout); err != nil {
 		return failed(stderr, err)
 	}
 	return exitOK

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/proc"
 )
 
 // TestJournalsPaths checks where the files of a run are kept: under the root
@@ -125,7 +127,8 @@ func TestStateRoundTrip(t *testing.T) {
 		Profile:  "opencode",
 		Session:  "ses_7fKq2",
 	}
-	attempt := state.NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false)
+	attempt := state.NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false,
+		proc.Process{Pid: 4242, StartedAt: started})
 	attempt = attempt.Ended(ended, TimedOut)
 	path := journals.StatePath(43)
 	if err := SaveState(path, attempt); err != nil {
@@ -212,6 +215,79 @@ func TestLoadStateOfABrokenFile(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), path) {
 		t.Errorf("error %q does not name the file a person has to look at", err)
+	}
+}
+
+// TestStateKeepsTheProcessOfTheRun: a state of a task says "running" until something
+// says otherwise, and the only thing that can say it is the process of the run itself
+// — the change request is there for the same reason, so that a list of runs needs
+// nothing but the state (docs/DESIGN.md §7).
+func TestStateKeepsTheProcessOfTheRun(t *testing.T) {
+	started := time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC)
+	process := proc.Process{Pid: 4242, StartedAt: started.Add(-time.Second)}
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+
+	state := State{Number: 43, Title: "the run of a task"}.
+		NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false, process).
+		Ended(started.Add(42*time.Minute), ChangeRequestOpened)
+	state.Change = &Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"}
+	path := journals.StatePath(43)
+	if err := SaveState(path, state); err != nil {
+		t.Fatalf("SaveState returned an error: %v", err)
+	}
+
+	read, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState returned an error: %v", err)
+	}
+
+	got, named := read.Attempts[0].Process()
+	if !named {
+		t.Fatal("the state read back names no process, want the one the run was in")
+	}
+	if got != process {
+		t.Errorf("the process read back = %+v, want %+v", got, process)
+	}
+	if read.Change == nil || read.Change.URL != state.Change.URL || read.Change.Number != 44 {
+		t.Errorf("the change request read back = %+v, want the one the run opened", read.Change)
+	}
+}
+
+// TestStateOfARunThatKeptNoProcess: crewflow kept the number of the process of a run
+// after this state was written, and a state of before that has to be read as it is —
+// a list of runs may not ask the machine about a number it does not have.
+func TestStateOfARunThatKeptNoProcess(t *testing.T) {
+	older := `{
+  "task": 43,
+  "title": "the run of a task",
+  "branch": "crewflow/43-the-run-of-a-task",
+  "worktree": "/w/43",
+  "profile": "opencode",
+  "attempts": [
+    {"number": 1, "started_at": "2026-09-28T10:00:00Z", "ended_at": "0001-01-01T00:00:00Z",
+     "journal": "/w/43-1.jsonl", "error_journal": "/w/43-1.err", "outcome": "running",
+     "continued": false}
+  ]
+}
+`
+	path := filepath.Join(t.TempDir(), "43.json")
+	if err := os.WriteFile(path, []byte(older), 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState of a state of before the process was kept: %v", err)
+	}
+
+	if len(state.Attempts) != 1 || state.Attempts[0].Outcome != Running {
+		t.Fatalf("the state read back = %+v, want the one attempt that was going", state.Attempts)
+	}
+	if _, named := state.Attempts[0].Process(); named {
+		t.Error("a state of before the process was kept names a process, want none")
+	}
+	if state.Change != nil {
+		t.Errorf("a state of before the change request was kept holds %+v, want none", state.Change)
 	}
 }
 
