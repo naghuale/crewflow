@@ -1,0 +1,9 @@
+crewflow
+Copyright 2026 naghuale
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Some ideas of its design (a headless executor launched by the orchestrator,
+a git worktree per task, Definition of Ready and Definition of Done, lessons
+from process bugs) come from zeroscrypt/aiac, https://github.com/zeroscrypt/aiac,
+licensed under the Apache License, Version 2.0. No code was copied from it.

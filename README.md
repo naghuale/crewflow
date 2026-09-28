@@ -1,12 +1,58 @@
 # crewflow
 
-A small, project-agnostic framework for developing with two roles: an orchestrator that plans,
-reviews and merges, and an executor that writes code for one task at a time. Both roles are
-played by whatever agents you configure, with whatever models they are set up to use: crewflow
-does not depend on a particular agent, model, language or stack. The executor is launched headless
-in its own `git worktree` for each task. GitHub issues and pull requests are the source of truth;
-merges are fast-forward only, of the approved commit, on green CI.
+A small, project-agnostic framework for developing with two roles: an **orchestrator** that
+plans, reviews and merges, and an **executor** that writes code for one task at a time. Both
+roles are played by whatever agents you configure, with whatever models they are set up to use:
+crewflow does not depend on a particular agent, model, language or stack.
 
-Status: design draft — see [docs/DESIGN.md](docs/DESIGN.md).
+- The executor is launched **headless** in its own `git worktree` for each task.
+- A task is an issue written as a **readable spec** for a human, with a collapsed technical part
+  for the executor.
+- Issues and pull requests are the source of truth. A review is a comment
+  `REVIEW: APPROVED <sha>`; a merge is **fast-forward only**, of exactly the approved commit, on
+  green CI.
+- Project gates (format, lint, tests, build…) and requirements are plain commands in
+  `crewflow.toml`.
 
-Ideas borrowed with thanks from [zeroscrypt/aiac](https://github.com/zeroscrypt/aiac) (Apache-2.0).
+Status: early. The first milestone works and is used daily on a real project; the design and
+the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian).
+
+## Install
+
+Requires Go 1.27 or later and the [GitHub CLI](https://cli.github.com/) (`gh`), logged in.
+
+```sh
+go install github.com/naghuale/crewflow/cmd/crewflow@latest
+```
+
+## Use
+
+Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml) and
+§5 of the design), then:
+
+```sh
+crewflow doctor            # check tools, requirements and access
+crewflow task check 12     # is issue #12 ready to be worked on?
+crewflow task run 12       # run the executor on it in its own worktree; opens a PR
+crewflow task watch 12     # follow a run live
+crewflow task run 12 -continue "fix the failing test"   # continue the same session
+```
+
+A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
+`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. Journals live in
+`~/.crewflow/runs`, worktrees in `~/.crewflow/worktrees`.
+
+## Executors
+
+Any command-line agent that can run without a window works; the command is configured in
+`crewflow.toml`. [OpenCode](https://opencode.ai) is tested first:
+
+```toml
+[executor]
+command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
+```
+
+## License
+
+[Apache-2.0](LICENSE). Some ideas come from [zeroscrypt/aiac](https://github.com/zeroscrypt/aiac),
+see [NOTICE](NOTICE).
