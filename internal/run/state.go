@@ -66,17 +66,20 @@ type Attempt struct {
 	Outcome Kind `json:"outcome"`
 	// Continued says that the attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
-	// PID and ProcessStartedAt are the process the run happened in: its number and
-	// when that process started. The state of a task says "running" until something
-	// says otherwise, and after a reboot of the machine nothing does but the
-	// process itself (docs/DESIGN.md §7).
+	// PID and ProcessStartedAt are the process of the run of crewflow itself: its
+	// number and when that process started. It is crewflow and not the executor, and
+	// that is on purpose — crewflow lives exactly as long as the run and stops the
+	// executor when it is stopped, so a run whose crewflow is gone is a run that is
+	// over whatever its executor is doing. The state of a task says "running" until
+	// something says otherwise, and after a reboot of the machine nothing does but
+	// the process itself (docs/DESIGN.md §7).
 	PID              int        `json:"pid,omitempty"`
 	ProcessStartedAt *time.Time `json:"process_started_at,omitempty"`
 }
 
-// Process is the process the attempt is run in, and whether the state names one at
-// all: a state written before crewflow kept the number of a process names none, and
-// the machine cannot be asked about a number it does not have.
+// Process is the process of the run of crewflow the attempt was made in, and whether
+// the state names one at all: a state written before crewflow kept the number of a
+// process names none, and the machine cannot be asked about a number it does not have.
 func (a Attempt) Process() (proc.Process, bool) {
 	if a.PID <= 0 || a.ProcessStartedAt == nil {
 		return proc.Process{}, false

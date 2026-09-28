@@ -1,8 +1,8 @@
 // Package proc asks the machine about a process: whether it is there, and since
-// when. A run of a task writes the process it happens in into the state of the task,
-// and `crewflow task list` asks about that process later, because a state says
-// "running" until something says otherwise, and after a reboot of the machine
-// nothing does (docs/DESIGN.md §7).
+// when. A run of a task writes the process of crewflow it happens in into the state
+// of the task, and `crewflow task list` asks about that process later, because a
+// state says "running" until something says otherwise, and after a reboot of the
+// machine nothing does (docs/DESIGN.md §7).
 package proc
 
 import (
@@ -49,10 +49,11 @@ func System() Env {
 	return Env{Ask: ask}
 }
 
-// Self is the process this code runs in: the one a run of a task happens in, and the
-// one whose window a person closes when they stop a run. Whether the machine could say
-// when it started is returned with it, because a run that cannot be asked is a run
-// whose state is written as it was written before.
+// Self is the process this code runs in: the process of the run of crewflow itself,
+// and the one whose window a person closes when they stop a run. It is not the
+// executor — crewflow lives exactly as long as the run and stops the executor with
+// itself. Whether the machine could say when it started is returned with it, because
+// a run that cannot be asked is a run whose state is written as it was written before.
 func (e Env) Self() (Process, bool) {
 	pid := os.Getpid()
 	started, there := e.StartedAt(pid)

@@ -89,6 +89,6 @@ Subcommands:
   crewflow task run <N> [-config path] [-repo path] [-continue "message"] [-json]
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
-  crewflow task list [-config path] [-repo owner/name] [-json] [-all]
+  crewflow task list [-config path] [-repo path] [-json] [-all]
 `)
 }

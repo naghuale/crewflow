@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -228,10 +229,14 @@ func runTaskWatch(args []string, stdout, stderr io.Writer) int {
 // the state crewflow kept and nothing else — no tracker, no host, no network — and
 // creates nothing: a list of runs is a question, and a question is not a run
 // (docs/DESIGN.md §6, §7).
+//
+// The project is the one the file of the project names, and -repo is the checkout
+// that file is looked for in — the same flag as in `task run`, and the same way it is
+// used: a person points it at the folder they work in.
 func runTaskList(args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("list", stderr)
-	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
-	repo := flags.String("repo", "", "the project whose runs to show, as owner/name; the project of the file when empty")
+	configPath := flags.String("config", "", "path to crewflow.toml, the one in -repo when not named")
+	repo := flags.String("repo", "", "the checkout whose runs to show, the folder crewflow was called in when empty")
 	asJSON := flags.Bool("json", false, "print the list as JSON, for the orchestrator")
 	all := flags.Bool("all", false, "show every run of the project, not only the last ones")
 	if err := flags.Parse(args); err != nil {
@@ -242,8 +247,13 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return exitUsage
 	}
+	if *repo != "" {
+		if err := checkoutAt(*repo); err != nil {
+			return failed(stderr, fmt.Errorf("-repo %s: %w", *repo, err))
+		}
+	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := config.Load(projectFile(*configPath, *repo))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -255,11 +265,7 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, fmt.Errorf("executor.timeout: %w", err))
 	}
-	project := *repo
-	if project == "" {
-		project = cfg.RepoName()
-	}
-	runs, err := taskrun.List(home, project, *all, taskrun.ListEnv{
+	runs, err := taskrun.List(home, cfg.RepoName(), *all, taskrun.ListEnv{
 		Now:     taskClock,
 		Running: taskMachine.Alive,
 		Timeout: timeout,
@@ -288,6 +294,37 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		return failed(stderr, err)
 	}
 	return exitOK
+}
+
+// projectFile is the file of the project whose runs are to be shown: the one that was
+// named, the one in the checkout that was named, or the one in the folder crewflow was
+// called in. A checkout without a file of its own is a folder of a project crewflow
+// knows nothing about, and saying so is better than an empty list that looks like a
+// project nothing was ever run in.
+func projectFile(configPath, repo string) string {
+	switch {
+	case configPath != "":
+		return configPath
+	case repo != "":
+		return filepath.Join(repo, "crewflow.toml")
+	default:
+		return defaultConfigPath
+	}
+}
+
+// checkoutAt is a clear answer when there is no checkout at the path a person named: a
+// file where a folder was named, or nothing at all, is a wrong call of the caller and
+// not a project without runs.
+func checkoutAt(repo string) error {
+	info, err := os.Stat(repo)
+	switch {
+	case err != nil:
+		return err
+	case !info.IsDir():
+		return errors.New("that is a file, want the folder of a checkout of the project")
+	default:
+		return nil
+	}
 }
 
 // taskFlags are the flags of a subcommand of the task, and the usage that goes with

@@ -557,27 +557,109 @@ func TestRunTaskListOfAProjectThatWasNeverRun(t *testing.T) {
 	}
 }
 
-// TestRunTaskListOfAnotherProject: the runs are kept by the name of the project, and a
-// person who asks about the runs of another one gets the answer about that one: there
-// are none here.
-func TestRunTaskListOfAnotherProject(t *testing.T) {
+// TestRunTaskListOfAnotherCheckout: -repo is a checkout, the way it is in `task run`, and
+// the project whose runs are shown is the one the file of the project in it names. Two
+// projects on one machine keep their runs apart, and a person who points crewflow at
+// the other folder sees the runs of that project and not the ones of this one.
+func TestRunTaskListOfAnotherCheckout(t *testing.T) {
 	host := &host{opened: true, task: taskOf(43)}
 	host.use(t)
 	project := host.config(t)
+	checkout, other := host.otherProject(t)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
-		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
-	}
-	stdout.Reset()
-	stderr.Reset()
 
-	code := run([]string{"task", "list", "-config", project, "-repo", "naghuale/telecli"}, &stdout, &stderr)
-
-	if code != exitOK {
-		t.Fatalf("crewflow task list -repo = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	// A run in each of the two projects: the state of a task is kept by the name the
+	// file of the project has, and the number of the task is what tells them apart.
+	if code := run([]string{"task", "run", "43", "-config", other}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of the other project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
-	if want := "no runs yet\n"; stdout.String() != want {
-		t.Errorf("crewflow task list -repo wrote %q, want the runs of the other project: %q", stdout.String(), want)
+	host.task = taskOf(50)
+	if code := run([]string{"task", "run", "50", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of this project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+
+	cases := []struct {
+		name string
+		args []string
+		// task is the task the list is to show, and apart the task of the other
+		// project, which is not to be in the list at all.
+		task  string
+		apart string
+	}{
+		{
+			name: "the checkout that was named", args: []string{"-repo", checkout},
+			task: "43", apart: "50",
+		},
+		{
+			name: "the file that was named", args: []string{"-config", other},
+			task: "43", apart: "50",
+		},
+		{
+			// The file that was named is the one that says which project this is: -repo
+			// says where that file is looked for, and a file that was named is not
+			// looked for anywhere.
+			name: "the file that was named over the checkout",
+			args: []string{"-config", project, "-repo", checkout},
+			task: "50", apart: "43",
+		},
+		{
+			name: "this project", args: []string{"-config", project},
+			task: "50", apart: "43",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout.Reset()
+			stderr.Reset()
+
+			code := run(append([]string{"task", "list"}, tc.args...), &stdout, &stderr)
+
+			if code != exitOK {
+				t.Fatalf("crewflow task list %v = %d, want %d (stderr: %q)", tc.args, code, exitOK, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "\n"+tc.task+"  ") {
+				t.Errorf("crewflow task list %v wrote %q, want the runs of the task %s", tc.args, stdout.String(), tc.task)
+			}
+			if strings.Contains(stdout.String(), "\n"+tc.apart+"  ") {
+				t.Errorf("crewflow task list %v wrote %q, want the runs of one project and not of the other",
+					tc.args, stdout.String())
+			}
+		})
+	}
+}
+
+// TestRunTaskListOfSomethingThatIsNotACheckout: a path that is not a folder of a
+// checkout is a wrong call of the caller, and it is said so. A list with nothing in it
+// would be a lie here: the runs of that project are there, and crewflow was pointed at
+// the wrong place.
+func TestRunTaskListOfSomethingThatIsNotACheckout(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	file := writeConfig(t, taskConfig)
+	cases := []struct {
+		name string
+		repo string
+	}{
+		{name: "a file where a checkout was named", repo: file},
+		{name: "nothing at all", repo: filepath.Join(t.TempDir(), "nowhere")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := run([]string{"task", "list", "-config", project, "-repo", tc.repo}, &stdout, &stderr)
+
+			if code != exitFailure {
+				t.Fatalf("crewflow task list -repo %s = %d, want %d", tc.repo, code, exitFailure)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("crewflow task list -repo %s wrote %q, want no list at all", tc.repo, stdout.String())
+			}
+			if !strings.Contains(stderr.String(), tc.repo) {
+				t.Errorf("crewflow task list -repo %s wrote %q to stderr, want it to name the path", tc.repo, stderr.String())
+			}
+		})
 	}
 }
 
@@ -819,6 +901,21 @@ func (h *host) refuses(_ *testing.T) {
 func (h *host) config(t *testing.T) string {
 	t.Helper()
 	return writeConfig(t, strings.ReplaceAll(taskConfig, "WORKTREES", h.worktrees))
+}
+
+// otherProject is a checkout of another project in a folder of the test, and the file
+// in it: a person with two clones of two projects on one machine points -repo at the
+// folder of the one they mean, and the runs of the two never mix.
+func (h *host) otherProject(t *testing.T) (checkout, configPath string) {
+	t.Helper()
+	checkout = t.TempDir()
+	other := strings.ReplaceAll(taskConfig, `repo = "naghuale/crewflow"`, `repo = "naghuale/telecli"`)
+	configPath = filepath.Join(checkout, "crewflow.toml")
+	text := strings.ReplaceAll(other, "WORKTREES", h.worktrees)
+	if err := os.WriteFile(configPath, []byte(text), 0o600); err != nil {
+		t.Fatalf("write %s: %v", configPath, err)
+	}
+	return checkout, configPath
 }
 
 // exec is the machine of a test: git says nothing, the executor is the events of a

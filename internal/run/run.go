@@ -46,11 +46,13 @@ type Env struct {
 	// Now is the clock of a run, so that a report says when a thing happened and a
 	// test does not have to wait for it to happen.
 	Now func() time.Time
-	// Process is the process this run happens in — its number and when it started —
-	// which is what the state of the task is told, so that `crewflow task list` can
-	// ask the machine later whether this run is still going (docs/DESIGN.md §7).
-	// A machine that cannot say leaves the state of the task as it was written
-	// before: an attempt that names no process, which a list reads the old way.
+	// Process is the process this run of crewflow happens in — its number and when it
+	// started — which is what the state of the task is told, so that `crewflow task
+	// list` can ask the machine later whether this run is still going
+	// (docs/DESIGN.md §7). It is crewflow and not the executor: crewflow lives
+	// exactly as long as the run and stops the executor with itself. A machine that
+	// cannot say leaves the state of the task as it was written before: an attempt
+	// that names no process, which a list reads the old way.
 	Process func() (proc.Process, bool)
 }
 
@@ -289,10 +291,10 @@ func (r *runner) stateOf(started time.Time) State {
 		process)
 }
 
-// process is the process this run is happening in, and whether the machine could say
-// so at all. It is a question, not a fact: a machine that cannot be asked is a
-// machine whose state of the task is written without a process in it, which is how
-// every state of crewflow was written before.
+// process is the process of crewflow this run is happening in, and whether the machine
+// could say so at all. It is a question, not a fact: a machine that cannot be asked
+// is a machine whose state of the task is written without a process in it, which is
+// how every state of crewflow was written before.
 func (r *runner) process() (proc.Process, bool) {
 	if r.env.Process == nil {
 		return proc.Process{}, false
