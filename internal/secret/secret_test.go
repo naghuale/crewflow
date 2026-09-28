@@ -129,6 +129,14 @@ func TestAppKeyIsNamedAfterTheApp(t *testing.T) {
 	}
 }
 
+// keychainTestVariable is what the owner sets to let the one test of this package that
+// is about the framework of the keychain touch it. The CI and a run of a task never set
+// it, and the guard below lets no other test of this package reach the store of the
+// machine (docs/DESIGN.md §7i). It is here and not in the test of the framework because
+// the guard has to know the name on every machine, and a machine where there is no
+// keychain must be able to read the guard as well.
+const keychainTestVariable = "CREWFLOW_KEYCHAIN_TEST"
+
 // noKeychainIsTheNameOfTheStoreOfThisMachine is the pattern of the guard below, written
 // in two parts so that this test does not match itself.
 var noKeychainIsTheNameOfTheStoreOfThisMachine = regexp.MustCompile(`\bSys` + `tem\(\)`)

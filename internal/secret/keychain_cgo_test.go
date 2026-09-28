@@ -11,12 +11,6 @@ import (
 	"testing"
 )
 
-// keychainTestVariable is what the owner sets to let this file touch the keychain of
-// their machine. The CI and a run of a task never set it, and the guard of
-// [TestNoTestOfThisPackageTouchesTheKeychainUnasked] holds every other test of this
-// package away from the store of the machine (docs/DESIGN.md §7i).
-const keychainTestVariable = "CREWFLOW_KEYCHAIN_TEST"
-
 // TestTheKeychainOfThisMachineWhenTheOwnerAsks is the one test of this package that
 // writes into the keychain of the person who runs it, and it does nothing at all unless
 // that person says so:
