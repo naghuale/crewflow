@@ -209,6 +209,7 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 				{"gh login", forge.OK},
 				{appKeyCheck, forge.OK},
 				{appCheck, forge.OK},
+				{appTokenCheck, forge.OK},
 			},
 		},
 		{
@@ -237,6 +238,7 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 				{"gh login", forge.OK},
 				{appKeyCheck, forge.OK},
 				{appCheck, forge.Fail},
+				{appTokenCheck, forge.OK},
 			},
 		},
 		{
@@ -254,6 +256,7 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 				{"gh login", forge.OK},
 				{appKeyCheck, forge.OK},
 				{appCheck, forge.Fail},
+				{appTokenCheck, forge.OK},
 			},
 		},
 	}
@@ -287,7 +290,8 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 				}
 			}
 			// A report of a machine never leaves a token in a terminal: the key is
-			// asked for as a fact and not read, and no token is asked for at all.
+			// asked for as a fact and not read, and the token of the last check is
+			// asked for and thrown away — no command of the report is started with it.
 			for _, command := range m.ran {
 				for _, entry := range command.env {
 					if strings.Contains(entry, "ghs_token_of_the_run") {
@@ -295,7 +299,57 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 					}
 				}
 			}
+			for _, check := range checks {
+				if strings.Contains(check.Detail, "ghs_token_of_the_run") || strings.Contains(check.Hint, "ghs_token_of_the_run") {
+					t.Errorf("check %q shows the token of the trial: %q", check.Name, check.Detail)
+				}
+			}
 		})
+	}
+}
+
+// TestDoctorOfTheBotSaysWhatGitHubRefusedForTheToken: a run in the mode of the bot
+// cannot start without a token, and GitHub refuses one with words of its own — 422
+// when the repository of the project is not a repository of the installation. The
+// report says those words and what to do about them, so that the refusal is found out
+// before a task and not in the middle of one, and it shows nothing of the value of a
+// token: a report is read by people and pasted into issues (docs/DESIGN.md §7e, §7i).
+func TestDoctorOfTheBotSaysWhatGitHubRefusedForTheToken(t *testing.T) {
+	const said = "There is at least one repository that does not exist " +
+		"or is not accessible to the parent installation."
+	m, api := machineWithAnApp(t)
+	api.answer["/app/installations/12345/access_tokens"] = map[string]any{
+		"message": said,
+		"errors": []any{map[string]any{
+			"resource": "InstallationAccessToken", "code": "custom", "message": said,
+		}},
+	}
+	api.refusesAt("/app/installations/12345/access_tokens", http.StatusUnprocessableEntity)
+	a := New(repo, "", m.env(t)).WithBot(Bot{AppID: 5107052, InstallationID: 12345, API: api.URL()})
+
+	checks := a.Doctor(t.Context())
+
+	var found bool
+	for _, check := range checks {
+		if check.Name != appTokenCheck {
+			continue
+		}
+		found = true
+		if check.Status != forge.Fail {
+			t.Errorf("check %q = %q (%s), want fail: a run cannot start without a token",
+				check.Name, check.Status, check.Detail)
+		}
+		for _, want := range []string{said, "422", "naghuale/crewflow"} {
+			if !strings.Contains(check.Detail, want) {
+				t.Errorf("check %q detail = %q, want it to say %q", check.Name, check.Detail, want)
+			}
+		}
+		if check.Hint == "" {
+			t.Errorf("check %q is %q and says nothing to do about it", check.Name, check.Status)
+		}
+	}
+	if !found {
+		t.Errorf("doctor made the checks %v, want a check of the token of the run", checkNames(checks))
 	}
 }
 
@@ -305,10 +359,19 @@ func TestDoctorOfTheBotLooksForTheKeyAndTheInstallation(t *testing.T) {
 type serverOfTheTest struct {
 	// answer is what the server answers, by the path it was asked at.
 	answer map[string]any
+	// status is the code of the answer of a path, for an answer the API of GitHub
+	// refuses with: the code is a part of what a report of a machine has to show.
+	status map[string]int
 	// asked are the paths of the requests, in order.
 	asked []string
 	// server is the HTTP the test talks through.
 	server *httptest.Server
+}
+
+// refusesAt makes the server answer the path with the code, the way the API of GitHub
+// refuses a request it does not want to grant.
+func (a *serverOfTheTest) refusesAt(path string, code int) {
+	a.status[path] = code
 }
 
 // URL is the address of the API of the test, which is what the adapter of the project
@@ -342,17 +405,35 @@ func rightsOfTheDesign() map[string]any {
 	}
 }
 
+// tokenOfTheTest is the answer of the documentation of the REST API of GitHub to a
+// request for the token of the installation, with the repository of the project and the
+// rights of §7i in it. Crewflow reads the repositories of the answer to be sure the
+// token is for the one repository of a run, and the rights to be sure they are no
+// wider than a run needs — so a server of a test that answered with a token and
+// nothing else would be a server GitHub never was.
+func tokenOfTheTest() map[string]any {
+	return map[string]any{
+		"token":                "ghs_token_of_the_run",
+		"expires_at":           "2026-09-28T13:00:00Z",
+		"permissions":          rightsOfTheDesign(),
+		"repository_selection": "selected",
+		"repositories": []map[string]any{{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "crewflow", "full_name": "naghuale/crewflow",
+		}},
+	}
+}
+
 // machineWithAnApp is a machine of a test that has an App on it: the store holds a key
 // the test generated, and the server of the test answers for the API of GitHub. No
 // test of crewflow asks GitHub for a token, and none opens the keychain of a person
 // (docs/DESIGN.md §7i).
 func machineWithAnApp(t *testing.T) (*machine, *serverOfTheTest) {
 	t.Helper()
-	api := &serverOfTheTest{answer: map[string]any{}}
+	api := &serverOfTheTest{answer: map[string]any{}, status: map[string]int{}}
 	api.answer["/app"] = map[string]any{"id": 5107052, "slug": "crewflow-executor"}
 	api.answer["/users/crewflow-executor[bot]"] = map[string]any{"id": 1987, "login": "crewflow-executor[bot]", "type": "Bot"}
-	api.answer["/app/installations/12345/access_tokens"] = map[string]any{
-		"token": "ghs_token_of_the_run", "expires_at": "2026-09-28T13:00:00Z"}
+	api.answer["/app/installations/12345/access_tokens"] = tokenOfTheTest()
 	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
@@ -362,6 +443,9 @@ func machineWithAnApp(t *testing.T) (*machine, *serverOfTheTest) {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Not Found: " + r.URL.Path})
 			return
+		}
+		if code, refused := api.status[r.URL.Path]; refused {
+			w.WriteHeader(code)
 		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))

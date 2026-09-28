@@ -51,8 +51,10 @@ type Source struct {
 	// project. Zero is not a mistake: the App is asked which installation the
 	// repository has, once per run.
 	InstallationID int64
-	// Repo is the repository as "owner/name", the one repository the token of the
-	// installation is asked for.
+	// Repo is the repository as "owner/name", the one repository of the project. Every
+	// path of the API and every command of gh is told a repository this way; the one
+	// exception is the request of a token, which the API of GitHub wants by the name
+	// of the repository alone.
 	Repo string
 	// BaseURL is the address of the API, and Now is the clock of the machine: both
 	// are given so that a test of a token exchange happens at a moment of its own
@@ -123,16 +125,7 @@ type Installation struct {
 // ask for is in the list as well — a report of what an App may do is worth nothing if
 // it only says what it was asked for.
 func (i Installation) Granted() []string {
-	names := make([]string, 0, len(i.Permissions))
-	for name := range i.Permissions {
-		names = append(names, name)
-	}
-	slices.Sort(names)
-	granted := make([]string, 0, len(names))
-	for _, name := range names {
-		granted = append(granted, name+" "+i.Permissions[name])
-	}
-	return granted
+	return namedRights(i.Permissions)
 }
 
 // BeyondARun are the rights an installation holds that a token of a run never asks
@@ -143,8 +136,33 @@ func (i Installation) Granted() []string {
 // run of this project has, and a report that lists only the rights of the design is a
 // report of an intention and not of a machine (docs/DESIGN.md §7i).
 func (i Installation) BeyondARun() []string {
+	return beyondARun(i.Permissions)
+}
+
+// namedRights are a set of rights as a person reads them, sorted by name, and an empty
+// set is said so rather than left blank: the rights of an installation and the rights
+// of a token of it are both asked in reports of this project.
+func namedRights(permissions map[string]string) []string {
+	names := make([]string, 0, len(permissions))
+	for name := range permissions {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	granted := make([]string, 0, len(names))
+	for _, name := range names {
+		granted = append(granted, name+" "+permissions[name])
+	}
+	return granted
+}
+
+// beyondARun is what in a set of rights is more than a run of this project is asked
+// for. It is asked of the rights of the installation and of the rights of a token of
+// it alike, and it is one question with one answer: the installation says what the
+// App may do here, and a token says what the executor of a run will be able to do
+// (docs/DESIGN.md §7i).
+func beyondARun(permissions map[string]string) []string {
 	var beyond []string
-	for _, right := range i.Granted() {
+	for _, right := range namedRights(permissions) {
 		name, level, _ := strings.Cut(right, " ")
 		if asked, known := rights[name]; !known || asked != level {
 			beyond = append(beyond, right)
@@ -286,14 +304,71 @@ func (s *Source) installationAt(ctx context.Context, key Key, path string) (Inst
 }
 
 // granted is the answer of `POST /app/installations/{installation_id}/access_tokens`
-// as crewflow reads it: the token and the moment it stops working. The answer holds the
-// repository the token is for and the rights it was given as well, and crewflow asked
-// for both — a field of an invention is a field nothing checks (docs/DESIGN.md §7i).
+// as crewflow reads it: the token and the moment it stops working, and the two fields
+// that say what the token may do — the repositories it reaches and the rights it was
+// given. The last two are asked for and are checked, because a token is what the
+// executor of a run is handed and the answer is the only thing that says how far it
+// reaches (docs/DESIGN.md §7i).
 type granted struct {
 	// Token is the value itself, and ExpiresAt is the hour it is good until, as the
 	// documentation of the API of GitHub writes both of them (apiVersion).
 	Token     string    `json:"token"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// Permissions are the rights of the token and Repositories the repositories of it,
+	// as the documentation writes them: a map of a name to a level, and a list of
+	// repositories. The rest of the answer is there to be ignored.
+	Permissions  map[string]string `json:"permissions"`
+	Repositories []repository      `json:"repositories"`
+}
+
+// repository is a repository of the answer of a token, as far as crewflow looks at it:
+// the name GitHub knows it by and the whole of it, which is the two ways to say which
+// repository of the project a token is for.
+type repository struct {
+	Name     string `json:"name"`
+	FullName string `json:"full_name"`
+}
+
+// whole is what a report says about a repository of the answer, which is how every
+// other place of crewflow writes a repository: with its owner in front of the name.
+func (r repository) whole() string {
+	if r.FullName != "" {
+		return r.FullName
+	}
+	return r.Name
+}
+
+// asAsked is whether the answer is the token crewflow asked for and nothing more: the
+// one repository of the project, and no right wider than the ones a run is given. A
+// token that came back wider than the request is a token the executor of a run would
+// hold on a day nobody wanted it, and it is refused here, before anybody has used it
+// for anything (docs/DESIGN.md §7i).
+func (g granted) asAsked(s *Source) error {
+	if len(g.Repositories) != 1 {
+		return fmt.Errorf("the answer of the API names the repositories %s, want only %s",
+			repositoriesNamed(g.Repositories), s.Repo)
+	}
+	if repository := g.Repositories[0].whole(); repository != s.Repo {
+		return fmt.Errorf("the answer of the API names the repository %s, want %s", repository, s.Repo)
+	}
+	if wider := beyondARun(g.Permissions); len(wider) > 0 {
+		return fmt.Errorf("the answer of the API gave the token the rights %s, which are wider than a run of this "+
+			"project asks for: change the rights of the app in the settings of GitHub", strings.Join(wider, ", "))
+	}
+	return nil
+}
+
+// repositoriesNamed are the repositories of an answer as one line of a refusal reads
+// them, and an answer with no repositories at all is said so rather than left blank.
+func repositoriesNamed(repositories []repository) string {
+	if len(repositories) == 0 {
+		return "none"
+	}
+	named := make([]string, 0, len(repositories))
+	for _, repository := range repositories {
+		named = append(named, repository.whole())
+	}
+	return strings.Join(named, ", ")
 }
 
 // Token is a token of the installation, for the repository of the project and for
@@ -303,6 +378,19 @@ type granted struct {
 func (s *Source) Token(ctx context.Context) (Token, error) {
 	token, _, err := s.token(ctx)
 	return token, err
+}
+
+// name is the repository of the project without its owner, which is what the API of
+// GitHub wants in `repositories`: the documentation of the endpoint gives the names of
+// the repositories there ("Hello-World"), and a path in that list is a repository that
+// does not exist as far as the installation is concerned — the API answers such a
+// request with 422 (apiVersion).
+func (s *Source) name() string {
+	_, name, found := strings.Cut(s.Repo, "/")
+	if !found {
+		return s.Repo
+	}
+	return name
 }
 
 // token is a token of the installation and the number of the installation it was
@@ -322,7 +410,7 @@ func (s *Source) token(ctx context.Context) (Token, int64, error) {
 		return Token{}, 0, err
 	}
 	body := map[string]any{
-		"repositories": []string{s.Repo},
+		"repositories": []string{s.name()},
 		"permissions":  rights,
 	}
 	var answer granted
@@ -332,6 +420,9 @@ func (s *Source) token(ctx context.Context) (Token, int64, error) {
 	}
 	if answer.Token == "" {
 		return Token{}, 0, fmt.Errorf("the token of the app %d on %s: the answer of the API holds no token", s.AppID, s.Repo)
+	}
+	if err := answer.asAsked(s); err != nil {
+		return Token{}, 0, fmt.Errorf("the token of the app %d on %s: %w", s.AppID, s.Repo, err)
 	}
 	return Token{Value: answer.Token, ExpiresAt: answer.ExpiresAt}, installation, nil
 }

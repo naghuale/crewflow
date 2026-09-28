@@ -1,0 +1,11 @@
+{
+  "repositories": [
+    "crewflow"
+  ],
+  "permissions": {
+    "contents": "write",
+    "issues": "read",
+    "metadata": "read",
+    "pull_requests": "write"
+  }
+}

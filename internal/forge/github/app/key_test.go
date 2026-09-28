@@ -354,3 +354,70 @@ func answerOfTest(t *testing.T, w http.ResponseWriter, body any) {
 		t.Errorf("write the answer of the server of the test: %v", err)
 	}
 }
+
+// answerOfTheToken is the answer of the documentation to a request for a token of the
+// installation of this project, as the map it is. A test that needs another answer
+// changes one field of it: the shape of an answer of GitHub is the one the
+// documentation writes, and a test that built an answer of its own would keep
+// agreeing with the code that reads it however that code changes.
+func answerOfTheToken(t *testing.T) map[string]any {
+	t.Helper()
+	return objectOfTheTest(t, "access-token.json")
+}
+
+// objectOfTheTest is a file of testdata as the object it holds: an example of the
+// documentation of the API of GitHub, or the body of a request in the form of it.
+func objectOfTheTest(t *testing.T, name string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read the example %s of the documentation: %v", name, err)
+	}
+	return objectOfTest(t, string(data), false)
+}
+
+// printedJSON is a body as it goes on the wire: it is read as JSON and written again,
+// and JSON writes the fields of an object in one order, so that two of them are the
+// same document exactly when their bytes are. A map has no order of its own, and a
+// test that compared two of them field by field would only say that the code agrees
+// with itself.
+func printedJSON(t *testing.T, body map[string]any) string {
+	t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("write the body as JSON: %v", err)
+	}
+	return string(encoded)
+}
+
+// readJSON is an example of the documentation as it goes on the wire, for a test that
+// compares what crewflow asked with what the documentation asks of it.
+func readJSON(t *testing.T, name string) string {
+	t.Helper()
+	return printedJSON(t, objectOfTheTest(t, name))
+}
+
+// pathAmong is the repository of a request that was written with its owner in it, and
+// the names that were written without: this is the difference the API of GitHub makes
+// between 201 and 422, and the whole of what this task is about.
+func pathAmong(t *testing.T, body map[string]any) (string, []string) {
+	t.Helper()
+	repositories, _ := body["repositories"].([]any)
+	var path string
+	var names []string
+	for _, repository := range repositories {
+		name, ok := repository.(string)
+		if !ok {
+			t.Errorf("the repositories of the request are %v, want names of repositories", repositories)
+			continue
+		}
+		if strings.Contains(name, "/") {
+			if path == "" {
+				path = name
+			}
+			continue
+		}
+		names = append(names, name)
+	}
+	return path, names
+}

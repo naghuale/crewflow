@@ -446,8 +446,7 @@ func newAPIOfTheTest(t *testing.T) *apiOfTheTest {
 	t.Helper()
 	api := &apiOfTheTest{answer: map[string]any{
 		"/api/v3/app": map[string]any{"id": 5107052, "slug": "crewflow-executor"},
-		"/api/v3/app/installations/12345/access_tokens": map[string]any{
-			"token": "ghs_token_of_the_run", "expires_at": "2026-09-28T13:00:00Z"},
+		"/api/v3/app/installations/12345/access_tokens": tokenOfTheTest(),
 	}}
 	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +496,25 @@ func (a *apiOfTheTest) installationOfTheTest(rights map[string]any) {
 func rightsOfTheDesign() map[string]any {
 	return map[string]any{
 		"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
+	}
+}
+
+// tokenOfTheTest is the answer of the documentation of the REST API of GitHub to a
+// request for the token of the installation, with the repository of the project and
+// the rights of §7i in it. Crewflow reads the repositories of the answer to be sure the
+// token is for the one repository of a run, and the rights to be sure they are no
+// wider than a run needs — so a server of a test that answered with a token and
+// nothing else would be a server GitHub never was.
+func tokenOfTheTest() map[string]any {
+	return map[string]any{
+		"token":                "ghs_token_of_the_run",
+		"expires_at":           "2026-09-28T13:00:00Z",
+		"permissions":          rightsOfTheDesign(),
+		"repository_selection": "selected",
+		"repositories": []map[string]any{{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "crewflow", "full_name": "naghuale/crewflow",
+		}},
 	}
 }
 

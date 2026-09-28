@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
 )
@@ -16,12 +17,16 @@ const (
 )
 
 // The names a report calls the checks of a project whose executor works as an App
-// by: the key of the App, and the App itself on the repository of the project.
+// by: the key of the App, the App itself on the repository of the project, and the
+// token the App hands out for it.
 const (
-	appKeyCheck  = "app key"
-	appCheck     = "app"
-	importHint   = "download the private key of the app and run `crewflow auth app import <file.pem>`, then delete the file"
-	permissionsW = "the rights of the app are wider than a run of this project needs: "
+	appKeyCheck   = "app key"
+	appCheck      = "app"
+	appTokenCheck = "token"
+	importHint    = "download the private key of the app and run `crewflow auth app import <file.pem>`, then delete the file"
+	permissionsW  = "the rights of the app are wider than a run of this project needs: "
+	tokenHint     = "a run of this project cannot start without a token of the repository of the project: " +
+		"install the app %d on it, or change project.repo and identity.github_app in %s"
 )
 
 // Doctor checks that gh is installed and that somebody is signed in with it,
@@ -57,10 +62,12 @@ func (a *Adapter) Doctor(ctx context.Context) []forge.Check {
 }
 
 // bot are the checks of a project whose executor works as the App: the key is in the
-// store of the machine, and the App is installed on the repository with no more rights
-// than a run of it asks for. The key is asked for without being read where the store
-// can answer that alone, and a token is never asked for here: a report of a machine
-// must not leave a token in a terminal (docs/DESIGN.md §7e, §7i).
+// store of the machine, the App is installed on the repository with no more rights than
+// a run of it asks for, and the App does hand out a token of that repository. The key
+// is asked for without being read where the store can answer that alone, and the token
+// of the last check is asked for and thrown away: a report of a machine shows that a
+// token came and never what it is, because a report is pasted into issues
+// (docs/DESIGN.md §7e, §7i).
 func (a *Adapter) bot(ctx context.Context) []forge.Check {
 	has, err := a.app.HasKey()
 	switch {
@@ -110,7 +117,30 @@ func (a *Adapter) bot(ctx context.Context) []forge.Check {
 		check.Hint = permissionsW + listed(extra) +
 			"\nchange the permissions of the app in the settings of GitHub: a run of this project only pushes its own branch"
 	}
-	return []forge.Check{key, check}
+	return append([]forge.Check{key, check}, a.token(ctx))
+}
+
+// token is the check that the App does hand out a token of the repository of the
+// project: a run in the mode of the bot cannot start without one, and a refusal of the
+// API here is a refusal a person sees before a task and not in the middle of one. The
+// token is asked for and thrown away — nothing of it is shown, and nothing of it is
+// used for anything (docs/DESIGN.md §7e, §7i).
+func (a *Adapter) token(ctx context.Context) forge.Check {
+	token, err := a.app.Token(ctx)
+	if err != nil {
+		return forge.Check{
+			Name:   appTokenCheck,
+			Status: forge.Fail,
+			Detail: err.Error(),
+			Hint:   fmt.Sprintf(tokenHint, a.app.AppID, a.env.ConfigPath),
+		}
+	}
+	return forge.Check{
+		Name:   appTokenCheck,
+		Status: forge.OK,
+		Detail: fmt.Sprintf("the api gave a token of the installation for %s, good until %s; it is not used and not shown",
+			a.repo, token.ExpiresAt.UTC().Format(time.RFC3339)),
+	}
 }
 
 // listed is a list of rights as one line of a report reads: a person reads the line

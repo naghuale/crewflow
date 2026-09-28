@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -16,6 +17,13 @@ func readBody(r *http.Request) (string, error) {
 	}
 	return string(body), nil
 }
+
+// theRefusalOfTheApi is what the API of GitHub answers to a request for the token of a
+// repository that is not a repository of the installation: these are the words of the
+// refusal the first run of crewflow in the mode of the bot ran into, and they are what
+// a person reads when a run does not start.
+const theRefusalOfTheApi = "There is at least one repository that does not exist " +
+	"or is not accessible to the parent installation."
 
 // TestInstallationIsTheAnswerOfTheDocumentation: the answers of both endpoints of an
 // installation are the same answer, and the fields of it are read as the documentation
@@ -274,18 +282,37 @@ func TestSourceTokenIsTheAnswerOfTheDocumentation(t *testing.T) {
 	}
 }
 
-// TestSourceTokenAsksForOneRepositoryAndTheRightsOfTheDesign: the token of an
-// installation is the whole of the power the executor of a run has on the host, and
-// §7i names its repository and its rights one by one. A token asked for with more of
-// either is a token the executor may use on a day it is not wanted.
-func TestSourceTokenAsksForOneRepositoryAndTheRightsOfTheDesign(t *testing.T) {
+// TestSourceTokenAsksTheRepositoryForByItsNameAsTheApiWantsIt: the body of the
+// request of the documentation of GitHub asks for a name of a repository and not for
+// a path, and the API answers 422 to a path — "There is at least one repository that
+// does not exist or is not accessible to the parent installation". That is what
+// stopped the first run of crewflow in the mode of the bot, and a test that compared
+// the body with what the code itself built said nothing about it.
+//
+// The server of the test is GitHub as it answers this endpoint: 201 to a name and 422
+// to a path, and the request is compared with the example of the documentation
+// (docs/DESIGN.md §7i).
+func TestSourceTokenAsksTheRepositoryForByItsNameAsTheApiWantsIt(t *testing.T) {
 	var asked asked
 	source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
 		asked.of(t, r)
-		answerOfTest(t, w, map[string]any{
-			"token":      "ghs_16C7e42F292c6912E7710c838347Ae178B4a",
-			"expires_at": "2026-09-28T13:00:00Z",
-		})
+		w.Header().Set("Content-Type", "application/json")
+		// The server of the test is the API of GitHub as it answers this endpoint: a
+		// request that names the repository gets a token, and a request with a path
+		// where a name belongs gets a 422 in the words of GitHub.
+		path, names := pathAmong(t, asked.body)
+		if path != "" || !slices.Contains(names, "crewflow") {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			answerOfTest(t, w, map[string]any{
+				"message": theRefusalOfTheApi,
+				"errors": []any{map[string]any{
+					"resource": "InstallationAccessToken", "code": "custom", "message": theRefusalOfTheApi,
+				}},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		writeAnswerOfTheTest(t, w, "access-token.json")
 	})
 
 	token, err := source.Token(t.Context())
@@ -305,25 +332,111 @@ func TestSourceTokenAsksForOneRepositoryAndTheRightsOfTheDesign(t *testing.T) {
 	if !strings.Contains(asked.accept, "github+json") {
 		t.Errorf("the request asked for %q, want the JSON of the API of GitHub", asked.accept)
 	}
-	repositories, _ := asked.body["repositories"].([]any)
-	if len(repositories) != 1 || repositories[0] != "naghuale/crewflow" {
-		t.Errorf("the token was asked for the repositories %v, want one: the repository of the project", repositories)
+	// The body is compared with the example of the documentation of the endpoint, as
+	// that example is written in the testdata of the package, and not with the fields
+	// the code happens to build: the second of the two only says that the code agrees
+	// with itself.
+	if got, want := printedJSON(t, asked.body), readJSON(t, "access-token-request.json"); got != want {
+		t.Errorf("the body of the request is %s, want the example of the documentation %s", got, want)
 	}
-	permissions, _ := asked.body["permissions"].(map[string]any)
-	want := map[string]any{"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read"}
-	for name, level := range want {
-		if permissions[name] != level {
-			t.Errorf("the token was asked for %s %v, want %q", name, permissions[name], level)
-		}
+	if want := "ghs_16C7e42F292c6912E7710c838347Ae178B4a"; token.Value != want {
+		t.Errorf("the token is %q, want the token of the answer of the API", token.Value)
 	}
-	if len(permissions) != len(want) {
-		t.Errorf("the token was asked for the rights %v, want only %v", permissions, want)
+	if want := "2016-07-11 22:14:10 +0000 UTC"; token.ExpiresAt.String() != want {
+		t.Errorf("the token is good until %s, want %s: the life of it is what the API says",
+			token.ExpiresAt, want)
 	}
-	if token.Value != "ghs_16C7e42F292c6912E7710c838347Ae178B4a" {
-		t.Errorf("the token is %q, want what the answer of the API holds", token.Value)
+	// The same server, asked the way crewflow asked before this task, refuses it: a
+	// server of a test that answered 201 to both forms would let the bug through, and
+	// the bug is the whole of what this test is about.
+	refused, err := source.HTTP.Post(source.BaseURL+"/app/installations/165781718/access_tokens",
+		"application/json", strings.NewReader(`{"repositories":["naghuale/crewflow"]}`))
+	if err != nil {
+		t.Fatalf("ask the server of the test the way crewflow used to ask: %v", err)
 	}
-	if want := "2026-09-28 13:00:00 +0000 UTC"; token.ExpiresAt.String() != want {
-		t.Errorf("the token is good until %s, want %s: the life of it is what the API says", token.ExpiresAt, want)
+	defer func() { _ = refused.Body.Close() }()
+	if refused.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("the server answered %d to the path %q, want 422: this is what GitHub answered to the first run of crewflow",
+			refused.StatusCode, "naghuale/crewflow")
+	}
+}
+
+// TestSourceTokenRefusesAnAnswerThatIsWiderThanTheRunAskedFor: the token of an
+// installation is the whole of the power the executor of a run has on the host, and
+// GitHub may make it wider than the request — more repositories, or a right asked for
+// with a wider level. A token like that is refused before anybody uses it, and the
+// refusal names what the API granted (docs/DESIGN.md §7i).
+func TestSourceTokenRefusesAnAnswerThatIsWiderThanTheRunAskedFor(t *testing.T) {
+	cases := []struct {
+		name string
+		// change is what a test does to the answer of the documentation to make the
+		// API hand out a token that is wider than the run asked for. Every case starts
+		// from the answer as the documentation writes it, so that a test is about the
+		// change and not about the shape of an answer.
+		change func(answer map[string]any)
+		want   string
+	}{
+		{
+			name: "another repository besides ours",
+			change: func(answer map[string]any) {
+				answer["repositories"] = append(answer["repositories"].([]any),
+					map[string]any{"id": 2, "node_id": "MDEwOlJlcG9zaXRvcnkx", "name": "other", "full_name": "naghuale/other"})
+			},
+			want: "naghuale/crewflow, naghuale/other",
+		},
+		{
+			name: "a repository of somebody else",
+			change: func(answer map[string]any) {
+				answer["repositories"] = []any{map[string]any{
+					"id": 3, "node_id": "MDEwOlJlcG9zaXRvcnkz", "name": "crewflow", "full_name": "someone/crewflow",
+				}}
+			},
+			want: "someone/crewflow",
+		},
+		{
+			name:   "no repository at all",
+			change: func(answer map[string]any) { answer["repositories"] = []any{} },
+			want:   "none",
+		},
+		{
+			name: "a right nobody asked for",
+			change: func(answer map[string]any) {
+				answer["permissions"].(map[string]any)["workflows"] = "write"
+			},
+			want: "workflows write",
+		},
+		{
+			name: "a right of the design with a wider level",
+			change: func(answer map[string]any) {
+				answer["permissions"].(map[string]any)["issues"] = "write"
+			},
+			want: "issues write",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := answerOfTheToken(t)
+			tc.change(answer)
+			source := sourceOfTest(t, func(w http.ResponseWriter, r *http.Request) {
+				answerOfTest(t, w, answer)
+			})
+
+			token, err := source.Token(t.Context())
+			if err == nil {
+				t.Fatalf("Token = %+v, want an answer wider than the run to be refused", token)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("Token = %v, want it to name %q", err, tc.want)
+			}
+			for _, want := range []string{"5107052", "naghuale/crewflow"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Token = %v, want it to mention %q", err, want)
+				}
+			}
+			if token.Value != "" {
+				t.Errorf("Token = %+v, want no token of a refused answer", token)
+			}
+		})
 	}
 }
 
@@ -362,7 +475,7 @@ func TestSourceTokenUsesTheInstallationItFound(t *testing.T) {
 		case "/repos/naghuale/crewflow/installation":
 			answerOfTest(t, w, map[string]any{"id": 777})
 		default:
-			answerOfTest(t, w, map[string]any{"token": "ghs_key", "expires_at": "2026-09-28T13:00:00Z"})
+			writeAnswerOfTheTest(t, w, "access-token.json")
 		}
 	})
 	source.InstallationID = 0
@@ -446,7 +559,7 @@ func TestSourceBotIsTheAccountCommitsAreMadeBy(t *testing.T) {
 		case "/users/crewflow-executor[bot]":
 			writeAnswerOfTheTest(t, w, "bot.json")
 		default:
-			answerOfTest(t, w, map[string]any{"token": "ghs_key", "expires_at": "2026-09-28T13:00:00Z"})
+			writeAnswerOfTheTest(t, w, "access-token.json")
 		}
 	})
 

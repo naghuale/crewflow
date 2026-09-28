@@ -30,9 +30,8 @@ installation_id = 12345
 
 // TestRunInTheModeOfTheBotNamesTheApp: a report of a project whose executor works as
 // an app says which app, says that the key is in the store and says what the app may
-// do — and it says all of it without a token of an hour, because a report is not a
-// run and a token it minted for a line of text would be a token in the memory of a
-// command that only prints (§7e, §7i).
+// do — and it says all of it with a token of an hour that it asked for and threw away,
+// because a report is not a run (docs/DESIGN.md §7e, §7i).
 func TestRunInTheModeOfTheBotNamesTheApp(t *testing.T) {
 	m := machineWithAnApp(t)
 	m.holdsTheKey = true
@@ -57,12 +56,71 @@ func TestRunInTheModeOfTheBotNamesTheApp(t *testing.T) {
 			t.Errorf("check \"app\" detail = %q, want it to say %q", app.Detail, want)
 		}
 	}
-	// The report of a machine is not a run: it holds no token, and it never asks for
-	// one. A test that asked would be a test of somebody else's account.
+}
+
+// TestRunInTheModeOfTheBotAsksForATokenAndShowsNoneOfIt: a run in the mode of the bot
+// cannot start without a token, so a report asks for one and throws it away — a
+// refusal of GitHub is a refusal a person sees before a task and not in the middle of
+// one. The value of the token is nowhere in the report: a report is pasted into issues
+// and read by people (docs/DESIGN.md §7e, §7i).
+func TestRunInTheModeOfTheBotAsksForATokenAndShowsNoneOfIt(t *testing.T) {
+	m := machineWithAnApp(t)
+	m.holdsTheKey = true
+	config := writeConfig(t, m.botProject())
+
+	report := runOn(t, m, config)
+
+	token := checkOf(t, report, "token")
+	if token.Status != OK {
+		t.Fatalf("check \"token\" = %q (%s), want ok", token.Status, token.Detail)
+	}
+	if !strings.Contains(token.Detail, "naghuale/crewflow") {
+		t.Errorf("check \"token\" detail = %q, want it to name the repository the token is for", token.Detail)
+	}
+	if strings.Contains(printed(report), "ghs_token_of_the_run") {
+		t.Errorf("the report holds the value of the token:\n%s", printed(report))
+	}
+	asked := false
 	for _, path := range m.api.asked {
 		if strings.HasSuffix(path, "/access_tokens") {
-			t.Errorf("the report asked for a token at %q, want no token of a report", path)
+			asked = true
 		}
+	}
+	if !asked {
+		t.Errorf("the report asked %v, want it to ask for a token of the repository", m.api.asked)
+	}
+}
+
+// TestRunInTheModeOfTheBotWithATokenGitHubRefuses: the words of GitHub are the line of
+// the report and what to do about them is the hint under it — a person who reads a
+// refusal has to change something in the settings of the app, and a report that said
+// only "failed" would tell them nothing.
+func TestRunInTheModeOfTheBotWithATokenGitHubRefuses(t *testing.T) {
+	m := machineWithAnApp(t)
+	m.holdsTheKey = true
+	m.api.answer["/api/v3/app/installations/12345/access_tokens"] = map[string]any{
+		"message": theRefusalOfGitHub,
+		"errors": []any{map[string]any{
+			"resource": "InstallationAccessToken", "code": "custom", "message": theRefusalOfGitHub,
+		}},
+	}
+	m.api.refusesAt("/api/v3/app/installations/12345/access_tokens", http.StatusUnprocessableEntity)
+	config := writeConfig(t, m.botProject())
+
+	report := runOn(t, m, config)
+
+	token := checkOf(t, report, "token")
+	if token.Status != Fail {
+		t.Fatalf("check \"token\" = %q (%s), want fail: a run cannot start without a token", token.Status, token.Detail)
+	}
+	if !strings.Contains(token.Detail, theRefusalOfGitHub) || !strings.Contains(token.Detail, "422") {
+		t.Errorf("check \"token\" detail = %q, want the words of GitHub and the code it answered", token.Detail)
+	}
+	if !strings.Contains(token.Hint, "identity.github_app") {
+		t.Errorf("check \"token\" hint = %q, want it to name what to change in the file of the project", token.Hint)
+	}
+	if report.OK() {
+		t.Error("report.OK() = true, want false: the machine cannot start a run in the mode of the bot")
 	}
 }
 
@@ -198,8 +256,9 @@ func machineWithAnApp(t *testing.T) *machine {
 	t.Helper()
 	api := &apiOfTheTest{answer: map[string]any{
 		"/api/v3/app": map[string]any{"id": 5107052, "slug": "crewflow-executor"},
-	}}
+	}, status: map[string]int{}}
 	api.installationOfTheTest(rightsOfTheDesign())
+	api.answer["/api/v3/app/installations/12345/access_tokens"] = tokenOfTheTest()
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
@@ -208,6 +267,9 @@ func machineWithAnApp(t *testing.T) *machine {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Not Found: " + r.URL.Path})
 			return
+		}
+		if code, refused := api.status[r.URL.Path]; refused {
+			w.WriteHeader(code)
 		}
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
@@ -226,8 +288,17 @@ func machineWithAnApp(t *testing.T) *machine {
 // app and for its installation, and it writes down what it was asked at.
 type apiOfTheTest struct {
 	answer map[string]any
+	// status is the code of the answer of a path, for an answer the API of GitHub
+	// refuses with: the code and the words of a refusal are what a report has to show.
+	status map[string]int
 	asked  []string
 	server *httptest.Server
+}
+
+// refusesAt makes the server answer the path with the code, the way the API of GitHub
+// refuses a request it does not want to grant.
+func (a *apiOfTheTest) refusesAt(path string, code int) {
+	a.status[path] = code
 }
 
 // installationOfTheTest answers for the installation of the App on the repository of
@@ -256,6 +327,30 @@ func rightsOfTheDesign() map[string]any {
 		"contents": "write", "pull_requests": "write", "issues": "read", "metadata": "read",
 	}
 }
+
+// tokenOfTheTest is the answer of the documentation of the REST API of GitHub to a
+// request for the token of the installation, with the repository of the project and the
+// rights of §7i in it: crewflow reads the repositories of the answer to be sure the
+// token is for the one repository of a run, and the rights to be sure they are no wider
+// than a run needs.
+func tokenOfTheTest() map[string]any {
+	return map[string]any{
+		"token":                "ghs_token_of_the_run",
+		"expires_at":           "2026-09-28T13:00:00Z",
+		"permissions":          rightsOfTheDesign(),
+		"repository_selection": "selected",
+		"repositories": []map[string]any{{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "crewflow", "full_name": "naghuale/crewflow",
+		}},
+	}
+}
+
+// theRefusalOfGitHub is what the API of GitHub answers to a request for a token of a
+// repository that is not a repository of the installation: it is the words of a person
+// who reads the report and has to decide what to change.
+const theRefusalOfGitHub = "There is at least one repository that does not exist " +
+	"or is not accessible to the parent installation."
 
 // botProject is the crewflow.toml of a project whose executor works as an app of the
 // server of the test, which is what [machine.host] is: the API of a project on a host
