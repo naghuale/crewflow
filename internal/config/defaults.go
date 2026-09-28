@@ -12,6 +12,7 @@ const (
 	defaultExecutorTimeout = "90m"
 	defaultForgeKind       = "github"
 	defaultTrackerKind     = "forge"
+	defaultIdentityMode    = "owner"
 	defaultCIKind          = "forge"
 	defaultCIRequired      = true
 	defaultCITimeout       = "30m"
@@ -45,6 +46,12 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Tracker.Kind == "" {
 		c.Tracker.Kind = defaultTrackerKind
+	}
+	// The executor works as the person who runs crewflow until a project says
+	// otherwise: a mode of a bot is something a project sets up on purpose, with an
+	// app of its own and a key of its own (docs/DESIGN.md §7i).
+	if c.Identity.Mode == "" {
+		c.Identity.Mode = defaultIdentityMode
 	}
 	if c.Executor.Timeout == "" {
 		c.Executor.Timeout = defaultExecutorTimeout

@@ -29,6 +29,16 @@ type machine struct {
 	// run starts a command. It is a field so that a test may make the machine
 	// answer, or hang, whatever it needs.
 	run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
+	// api is the API of the host for a project whose executor works as an account of
+	// its own, and holdsTheKey says whether the store of the machine has its key: a
+	// report of a project in the mode of the bot is a report about the key, the
+	// installation and the rights of an app, and all three come from here
+	// (docs/DESIGN.md §7i).
+	api         *apiOfTheTest
+	holdsTheKey bool
+	// host is the server of a project on a host of its own, which for a test with an
+	// app on it is the address of the server of the test (docs/DESIGN.md §7i).
+	host string
 }
 
 // answer is what a command of the fake machine does when it runs.
@@ -80,13 +90,25 @@ func (m *machine) fails(commandLine, line string) *machine {
 // paths as this machine holds them.
 func (m *machine) env(t *testing.T, configPath string) Env {
 	t.Helper()
-	return Env{
+	env := Env{
 		LookPath:   m.lookPath,
 		Run:        m.run,
 		ConfigPath: configPath,
 		Home:       onThisMachine(t, t.TempDir()),
 		TempDir:    t.TempDir(),
+		// The store of the machine is a store of the test, and the key in it is one
+		// the test generated: no report of crewflow opens the keychain of a person
+		// (docs/DESIGN.md §7i).
+		Secrets: &storeOfTheTest{},
+		Now:     func() time.Time { return time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC) },
 	}
+	if m.holdsTheKey {
+		env.Secrets = &storeOfTheTest{key: keyOfTheTest(t)}
+	}
+	if m.api != nil {
+		env.HTTP = m.api.server.Client()
+	}
+	return env
 }
 
 // onThisMachine is the path as the machine of a test holds it.

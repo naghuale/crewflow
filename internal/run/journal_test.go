@@ -534,6 +534,10 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 		Branch:  "crewflow/43-the-run-of-a-task",
 		Profile: "opencode",
 	}
+	// Every attempt of a state of a test is a run of the mode of the owner, which is
+	// the mode crewflow has always worked in: a watch of it says so, and a list of
+	// runs shows the mode in a column of its own (docs/DESIGN.md §7i).
+	identity := Identity{Mode: "owner", Description: "owner — the login gh naghuale (shared rights)"}
 	// A task that was run more than once holds the attempts before this one, and
 	// each of them has ended.
 	for before := 1; before <= attempt; before++ {
@@ -541,7 +545,8 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 			journals.JournalPath(number, before),
 			journals.errorJournalPath(number, before),
 			false,
-			proc.Process{Pid: 4242, StartedAt: started})
+			proc.Process{Pid: 4242, StartedAt: started},
+			identity)
 		if before < attempt {
 			state = state.Ended(started.Add(time.Duration(before+1)*time.Minute), ChangeRequestOpened)
 		}

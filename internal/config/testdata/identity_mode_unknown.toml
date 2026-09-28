@@ -1,0 +1,10 @@
+# A mode of the executor that is neither of the two crewflow knows.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[identity]
+mode = "root"

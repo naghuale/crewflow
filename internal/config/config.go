@@ -16,6 +16,7 @@ type Config struct {
 	Project      Project      `toml:"project"`
 	Forge        Forge        `toml:"forge"`
 	Tracker      Tracker      `toml:"tracker"`
+	Identity     Identity     `toml:"identity"`
 	Executor     Executor     `toml:"executor"`
 	Access       Access       `toml:"access"`
 	Worktrees    Worktrees    `toml:"worktrees"`
@@ -62,9 +63,39 @@ type Forge struct {
 type Tracker struct {
 	// Kind is "forge", "jira", "linear" or "files".
 	Kind string `toml:"kind"`
-	// Project is the key of the project in the tracker, for a tracker in which
-	// the repository is not the key.
+	// Project is the key of the project in the tracker, for a tracker in which the
+	// repository is not the key.
 	Project string `toml:"project"`
+}
+
+// Identity is whose name the executor of a task works under (docs/DESIGN.md §7i).
+//
+// The mode is the same word for every host — "owner" or "bot" — and how a bot of a
+// host is written down is the business of the adapter of that host, in a table of its
+// own: a GitHub App for GitHub, a project token for GitLab, an access token of a user
+// for Bitbucket. A project that asks for a mode of a host crewflow has no bot for is
+// told so when its file is read, and not in the middle of a task.
+type Identity struct {
+	// Mode is "owner" or "bot": the login of the person, which is what crewflow has
+	// always done and what the powers of the executor are the powers of, or an
+	// account of the host of its own, which is what separates them (§7i).
+	Mode string `toml:"mode"`
+	// GitHubApp is the app the executor of a project on GitHub works as, and the
+	// only bot crewflow has. It is empty in the mode of the owner.
+	GitHubApp GitHubApp `toml:"github_app"`
+}
+
+// GitHubApp is the GitHub App of a project: what identifies it to GitHub, and
+// nothing else — the key of it lives in the keychain of the machine and is never in
+// the file of a project (docs/DESIGN.md §7e, §7i).
+type GitHubApp struct {
+	// AppID is the number of the app, as it stands in the settings of GitHub. The
+	// mode of the bot cannot be set up without it.
+	AppID int64 `toml:"app_id"`
+	// InstallationID is the number of the installation of the app on the repository
+	// of the project. It is optional: empty is not a mistake, and the installation
+	// is found through the repository the first time a run asks for a token.
+	InstallationID int64 `toml:"installation_id"`
 }
 
 // Executor is the agent crewflow runs a task with, plus the ones to try in turn

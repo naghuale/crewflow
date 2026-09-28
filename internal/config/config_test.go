@@ -36,6 +36,11 @@ func TestLoadExample(t *testing.T) {
 		{"forge.host", cfg.Forge.Host, ""},
 		{"tracker.kind", cfg.Tracker.Kind, "forge"},
 		{"tracker.project", cfg.Tracker.Project, ""},
+		// The mode of the executor is the mode of the owner until a project says
+		// otherwise: a project that sets up an app of its own has to write it down
+		// (docs/DESIGN.md §7i).
+		{"identity.mode", cfg.Identity.Mode, "owner"},
+		{"identity.github_app.app_id", cfg.Identity.GitHubApp.AppID, int64(0)},
 		{
 			"executor.command",
 			cfg.Executor.Command,

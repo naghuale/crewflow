@@ -334,11 +334,15 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 			t.Errorf("the rights of the executor are %s,\nwant %q in them", rights, want)
 		}
 	}
-	// The journal of the run holds the policy it was started with, in its first line,
-	// so that a person reading it afterwards sees what the run was given.
+	// The journal of the run opens with the lines of crewflow itself: whose name the
+	// run went under, and the policy it was started with, so that a person reading it
+	// afterwards sees both without asking anything (docs/DESIGN.md §7d, §7i).
 	journal := read(t, result.Journal)
-	if !strings.HasPrefix(journal, "crewflow: the executor may read outside the worktree: "+through+", "+modules) {
-		t.Errorf("the journal starts with %q, want the rights of the run in it", firstLineOf(journal))
+	if want := "crewflow: executor: owner — "; !strings.HasPrefix(journal, want) {
+		t.Errorf("the journal starts with %q, want the mode of the run in it", firstLineOf(journal))
+	}
+	if !strings.Contains(journal, "crewflow: the executor may read outside the worktree: "+through+", "+modules) {
+		t.Errorf("the journal holds %q, want the rights of the run in it", firstLineOf(journal))
 	}
 	// A run that named what it may read and got it has nothing to say on the way out.
 	if said := read(t, result.ErrorJournal); said != "" {
@@ -459,4 +463,74 @@ func split(out string) []string {
 		}
 	}
 	return lines
+}
+
+// TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask runs a task in the mode of the
+// bot against a real repository with a real origin, and looks at what the run left in
+// the worktree: the helper git takes its credentials from, and the hook that lets the
+// branch of the task through and refuses everything else. The hook is a guard behind
+// the rules of the branch on the host, and it is the only one that lives in the
+// worktree of a run — the rules of the host are what an app cannot go around
+// (docs/DESIGN.md §7i).
+func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	// The fake executor writes down the environment it was given and leaves work on
+	// the branch of the task, as an agent that pushes would.
+	executor := fakeExecutor(t, "agent",
+		"printf 'GH_TOKEN=%s\\nGIT_AUTHOR_NAME=%s\\n' \"$GH_TOKEN\" \"$GIT_AUTHOR_NAME\" > identity\n"+
+			"printf '%s' '"+theEvents+"'\n"+
+			commit("internal/run/run.go", "package run\n"))
+	host := &host{task: taskOf(43), opened: true, identity: theBot()}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+
+	result, err := Run(t.Context(), System(t.TempDir()), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	// The helper of the credentials is a setting of the worktree of the run and not of
+	// the repository: the checkout of the person pushes with the login of the person,
+	// and the one of a run pushes with a token of the app.
+	if got := gitOut(t, result.Worktree, "config", "--get", "credential.helper"); got != "crewflow auth git-credential" {
+		t.Errorf("the worktree of the run has the helper %q, want the one of crewflow", got)
+	}
+	if got := gitOut(t, repo, "config", "--get", "credential.helper"); strings.Contains(got, "crewflow") {
+		t.Errorf("the checkout of the person has the helper %q, want the one it had", got)
+	}
+	// The executor is handed the token of the app and signs its commits with the
+	// account of the app, and the journal holds neither: a journal is a file kept for
+	// ever and pasted into issues (docs/DESIGN.md §7e, §7i).
+	if got, want := read(t, filepath.Join(result.Worktree, "identity")),
+		"GH_TOKEN="+theToken+"\nGIT_AUTHOR_NAME=crewflow-executor[bot]\n"; got != want {
+		t.Errorf("the executor was given %q, want %q", got, want)
+	}
+	if got := read(t, result.Journal); strings.Contains(got, theToken) {
+		t.Errorf("the journal of the run holds the token of the app:\n%s", got)
+	}
+
+	// The hook refuses a push of the branch of the project and lets the branch of the
+	// task through, and it says why: an executor that was talked into pushing into
+	// main is refused by the machine as well and not only by the words of the task.
+	pushed, err := runGit(result.Worktree, "push", "origin", "HEAD:refs/heads/main")
+	if err == nil {
+		t.Errorf("the hook let a push into main through:\n%s", pushed)
+	}
+	if !strings.Contains(pushed, "pushes only") {
+		t.Errorf("the hook refused a push into main with %q, want it to say what it allows", pushed)
+	}
+	if out, err := runGit(result.Worktree, "push", "origin", "HEAD:refs/heads/"+result.Branch); err != nil {
+		t.Errorf("the hook refused the push of the branch of the task:\n%s\n%s", result.Branch, out)
+	}
+	// The same hook sits in the checkout of the person, and the pushes of a person
+	// are not a run of crewflow.
+	gitOf(t, repo, "checkout", "main")
+	gitOf(t, repo, "merge", "--ff-only", "origin/"+result.Branch)
+	gitOf(t, repo, "push", "origin", "main")
 }

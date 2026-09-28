@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/github/app"
 )
 
 // program is the tool of this adapter: the official client of GitHub, which
@@ -59,6 +60,11 @@ type Adapter struct {
 	host string
 	// env is the machine the adapter talks to.
 	env forge.Env
+	// defaultBranch is the branch the change requests of the project are meant for,
+	// and app is the App the executor of the project works as. There is no App until
+	// a project asks for the mode of the bot (docs/DESIGN.md §7i).
+	defaultBranch string
+	app           *app.Source
 }
 
 // The adapter is all three roles of the core at once, and each of them may check
@@ -95,7 +101,15 @@ func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 // gh lists at most the first one, and a branch without a request is a run that
 // has not pushed one yet, which is not a failure of anything.
 func (a *Adapter) FindChangeRequest(ctx context.Context, branch string) (forge.ChangeRequest, bool, error) {
-	out, err := a.json(ctx, "pr", "list", "-R", a.repo,
+	return a.changeRequestOf(ctx, branch, nil)
+}
+
+// changeRequestOf is the request of the branch as the identity of a run sees it: a
+// run in the mode of the bot asks gh in its own environment, because gh without the
+// token of the App answers as the person who runs crewflow and a report would then be
+// a report of another person (docs/DESIGN.md §7i).
+func (a *Adapter) changeRequestOf(ctx context.Context, branch string, env []string) (forge.ChangeRequest, bool, error) {
+	out, err := a.jsonIn(env, ctx, "pr", "list", "-R", a.repo,
 		"--head", branch, "--state", "all", "--json", changeFields, "--limit", "1")
 	if err != nil {
 		return forge.ChangeRequest{}, false, err
@@ -309,8 +323,15 @@ func state(from string) string {
 // returns what it wrote. Every way gh can say no is an error with the command in
 // it, because a person who is told what to run by hand sees what crewflow saw.
 func (a *Adapter) json(ctx context.Context, args ...string) ([]byte, error) {
+	return a.jsonIn(nil, ctx, args...)
+}
+
+// jsonIn is gh in the environment of the project plus the one of an identity of a
+// run, and nothing else: a token of a run is added to what gh is started with and is
+// not kept anywhere else (docs/DESIGN.md §7i).
+func (a *Adapter) jsonIn(env []string, ctx context.Context, args ...string) ([]byte, error) {
 	command := append([]string{}, args...)
-	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", a.environment())
+	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(a.environment(), env...))
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %w", strings.Join(command, " "), err)
 	}
@@ -325,7 +346,9 @@ func (a *Adapter) json(ctx context.Context, args ...string) ([]byte, error) {
 }
 
 // environment is what the project adds to the environment of gh: its own server,
-// and nothing when it is on github.com.
+// and nothing when it is on github.com. It is a slice of its own every time, because
+// the environment of an identity of a run is added to it and a slice that another call
+// grows is a slice two calls share (docs/DESIGN.md §7i).
 func (a *Adapter) environment() []string {
 	if a.host == "" {
 		return nil

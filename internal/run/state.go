@@ -48,6 +48,19 @@ type Change struct {
 	URL    string `json:"url"`
 }
 
+// Identity is whose name the executor of an attempt worked under: the mode it worked
+// in and the one line a report shows (docs/DESIGN.md §7i).
+//
+// A state written before crewflow kept the mode holds an empty one, and is read as it
+// is: a run of before does not say whose name it went under, and a list of runs says
+// a dash where there is nothing rather than a mode that was not.
+type Identity struct {
+	// Mode is "owner" or "bot", the two words the core knows.
+	Mode string `json:"mode"`
+	// Description is the one line a report of the run shows.
+	Description string `json:"description"`
+}
+
 // Attempt is one start of the executor on a task: when it was, where it wrote, and
 // how it ended. A task has as many attempts as it took tries, and the journal of
 // each of them stays where it was written.
@@ -62,6 +75,10 @@ type Attempt struct {
 	// what it said on the way out.
 	Journal      string `json:"journal"`
 	ErrorJournal string `json:"error_journal"`
+	// Identity is whose name the executor of this attempt worked under, so that a
+	// person reading the state of a task afterwards sees it for every attempt and
+	// not only for the last one (docs/DESIGN.md §7i).
+	Identity Identity `json:"identity"`
 	// Outcome is how the attempt ended.
 	Outcome Kind `json:"outcome"`
 	// Continued says that the attempt went on in the session of an earlier one.
@@ -101,14 +118,18 @@ func (s State) Attempt(number int) (Attempt, bool) {
 // the state with that attempt added and not written anywhere yet. The attempt is
 // running from the moment it is added: it is what the state of a task says while the
 // executor works, and what a run that is cut short leaves behind. The process is the
-// one the run is happening in, which is what a later list asks the machine about.
-func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool, process proc.Process) State {
+// one the run is happening in, which is what a later list asks the machine about, and
+// the identity is whose name the executor of it is about to work under, so that the
+// state says it from the moment the run starts and not only when it is over
+// (docs/DESIGN.md §7, §7i).
+func (s State) NextAttempt(started time.Time, journal, errorJournal string, continued bool, process proc.Process, identity Identity) State {
 	next := len(s.Attempts) + 1
 	attempt := Attempt{
 		Number:       next,
 		StartedAt:    started,
 		Journal:      journal,
 		ErrorJournal: errorJournal,
+		Identity:     identity,
 		Outcome:      Running,
 		Continued:    continued,
 	}

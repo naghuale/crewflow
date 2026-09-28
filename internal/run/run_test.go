@@ -696,12 +696,61 @@ type host struct {
 	opened bool
 	// asked is every branch the host was asked about.
 	asked []string
+	// identity is whose name the executor of a run of this host works under, and a
+	// host with none works as the person who runs crewflow: that is the mode every
+	// run has been in, and a test says otherwise on purpose (§7i). A host with no
+	// identity to give at all says so in noIdentity, which is how a machine without a
+	// key of an app in it looks to a run (§7i).
+	identity   forge.Identity
+	noIdentity error
+	// openedByTheRun is the request crewflow opened for a run whose executor did
+	// not, and the title and the body it opened it with.
+	openedByTheRun *forge.ChangeRequest
+	title, body    string
 }
 
 // set is the roles of a project of a test. A run asks the tracker for the task and
-// the host for the change request of the branch, and nothing else of either.
+// the host for the change request of the branch, and nothing else of either — and
+// the host of a project in the mode of the bot may open a request on behalf of a run
+// as well, which is the one thing the mode of the owner has none of (§7i).
 func (h *host) set() forge.Set {
-	return forge.Set{Tracker: h, Forge: h}
+	set := forge.Set{Tracker: h, Forge: h}
+	if h.identity.Mode == forge.ModeBot {
+		set.Opener = h
+	}
+	return set
+}
+
+// ExecutorIdentity is whose name the executor of a run of this host works under. A
+// host that says nothing works as the person who runs crewflow, because that is what
+// a run has always done and what a test of the mode of the owner has to see (§7i).
+func (h *host) ExecutorIdentity(context.Context) (forge.Identity, error) {
+	if h.noIdentity != nil {
+		return forge.Identity{}, h.noIdentity
+	}
+	if h.identity.Description == "" {
+		return forge.Identity{
+			Mode:        forge.ModeOwner,
+			Description: "owner — the person who runs crewflow (shared rights)",
+		}, nil
+	}
+	return h.identity, nil
+}
+
+// OpenChangeRequest is the request crewflow opens for a run whose executor did not,
+// and a host that cannot open one says so rather than pretending the branch is under
+// a request (§7i).
+func (h *host) OpenChangeRequest(_ context.Context, branch, title, body string) (forge.ChangeRequest, error) {
+	h.title, h.body = title, body
+	if h.openedByTheRun == nil {
+		return forge.ChangeRequest{}, errors.New("this host opens no change request of its own")
+	}
+	opened := *h.openedByTheRun
+	opened.HeadBranch, opened.BaseBranch = branch, "main"
+	if opened.Body == "" {
+		opened.Body = body
+	}
+	return opened, nil
 }
 
 // Task returns the task of the test, or the error it was given for another one.

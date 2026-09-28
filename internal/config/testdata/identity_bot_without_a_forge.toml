@@ -1,0 +1,23 @@
+# The mode of the bot on a project that is not hosted anywhere: there is no host
+# whose account the executor could work as.
+
+[project]
+repo = "naghuale/crewflow"
+
+[forge]
+kind = "none"
+
+[tracker]
+kind = "files"
+
+[ci]
+kind = "none"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 5107052

@@ -24,6 +24,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/proc"
 	"github.com/naghuale/crewflow/internal/run/profile"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -64,6 +65,15 @@ type Env struct {
 	// cannot say leaves the state of the task as it was written before: an attempt
 	// that names no process, which a list reads the old way.
 	Process func() (proc.Process, bool)
+	// ConfigPath is the crewflow.toml this run was asked for, which a hint of a
+	// refusal names: a person who is told "add app_id to <path>" has to know which
+	// file (docs/DESIGN.md §5).
+	ConfigPath string
+	// Secrets is where the key of the App of the project is kept, and a run in the
+	// mode of the bot signs a token with it. A run in the mode of the owner never
+	// asks the store for anything, and no run of any mode ever shows what is in it
+	// (docs/DESIGN.md §7e, §7i).
+	Secrets secret.Store
 }
 
 // System is the machine this process runs on, with the given root of what crewflow
@@ -82,6 +92,10 @@ func System(home string) Env {
 		Stream:   Stream,
 		Now:      time.Now,
 		Process:  machine.Self,
+		// The key of the App of the project is in the store of the machine, and a
+		// run in the mode of the bot signs a token with it; a run in the mode of the
+		// owner never touches the store (docs/DESIGN.md §7i).
+		Secrets: secret.System(),
 	}
 }
 
@@ -120,6 +134,10 @@ type Result struct {
 	Profile  string `json:"profile"`
 	Session  string `json:"session,omitempty"`
 	Attempt  int    `json:"attempt"`
+	// Identity is whose name the executor of the run worked under, and the one line
+	// a report of a run shows before anything else: a person reading the outcome of a
+	// run has to know whose name it went under (docs/DESIGN.md §7i).
+	Identity Identity `json:"identity"`
 	// Continued says that this attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
 	// StartedAt and EndedAt are when the executor was started and stopped.
@@ -182,6 +200,10 @@ type runner struct {
 	worktree string
 	// profile is what crewflow knows about the executor of the project.
 	profile profile.Profile
+	// identity is whose name the executor of this run works under, and it is worked
+	// out before the executor is started: a run that cannot be given an account of its
+	// own is a run that is not started at all (docs/DESIGN.md §7i).
+	identity forge.Identity
 	// journals is where the state and the journal of the task are kept.
 	journals Journals
 	// session is the session a continuation goes on in, if there is one to go on in.
@@ -310,7 +332,8 @@ func (r *runner) stateOf(started time.Time) State {
 		r.journals.JournalPath(r.task.Number, attempt),
 		r.journals.errorJournalPath(r.task.Number, attempt),
 		r.req.Continue != "",
-		process)
+		process,
+		Identity{Mode: r.identity.Mode, Description: r.identity.Description})
 }
 
 // process is the process of crewflow this run is happening in, and whether the machine
@@ -340,6 +363,13 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Whose name the executor of this run works under is worked out before the state
+	// of the task is written, because the state says it: a run in the mode of the bot
+	// that cannot be given a token of its own is a run that is not started at all, and
+	// a state of a task with an attempt that never was is a state that lies (§7i).
+	if r.identity, err = r.identityOf(ctx); err != nil {
+		return Result{}, err
+	}
 	state := r.stateOf(r.env.Now())
 	attempt := state.Attempts[len(state.Attempts)-1]
 	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
@@ -353,12 +383,24 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
+	// Whose name the run went under is the first line of the journal, before what the
+	// executor did and before the rights it was given: a person reading a journal of a
+	// run afterwards has to see whose name it went under without reading the state file
+	// as well (docs/DESIGN.md §7i).
+	fmt.Fprintf(files.Out, "crewflow: executor: %s\n", r.identity.Description)
 	// What the executor may read outside its worktree is worked out before it is
-	// started and is the first thing in the journal: a run that was given the right to
-	// read a folder of the machine has to say which, and a person who reads the journal
-	// of the run afterwards sees it there (docs/DESIGN.md §7d).
+	// started and is said in the journal right after that: a run that was given the
+	// right to read a folder of the machine has to say which, and a person who reads
+	// the journal of the run afterwards sees it there (docs/DESIGN.md §7d).
 	rights, err := r.rights(ctx, files)
 	if err != nil {
+		_ = files.Close()
+		return r.stopBeforeStart(state, err)
+	}
+	// A run in the mode of the bot sets its worktree up before the executor is
+	// started: the helper git takes a fresh token from, and the hook that refuses a
+	// push anywhere but the branch of the task (§7i).
+	if err := r.bot(ctx); err != nil {
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
@@ -372,11 +414,21 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// What the executor wrote is in the journal from its first line and is also kept
 	// in memory, because a run is judged out of what the agent said, and the file is
 	// the only one of the two a person and a watch can read (docs/DESIGN.md §7a).
+	//
+	// The files of the run go through the redactor of the secrets of the identity: the
+	// token of a run is in the environment of the executor, and an agent that prints
+	// its own environment is one line of a journal that would carry a token of an hour
+	// into a file kept for ever and pasted into an issue (§7e, §7i).
 	var out, errOut bytes.Buffer
-	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, append(rights, tempEnv(r.worktree)...),
-		io.MultiWriter(&out, files.Out), io.MultiWriter(&errOut, files.ErrOut))
+	journal, wayOut := secret.NewRedactor(files.Out, r.identity.Secrets...), secret.NewRedactor(files.ErrOut, r.identity.Secrets...)
+	environment := append(append(rights, r.identity.Env...), tempEnv(r.worktree)...)
+	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, environment,
+		io.MultiWriter(&out, journal), io.MultiWriter(&errOut, wayOut))
+	// What is held back is a beginning of a line and may be the beginning of a
+	// secret, and the run is over: it is written before the files are closed.
 	ended := r.endOf(ctx, runCtx)
-	closeErr := files.Close()
+	flushed := errors.Join(journal.Flush(), wayOut.Flush())
+	closeErr := errors.Join(files.Close(), flushed)
 	result := Result{
 		Task:         r.task.Number,
 		Title:        r.task.Title,
@@ -386,6 +438,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		Session:      r.session,
 		Attempt:      attempt.Number,
 		Continued:    r.req.Continue != "",
+		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
 		StartedAt:    attempt.StartedAt,
 		EndedAt:      r.env.Now(),
 		Journal:      files.Journal,
@@ -434,7 +487,7 @@ func (r *runner) stopBeforeStart(state State, err error) (Result, error) {
 func (r *runner) rights(ctx context.Context, files *AttemptFiles) ([]string, error) {
 	policy, problems := access.Resolve(ctx, r.access(), r.cfg.Access)
 	for _, problem := range problems {
-		note(files.ErrorJournal, fmt.Errorf("access: %s: %s", problem.Path, problem.Reason))
+		r.note(files.ErrorJournal, fmt.Errorf("access: %s: %s", problem.Path, problem.Reason))
 	}
 	env, err := r.profile.AccessEnv(policy, r.env.Environ)
 	if err != nil {
@@ -505,17 +558,20 @@ func (r *runner) keep(state State, result Result, judgeErr error) error {
 // noteError adds what went wrong to the way out of the run, so that the file a
 // person is sent to holds the reason and not only what the agent said.
 func (r *runner) noteError(errorJournal string, err error) string {
-	note(errorJournal, err)
+	r.note(errorJournal, err)
 	return errorJournal
 }
 
 // note adds what went wrong to a file of the run, and goes on when it cannot: the
 // file of a journal is not worth stopping a run for, and what crewflow has to say
-// about it is in the return of the caller.
-func note(path string, err error) {
+// about it is in the return of the caller. What is written goes through the redactor
+// of the secrets of the identity: an error of a run may carry what a program of it
+// printed, and a file of a run is read by people and pasted into issues (§7e).
+func (r *runner) note(path string, err error) {
 	previous, readErr := os.ReadFile(path)
 	if readErr == nil {
-		_ = writeFile(path, append(previous, []byte(fmt.Sprintf("crewflow: %v\n", err))...))
+		line := fmt.Sprintf("crewflow: %v\n", secret.Redact(err.Error(), r.identity.Secrets...))
+		_ = writeFile(path, append(previous, []byte(line)...))
 	}
 }
 

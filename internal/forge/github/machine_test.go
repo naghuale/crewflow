@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // machine is the machine the adapter finds: the programs in PATH, what gh writes
@@ -21,6 +23,15 @@ type machine struct {
 	answers map[string]answer
 	// ran are the commands that were started, in order.
 	ran []command
+	// environment is the environment each of them was started with, in order: a
+	// token of a run is in one of them and nowhere else (docs/DESIGN.md §7i).
+	environment [][]string
+	// secrets is where the key of an App of the project would be kept. It is a store
+	// of the test: no test of crewflow opens the keychain of the machine it runs on
+	// (docs/DESIGN.md §7i).
+	secrets secret.Store
+	// now is the clock of the machine, for a token that is signed with it.
+	now func() time.Time
 }
 
 // answer is what gh does when it runs.
@@ -39,7 +50,12 @@ type command struct {
 
 // newMachine returns a machine with gh on it and nothing answering.
 func newMachine() *machine {
-	m := &machine{programs: map[string]string{"gh": "/usr/bin/gh"}, answers: map[string]answer{}}
+	m := &machine{
+		programs: map[string]string{"gh": "/usr/bin/gh"},
+		answers:  map[string]answer{},
+		secrets:  &storeOfTheTest{},
+		now:      func() time.Time { return time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC) },
+	}
 	m.answers["--version"] = answer{stdout: "gh version 2.62.0 (2024-11-14)\n"}
 	m.answers["auth status"] = answer{stdout: "  ✓ Logged in to github.com account octocat (keyring)\n"}
 	return m
@@ -66,6 +82,18 @@ func (m *machine) without(programs ...string) *machine {
 	return m
 }
 
+// commandOf is what gh was asked, as a person would write it in a shell, for the first
+// command that began with the given words.
+func (m *machine) commandOf(first string) (string, bool) {
+	for _, command := range m.ran {
+		line := strings.Join(command.args, " ")
+		if strings.HasPrefix(line, first) {
+			return line, true
+		}
+	}
+	return "", false
+}
+
 // commandLine is what gh was asked, as a person would write it in a shell.
 func (m *machine) commandLine(i int) string {
 	if i >= len(m.ran) {
@@ -82,6 +110,8 @@ func (m *machine) env(t *testing.T) forge.Env {
 		LookPath:   m.lookPath,
 		Run:        m.run,
 		ConfigPath: filepath.Join(t.TempDir(), "crewflow.toml"),
+		Secrets:    m.secrets,
+		Now:        m.now,
 	}
 }
 
@@ -97,6 +127,7 @@ func (m *machine) lookPath(name string) (string, error) {
 // run starts gh the way the machine answers it.
 func (m *machine) run(_ context.Context, name string, args []string, _ string, env []string) ([]byte, []byte, int, error) {
 	m.ran = append(m.ran, command{args: args, env: env})
+	m.environment = append(m.environment, env)
 	if filepath.Base(name) != "gh" {
 		return nil, nil, 127, fmt.Errorf("exec: %q: not gh", name)
 	}

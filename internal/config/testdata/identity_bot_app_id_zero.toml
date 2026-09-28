@@ -1,0 +1,13 @@
+# The app of the bot with no number in it: the file has to say which app it is.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 0

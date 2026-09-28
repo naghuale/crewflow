@@ -50,6 +50,46 @@ whose state says "running" while its process is gone (a closed window, a reboote
 shown as `interrupted`. `-all` shows every run instead of the last twenty, and `-json` is the
 same list for an orchestrator.
 
+## Whose name the executor works under
+
+crewflow has two modes, and it says in every report which one a run went under
+(`executor: bot — GitHub App crewflow-executor (installation 12345)` or
+`executor: owner — the login gh naghuale (shared rights)`): in `crewflow doctor` and in
+its JSON, at the top of `task run` and `task watch`, in a column of `task list`, as the
+first line of a run's journal and in the state of the task, so that every attempt is
+attributable.
+
+- **`owner` (the default)** is what crewflow has always done: the executor works under the
+  login of the person (`gh auth`), nothing has to be set up, and `crewflow doctor` warns
+  that the powers of the executor are the powers of that login.
+- **`bot`** is the separated one: the executor works as a [GitHub
+  App](https://docs.github.com/en/apps) with narrow rights (contents and pull requests
+  write, issues and metadata read), a token of an hour for this repository only, commits
+  made by `crewflow-executor[bot]`, and a `pre-push` hook that lets nothing but the
+  branch of the task through. Together with a branch rule on `main` that the App cannot
+  bypass, the executor cannot push there even if the task talks it into it.
+
+```toml
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 5107052        # the number of the app in the settings of GitHub
+installation_id = 0     # 0: crewflow finds the installation on the repository
+```
+
+```sh
+crewflow auth app import ~/Downloads/crewflow-app.pem   # into the macOS keychain, then delete the file
+crewflow auth app check                                  # key, installation, rights — never a token
+```
+
+The private key of the App lives in the macOS keychain, is read only to sign a token, and
+never reaches the executor, a journal, an error or a terminal. The token itself is in the
+environment of the executor (which is why it is short, for one repository and with narrow
+rights) and is taken out of everything crewflow writes. Bot modes for other hosts and a
+Linux secret store are M7/M8; on Linux the mode `bot` for GitHub says it is not supported.
+See §7i of the design.
+
 ## Executors
 
 Any command-line agent that can run without a window works; the command is configured in

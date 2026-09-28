@@ -9,6 +9,9 @@ GitHub issues, reviews your pull request and merges it. You implement exactly on
    Do not switch branches, do not create other worktrees, do not touch `main`.
 2. Read the task: `gh issue view <N>` (the number is in your prompt). The issue is the source
    of truth: acceptance criteria, proof by tests, boundaries. Do exactly that — no more.
+   Push only the branch of your task (`crewflow/<N>-…`): the `pre-push` hook of your worktree
+   refuses any other ref, and in the mode `bot` the rules of `main` refuse it on the host
+   (docs/DESIGN.md §7i).
 3. Work test-first: write the test that fails, then the code that makes it pass.
 4. Before you open the pull request, all of these must pass locally:
    - `gofmt -l .` prints nothing

@@ -22,6 +22,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -104,7 +105,7 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, forge.Env{LookPath: exec.LookPath, Run: runRole, ConfigPath: *configPath})
+	set, err := taskRoles(cfg, roleEnv(*configPath))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -114,7 +115,9 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	// into a worktree nobody watches (docs/DESIGN.md §7a).
 	ctx, stop := stoppedBy()
 	defer stop()
-	result, err := taskrun.Run(ctx, taskRunEnv(home), cfg, set, taskrun.Request{
+	env := taskRunEnv(home)
+	env.ConfigPath = *configPath
+	result, err := taskrun.Run(ctx, env, cfg, set, taskrun.Request{
 		Number:   wanted,
 		RepoDir:  *repoDir,
 		Continue: *continueMessage,
@@ -159,7 +162,7 @@ func runTaskCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, forge.Env{LookPath: exec.LookPath, Run: runRole, ConfigPath: *configPath})
+	set, err := taskRoles(cfg, roleEnv(*configPath))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -379,6 +382,21 @@ func taskNumber(stderr io.Writer, subcommand, number string) (int, bool) {
 	return task, true
 }
 
+// roleEnv is the machine the roles of a project are built on: the programs of PATH, the
+// way they are started, the file a hint names — and, for a project whose executor works
+// as an account of the host, the store of the machine where the key of it is, the HTTP
+// to the host and the clock (docs/DESIGN.md §7i).
+func roleEnv(configPath string) forge.Env {
+	return forge.Env{
+		LookPath:   exec.LookPath,
+		Run:        runRole,
+		ConfigPath: configPath,
+		Secrets:    secret.System(),
+		HTTP:       httpOfMachine,
+		Now:        time.Now,
+	}
+}
+
 // runRole starts a program for a role of the project: the tracker, the host or the
 // CI, which is told which host to talk to in the environment of the process and
 // finds its program in PATH as a person would.
@@ -400,6 +418,12 @@ func stoppedBy() (context.Context, context.CancelFunc) {
 // project: the languages of the reports are a task of their own, and a report in an
 // unknown language is a report nobody reads.
 func printResult(w io.Writer, result taskrun.Result) {
+	// Whose name the run went under is the first line of the report: it is the first
+	// question a person has of a run and the last thing anybody reads, because a
+	// report that says the outcome and not the mode is half a report (docs/DESIGN.md §7i).
+	if result.Identity.Description != "" {
+		fmt.Fprintf(w, "executor: %s\n", result.Identity.Description)
+	}
 	fmt.Fprintf(w, "task %d: %s, attempt %d\n", result.Task, result.Outcome, result.Attempt)
 	if result.Continued {
 		fmt.Fprintf(w, "  went on in the session %s of the last run\n", result.Session)
@@ -446,6 +470,12 @@ func printReadiness(w io.Writer, readiness task.Readiness) {
 // watched, how far it has come and where its journal is. It is printed once, and
 // everything after it is the journal itself.
 func printWatch(w io.Writer, watch *taskrun.Watcher) {
+	// The mode of the run is said before the attempt, because a person who opens a
+	// second terminal to watch a run has to see whose run they are watching before
+	// they read a word of it (docs/DESIGN.md §7i).
+	if watch.Identity.Description != "" {
+		fmt.Fprintf(w, "executor: %s\n", watch.Identity.Description)
+	}
 	going := ""
 	if watch.Running() {
 		going = ", the run is going"

@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/task"
@@ -106,6 +107,21 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 		return result.spent(OutOfScope), nil
 	}
 	if found {
+		return result.spent(ChangeRequestOpened), nil
+	}
+	// A run that pushed its branch and did not open a request is not over yet: the
+	// work of the task is on the host and nobody asked about it, and a run in the mode
+	// of the bot has an account that may open the request for it (docs/DESIGN.md §7i).
+	opened, err := r.openRequest(ctx)
+	if err != nil {
+		// The request could not be opened. That is said on the way out of the run and
+		// the run keeps the outcome it has: a request crewflow could not open is a
+		// thing a person decides about, and the branch of the run is in the report.
+		r.note(result.ErrorJournal, fmt.Errorf("the change request of the branch: %w", err))
+		return result.spent(NoChangeRequest), nil
+	}
+	if opened != nil {
+		result.ChangeRequest = opened
 		return result.spent(ChangeRequestOpened), nil
 	}
 	return result.spent(NoChangeRequest), nil

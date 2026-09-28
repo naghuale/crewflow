@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/naghuale/crewflow/internal/doctor"
+	"github.com/naghuale/crewflow/internal/forge"
 )
 
 // projectConfig is a crewflow.toml of a project that needs nothing but its
@@ -39,7 +40,13 @@ func TestRunDoctorReady(t *testing.T) {
 	if stderr.Len() != 0 {
 		t.Errorf("crewflow doctor wrote %q to stderr, want nothing", stderr.String())
 	}
-	for _, want := range []string{"✓", "config", "git", "gh", "executor", "this machine is ready for a task"} {
+	for _, want := range []string{
+		"✓", "config", "git", "gh", "executor", "nothing is missing",
+		// The one thing a machine of the pilot is told about itself: the powers of its
+		// executor are the powers of the login, and the mode of the bot is the answer
+		// (docs/DESIGN.md §7i).
+		"executor identity", "shared rights", `mode = "bot"`,
+	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow doctor wrote %q, want it to mention %q", stdout.String(), want)
 		}
@@ -116,7 +123,7 @@ func TestRunDoctorJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
 	}
-	want := []string{"config", "git", "gh", "gh login", "executor", "access read"}
+	want := []string{"config", "git", "gh", "gh login", "executor identity", "executor", "access read"}
 	got := make([]string, 0, len(report.Checks))
 	for _, check := range report.Checks {
 		got = append(got, check.Name)
@@ -125,12 +132,21 @@ func TestRunDoctorJSON(t *testing.T) {
 		t.Fatalf("checks = %v, want %v", got, want)
 	}
 	for _, check := range report.Checks {
-		if check.Status != doctor.OK {
-			t.Errorf("check %q = %q, want ok on a ready machine", check.Name, check.Status)
+		// The mode of the owner is the one line of a ready machine that is worth a
+		// look and not a failure: nothing a run needs is missing, and the powers of
+		// the executor are the powers of the login (docs/DESIGN.md §7i).
+		if check.Status == doctor.Fail {
+			t.Errorf("check %q = %q, want no failure on a ready machine", check.Name, check.Status)
 		}
 		if check.Detail == "" {
 			t.Errorf("check %q has no detail, want what was found", check.Name)
 		}
+	}
+	// The mode of the executor is in the report itself and not only in a line of a
+	// check: an orchestrator reads the report on every run and has to know whose
+	// powers a run has without parsing a line (§7i).
+	if report.Identity.Mode != forge.ModeOwner || !strings.Contains(report.Identity.Description, "shared rights") {
+		t.Errorf("the report holds the identity %+v, want the mode of the owner with the rights it shares", report.Identity)
 	}
 	// The reading policy is a part of every report: what the executor may read outside
 	// the worktree, what it may never read, and the paths crewflow would not open. The

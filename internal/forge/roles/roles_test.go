@@ -12,6 +12,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // baseConfig is what a project says at least; a case adds the keys of the roles
@@ -228,12 +229,16 @@ type machine struct {
 	environment [][]string
 	// answers is what gh writes, by the first words of its command line.
 	answers map[string]string
+	// secrets is where the key of an App of a project would be kept. It is a store
+	// of the test and never the keychain of a person: no test of crewflow opens the
+	// secrets of the machine it runs on (docs/DESIGN.md §7i).
+	secrets secret.Store
 }
 
 // newMachine returns a machine with every program installed and nothing
 // answering: what a test needs of gh, it says with prints.
 func newMachine() *machine {
-	return &machine{answers: map[string]string{}}
+	return &machine{answers: map[string]string{}, secrets: &storeOfTheTest{}}
 }
 
 // prints makes gh succeed and write output.
@@ -256,6 +261,7 @@ func (m *machine) env(t *testing.T) forge.Env {
 			return []byte(m.answers[strings.Join(args[:min(2, len(args))], " ")]), nil, 0, nil
 		},
 		ConfigPath: filepath.Join(t.TempDir(), "crewflow.toml"),
+		Secrets:    m.secrets,
 	}
 }
 

@@ -42,6 +42,13 @@ func TestLoadRejects(t *testing.T) {
 		{"tasks_owner_approval_unknown.toml", []string{"tasks.owner_approval", "sometimes", "risky"}},
 		{"access_read_from_empty.toml", []string{"access.read_from[0]", "prints"}},
 		{"access_read_empty.toml", []string{"access.read[0]", "a path on the machine"}},
+		{"identity_mode_unknown.toml", []string{"identity.mode", "root", "owner, bot"}},
+		{"identity_bot_without_app.toml", []string{"identity.github_app.app_id", "settings of GitHub"}},
+		{"identity_bot_app_id_zero.toml", []string{"identity.github_app.app_id"}},
+		{
+			"identity_bot_without_a_forge.toml",
+			[]string{"identity.mode", "GitHub App", `"none"`},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -60,7 +67,9 @@ func TestLoadRejects(t *testing.T) {
 
 // TestLoadAccepts checks that the two valid files pass Load, which validates.
 func TestLoadAccepts(t *testing.T) {
-	for _, name := range []string{"example.toml", "minimal.toml", "fallback_defaults.toml"} {
+	for _, name := range []string{
+		"example.toml", "minimal.toml", "fallback_defaults.toml", "identity_bot.toml",
+	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {
 				t.Errorf("Load(%s) returned an error: %v", name, err)

@@ -35,6 +35,14 @@ func New(cfg config.Config, env forge.Env) (forge.Set, error) {
 		// for all of them: the tasks are the issues of the host and the checks
 		// are the workflows of the host (§7g).
 		set.Forge, set.Tracker, set.CI = hosting, hosting, hosting
+		// The mode of the bot is the only one with an account of the host of its
+		// own, and an account of the host is what may open the change request of a
+		// run whose executor did not. A project in the mode of the owner opens it
+		// as the person who runs crewflow, which is what a run has always done and
+		// what a report of a run in that mode is expected to say (§7i).
+		if cfg.Identity.Mode == forge.ModeBot {
+			set.Opener = hosting
+		}
 	}
 	if cfg.Tracker.Kind != "forge" {
 		return forge.Set{}, &forge.ErrNotImplemented{Key: "tracker.kind", Kind: cfg.Tracker.Kind}
@@ -55,7 +63,18 @@ func New(cfg config.Config, env forge.Env) (forge.Set, error) {
 func hostOf(cfg config.Config, env forge.Env) (*github.Adapter, error) {
 	switch cfg.Forge.Kind {
 	case "github":
-		return github.New(cfg.Project.Repo, cfg.Forge.Host, env), nil
+		adapter := github.New(cfg.Project.Repo, cfg.Forge.Host, env)
+		if cfg.Identity.Mode == forge.ModeBot {
+			// The numbers of the App are all the file of the project says about it:
+			// the key of the App is in the store of the machine and never in a file
+			// of a project (docs/DESIGN.md §7e, §7i).
+			adapter = adapter.WithBot(github.Bot{
+				AppID:          cfg.Identity.GitHubApp.AppID,
+				InstallationID: cfg.Identity.GitHubApp.InstallationID,
+				DefaultBranch:  cfg.Project.DefaultBranch,
+			})
+		}
+		return adapter, nil
 	case "none":
 		return nil, nil
 	default:

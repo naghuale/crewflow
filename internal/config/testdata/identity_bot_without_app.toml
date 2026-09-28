@@ -1,0 +1,11 @@
+# The mode of the bot without the app that is the bot on GitHub: a run would have
+# nothing to sign a token with.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[identity]
+mode = "bot"

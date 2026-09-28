@@ -9,15 +9,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/naghuale/crewflow/internal/access"
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
+	"github.com/naghuale/crewflow/internal/secret"
 )
+
+// identityCheck is the name a report calls the mode of the executor by: whose powers
+// the executor of a run of this project has (docs/DESIGN.md §7i).
+const identityCheck = "executor identity"
 
 // Status is how one check ended.
 type Status string
@@ -49,10 +56,23 @@ type Check struct {
 // Report is every check of one run of doctor, in the order they were made.
 type Report struct {
 	Checks []Check `json:"checks"`
+	// Identity is whose name the executor of a task of this project works under, and
+	// it is in every report and not only in the ones about a bot: a person who reads a
+	// report has to see whose powers a run has without asking anything (docs/DESIGN.md §7i).
+	Identity Identity `json:"identity"`
 	// Access is what the executor of the project may read outside the worktree of a
 	// task on this machine, and the paths crewflow would not open, because a refusal
 	// of the next run is about a permission that was given here (docs/DESIGN.md §7d).
 	Access Access `json:"access"`
+}
+
+// Identity is the mode of a run of the project and the one line a report shows for it.
+type Identity struct {
+	// Mode is "owner" or "bot", the two words the core knows.
+	Mode string `json:"mode"`
+	// Description is the one line a person reads: "owner — the login gh naghuale
+	// (shared rights)" or "bot — GitHub App crewflow-executor (installation 12345)".
+	Description string `json:"description"`
 }
 
 // Access is the reading policy of a run as this machine works it out: the folders the
@@ -96,6 +116,13 @@ type Env struct {
 	// Probe asks the executor one tiny question. It is off unless it was asked
 	// for, because a run of an agent spends its money and its limits.
 	Probe bool
+	// Secrets is where the key of the app of a project is kept, and HTTP and Now are
+	// how a role that has an account of its own reaches the host. A test hands a
+	// report a store, a client and a clock of its own, so that no report of crewflow
+	// opens the keychain of a person or asks GitHub for a token (docs/DESIGN.md §7i).
+	Secrets secret.Store
+	HTTP    *http.Client
+	Now     func() time.Time
 }
 
 // Run checks the machine and reports what it found. The checks are made in the
@@ -125,9 +152,10 @@ func Run(ctx context.Context, env Env) Report {
 // reading policy of the project, which is not a check but a part of what a run is
 // about to be given.
 type checker struct {
-	env    Env
-	checks []Check
-	access Access
+	env      Env
+	checks   []Check
+	identity Identity
+	access   Access
 }
 
 // add puts a check into the report.
@@ -143,7 +171,7 @@ func (c *checker) report() Report {
 	if c.access.Read == nil {
 		c.access = Access{Read: []string{}, Deny: []string{}, Rejected: []access.Problem{}}
 	}
-	return Report{Checks: c.checks, Access: c.access}
+	return Report{Checks: c.checks, Identity: c.identity, Access: c.access}
 }
 
 // config reads the project file, which every check below needs: which executor
@@ -187,6 +215,10 @@ func (c *checker) git(ctx context.Context) {
 // (docs/DESIGN.md §7g): each has a program of its own and a login of its own, so
 // each is checked where it is, and the adapter of the system is the one that
 // knows how to be checked.
+//
+// The mode of the executor comes with them and is the line every report of a run
+// shows: whose powers a run has is the first thing a person reads of it
+// (docs/DESIGN.md §7i).
 func (c *checker) roles(ctx context.Context, cfg config.Config) {
 	set, err := roles.New(cfg, c.rolesEnv())
 	if err != nil {
@@ -198,15 +230,57 @@ func (c *checker) roles(ctx context.Context, cfg config.Config) {
 			c.add(asLine(check))
 		}
 	}
+	c.executorIdentity(ctx, set)
+}
+
+// executorIdentity is the line of the mode of the executor, which is the one thing a
+// report of a machine has to say about the powers of a run (docs/DESIGN.md §7i).
+//
+// The mode of the owner is a warning and not a failure: everything a run needs is
+// there, and a personal project is a project crewflow has to work for. It is said
+// anyway, because the powers of the executor of a run in that mode are the powers of
+// the login of the person — the one thing the whole of §7i is about.
+func (c *checker) executorIdentity(ctx context.Context, set forge.Set) {
+	if set.Forge == nil {
+		return
+	}
+	identity, err := forge.DescribeIdentity(ctx, set.Forge)
+	if err != nil {
+		c.add(Check{
+			Name:   identityCheck,
+			Status: Fail,
+			Detail: err.Error(),
+			Hint:   fmt.Sprintf("a run works as the account of the host of the project, and the file says one: fix [identity] in %s", c.env.ConfigPath),
+		})
+		return
+	}
+	c.identity = Identity{Mode: identity.Mode, Description: identity.Description}
+	if identity.Mode == forge.ModeOwner {
+		c.add(Check{
+			Name:   identityCheck,
+			Status: Warn,
+			Detail: identity.Description,
+			Hint: fmt.Sprintf("the powers of the executor are the powers of that login; "+
+				"the mode of the bot separates them: set [identity] mode = %q in %s and "+
+				"import the key of an app with `crewflow auth app import <file.pem>`",
+				forge.ModeBot, c.env.ConfigPath),
+		})
+		return
+	}
+	c.add(Check{Name: identityCheck, Status: OK, Detail: identity.Description})
 }
 
 // rolesEnv is the environment of the machine as a role needs it: the same
-// programs, the same way of starting them, and the file a hint names.
+// programs, the same way of starting them, the file a hint names, and the store of
+// secrets where the key of an app of a project is kept (docs/DESIGN.md §7i).
 func (c *checker) rolesEnv() forge.Env {
 	return forge.Env{
 		LookPath:   c.env.LookPath,
 		Run:        c.env.Run,
 		ConfigPath: c.env.ConfigPath,
+		Secrets:    c.env.Secrets,
+		HTTP:       c.env.HTTP,
+		Now:        c.env.Now,
 	}
 }
 

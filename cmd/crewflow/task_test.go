@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -403,6 +404,87 @@ func TestRunTaskCheckOfATaskThatIsNotThere(t *testing.T) {
 	if entries, _ := os.ReadDir(host.home); len(entries) != 0 {
 		t.Errorf("the check left %v in the home of crewflow, want nothing", entries)
 	}
+}
+
+// TestRunTaskSaysWhoseNameTheExecutorWorkedUnder: whose powers a run had is the first
+// question about it, and every place a person looks for the answer says it — the
+// report of a run, the watch of a run in another terminal and the list of the runs of
+// the project in a column of its own (docs/DESIGN.md §7i).
+func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	report := stdout.String()
+	stdout.Reset()
+	stderr.Reset()
+
+	if !strings.HasPrefix(report, "executor: owner") {
+		t.Errorf("the report of the run is %q, want it to start with whose name it went under", firstLineOf(report))
+	}
+	// A watch in another terminal and a list of the runs of the project say it too: a
+	// person who did not watch the run itself has nothing else to learn the mode of it
+	// from, and a list has a column for it.
+	steps := []struct {
+		args   []string
+		what   string
+		column string
+	}{
+		{[]string{"task", "run", "43", "-config", project, "-continue", "and a test of the timeout"},
+			"the report of the second run", "executor: owner"},
+		{[]string{"task", "watch", "43", "-config", project}, "the watch", "executor: owner"},
+		{[]string{"task", "list", "-config", project}, "the list", "EXECUTOR"},
+	}
+	for _, step := range steps {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(step.args, &stdout, &stderr); code != exitOK {
+			t.Fatalf("%s = %d, want %d (stderr: %q)", step.what, code, exitOK, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), step.column) {
+			t.Errorf("%s wrote %q, want it to mention %q", step.what, stdout.String(), step.column)
+		}
+	}
+	if got := listColumn(t, stdout.String(), "EXECUTOR"); got != "owner" {
+		t.Errorf("the list of the runs has the mode %q under the column of it, want \"owner\"", got)
+	}
+}
+
+// columnsOfAList are the cells of a line of a list of the runs: a table lines its
+// columns up with spaces, and a title is a title whatever spaces are in it.
+var columnsOfAList = regexp.MustCompile(`\s{2,}`)
+
+// listColumn is the cell of the list under the column with that name, for a test that
+// is about the column of the mode of the run and not about the whole table.
+func listColumn(t *testing.T, list, column string) string {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(list), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("the list is %q, want a header and a line of a run", list)
+	}
+	for i, name := range columnsOfAList.Split(strings.TrimSpace(lines[0]), -1) {
+		if name != column {
+			continue
+		}
+		cells := columnsOfAList.Split(strings.TrimSpace(lines[1]), -1)
+		if i >= len(cells) {
+			t.Fatalf("the line %q has no cell under the column %q", lines[1], column)
+		}
+		return cells[i]
+	}
+	t.Fatalf("the list has no column %q:\n%s", column, list)
+	return ""
+}
+
+// firstLineOf is the first line of a text, for a test that is about where a report
+// starts and not about all of it.
+func firstLineOf(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
 }
 
 // TestRunTaskWatchShowsWhatTheRunWrote: a watch in another terminal is the journal of

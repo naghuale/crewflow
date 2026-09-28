@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
+	"time"
+
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // System returns the environment of the machine this process runs on: the
@@ -23,6 +27,13 @@ func System(configPath, tempDir string, probe bool) Env {
 		Home:       home,
 		TempDir:    tempDir,
 		Probe:      probe,
+		// A project whose executor works as an app of its own is checked through the
+		// store of the machine, over the HTTP of the machine, with the clock of it: a
+		// report that asks anything else of the machine it runs on is a report of the
+		// machine the tests of crewflow happen to run on (docs/DESIGN.md §7i).
+		Secrets: secret.System(),
+		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		Now:     time.Now,
 	}
 }
 

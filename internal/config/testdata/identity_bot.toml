@@ -1,0 +1,13 @@
+# The executor of the project works as the GitHub App of the project.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[identity]
+mode = "bot"
+
+[identity.github_app]
+app_id = 5107052

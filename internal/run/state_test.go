@@ -128,7 +128,7 @@ func TestStateRoundTrip(t *testing.T) {
 		Session:  "ses_7fKq2",
 	}
 	attempt := state.NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false,
-		proc.Process{Pid: 4242, StartedAt: started})
+		proc.Process{Pid: 4242, StartedAt: started}, Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"})
 	attempt = attempt.Ended(ended, TimedOut)
 	path := journals.StatePath(43)
 	if err := SaveState(path, attempt); err != nil {
@@ -228,7 +228,8 @@ func TestStateKeepsTheProcessOfTheRun(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 
 	state := State{Number: 43, Title: "the run of a task"}.
-		NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false, process).
+		NextAttempt(started, journals.JournalPath(43, 1), journals.errorJournalPath(43, 1), false, process,
+			Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"}).
 		Ended(started.Add(42*time.Minute), ChangeRequestOpened)
 	state.Change = &Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"}
 	path := journals.StatePath(43)
@@ -301,14 +302,18 @@ func read(t *testing.T, path string) string {
 	return string(data)
 }
 
-// whatWasWritten is what the executor wrote: the journal of a run without its first
-// line, which is the rights the run was started with and which is crewflow's own
-// rather than the agent's (docs/DESIGN.md §7d).
+// whatWasWritten is what the executor wrote: the journal of a run without the lines
+// of crewflow itself, which are whose name the run went under and what it was given
+// the right to read, and which are crewflow's words and not the agent's
+// (docs/DESIGN.md §7d, §7i).
 func whatWasWritten(t *testing.T, path string) string {
 	t.Helper()
-	_, written, found := strings.Cut(read(t, path), "\n")
-	if !found {
-		t.Fatalf("the journal %s holds no line of its own, want the rights of the run and then what the executor wrote", path)
+	lines := strings.SplitAfter(read(t, path), "\n")
+	for i, line := range lines {
+		if !strings.HasPrefix(line, "crewflow: ") {
+			return strings.Join(lines[i:], "")
+		}
 	}
-	return written
+	t.Fatalf("the journal %s holds no line of the executor in it, want the lines of crewflow and then what it wrote", path)
+	return ""
 }

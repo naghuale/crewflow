@@ -555,7 +555,8 @@ func writeState(t *testing.T, home, repo string, number int, title string, chang
 		state = state.NextAttempt(attempt.startedAt,
 			journals.JournalPath(number, i+1),
 			journals.errorJournalPath(number, i+1),
-			i > 0, proc.Process{Pid: attempt.pid, StartedAt: begin})
+			i > 0, proc.Process{Pid: attempt.pid, StartedAt: begin},
+			Identity{Mode: "owner", Description: "owner — the login gh naghuale (shared rights)"})
 		if attempt.outcome != Running {
 			state = state.Ended(attempt.endedAt, attempt.outcome)
 		}

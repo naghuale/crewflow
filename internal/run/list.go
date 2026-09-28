@@ -70,6 +70,11 @@ type Entry struct {
 	Duration time.Duration `json:"-"`
 	// ChangeURL is the change request the run of the task opened, when it opened one.
 	ChangeURL string `json:"change_url,omitempty"`
+	// Identity is whose name the executor of the last attempt worked under, so that
+	// a list of the runs of a project says the mode of each of them and a person does
+	// not have to open a state file to learn that a run was in the mode of the owner
+	// (docs/DESIGN.md §7i).
+	Identity Identity `json:"identity"`
 }
 
 // Length is how long the last attempt of the task took, and whether that is known at
@@ -101,6 +106,7 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		EndedAt         *time.Time `json:"ended_at,omitempty"`
 		DurationSeconds *float64   `json:"duration_seconds"`
 		ChangeURL       string     `json:"change_url,omitempty"`
+		Identity        Identity   `json:"identity"`
 	}{
 		Task:            e.Task,
 		Title:           e.Title,
@@ -110,6 +116,7 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		EndedAt:         e.EndedAt,
 		DurationSeconds: seconds,
 		ChangeURL:       e.ChangeURL,
+		Identity:        e.Identity,
 	}
 	data, err := json.Marshal(answer)
 	if err != nil {
@@ -182,6 +189,7 @@ func (e ListEnv) entryOf(state State) (Entry, bool) {
 		Attempts:  len(state.Attempts),
 		Outcome:   e.outcome(last),
 		StartedAt: last.StartedAt,
+		Identity:  last.Identity,
 	}
 	if !last.EndedAt.IsZero() {
 		ended := last.EndedAt

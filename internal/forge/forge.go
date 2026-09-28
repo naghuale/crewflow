@@ -13,8 +13,11 @@ package forge
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // Task is a task as a person wrote it: what is to be done and how one checks
@@ -116,6 +119,123 @@ type CI interface {
 	Status(ctx context.Context, sha string) (CheckState, error)
 }
 
+// The two modes of a run, the words the core knows and nothing else: the executor
+// works as the person who runs crewflow, or as an account of the host of the project
+// of its own. How a bot of a host is written down is the business of the adapter of
+// that host, and a project that wants a mode a host has no adapter for is told so
+// (docs/DESIGN.md §7i).
+const (
+	// ModeOwner is the login of the person: what crewflow has always done, what needs
+	// nothing to be set up, and what the powers of the executor are the powers of.
+	ModeOwner = "owner"
+	// ModeBot is an account of the host of its own, with rights of its own and a
+	// token of its own, which is what separates the powers of a run from the powers
+	// of the person (§7i).
+	ModeBot = "bot"
+)
+
+// Identity is whose name the executor of a run works under, and everything the run
+// needs to work under it (docs/DESIGN.md §7i).
+//
+// The core asks the adapter of the host of the project for it and takes it as it is:
+// a GitHub App answers with a token, an installation and an account, and a bot of
+// another host answers with whatever it has (§7g, §7i). The values of a run are the
+// values of the account, and the run puts them through the redactor of package secret
+// with what it wrote (§7e).
+type Identity struct {
+	// Mode is ModeOwner or ModeBot: the two words a report and a state file hold.
+	Mode string
+	// Description is the one line a report shows and a journal keeps, as
+	// "bot — GitHub App crewflow-executor (installation 12345)" or
+	// "owner — the login gh naghuale (shared rights)": a person reading a run has to
+	// see whose name it went under without asking anything.
+	Description string
+	// Env are the variables the executor of the run is started with on top of the
+	// ones of the person: a token of the host, and the name and the address its
+	// commits are made by. It is empty for the mode of the owner, where the login of
+	// the person is what the executor already has.
+	Env []string
+	// GitConfig are the settings git is given in the worktree of the run, by name
+	// and value. It is empty for the mode of the owner.
+	GitConfig map[string]string
+	// Secrets are the values among the above that must never reach a journal, a
+	// report or an error: the token of a run, and a key that has been in it. A run
+	// puts everything the executor writes through the redactor of package secret
+	// with them in it, because an agent that prints its own environment is one line
+	// of a journal that would otherwise carry a token of an hour into a file kept
+	// for ever (docs/DESIGN.md §7e).
+	Secrets []string
+}
+
+// Identified is a role of the host of the code that knows whose name the executor of
+// a run of this project works under: GitHub answers with a GitHub App, GitLab with a
+// token of a project, Bitbucket with a user and an access token of its own
+// (docs/DESIGN.md §7i). A host that has no such account yet is a host that has not
+// answered, and the core does not guess one for it.
+type Identified interface {
+	// ExecutorIdentity returns what a run of this project is given to work under
+	// the name of an account: the mode, the one line a report shows, the
+	// environment of the executor, the settings of git in its worktree and the
+	// values that must not reach a journal (§7e).
+	ExecutorIdentity(ctx context.Context) (Identity, error)
+}
+
+// Described is a role that can say whose name the executor of a run works under
+// without handing out the rights of that name: a report of a machine prints the line
+// of the mode and needs no token of an hour to print it, and a token it minted for
+// that would be a token of an hour in the memory of a command that shows a report
+// (docs/DESIGN.md §7e, §7i).
+type Described interface {
+	// DescribeIdentity returns the mode of a run and the one line a report shows,
+	// whatever a run of it would be given.
+	DescribeIdentity(ctx context.Context) (Identity, error)
+}
+
+// DescribeIdentity is the line of a report about whose name the executor of a run
+// works under. A role that can answer without a token of its own is asked that way,
+// and a role that cannot is asked the whole identity: a report of a machine is worth
+// a token of an hour that it throws away, but it is not worth a line it cannot print
+// (docs/DESIGN.md §7e, §7i).
+func DescribeIdentity(ctx context.Context, role Forge) (Identity, error) {
+	if described, ok := role.(Described); ok {
+		return described.DescribeIdentity(ctx)
+	}
+	return IdentityOf(ctx, role)
+}
+
+// IdentityOf is whose name the executor of a run of this project works under, asked
+// of the role of the host of the code — which is the only one that knows what
+// accounts of that host there are (§7g, §7i).
+//
+// A project that is not hosted anywhere works as the person who runs crewflow: there
+// is no account of a host to be, and a run of such a project opens nothing anywhere.
+// A host that cannot answer — no App installed, no key imported, no network — is an
+// error and not a fallback: a run that went on as somebody else is a run whose
+// report says the wrong thing about who worked under whose name.
+func IdentityOf(ctx context.Context, role Forge) (Identity, error) {
+	identified, ok := role.(Identified)
+	if !ok {
+		return Identity{
+			Mode:        ModeOwner,
+			Description: "owner — the person who runs crewflow (shared rights)",
+		}, nil
+	}
+	return identified.ExecutorIdentity(ctx)
+}
+
+// RequestOpener opens the change request of a branch on behalf of a run whose
+// executor did not: an agent runs out of time, or the token of gh it was given is
+// over, and the work of a run is on a branch that nobody asked about (§7i). Only the
+// mode of the bot has one — the App may open a request of its own branch — and a run
+// without one is a run whose outcome is no-change-request, whatever the branch holds.
+type RequestOpener interface {
+	// OpenChangeRequest opens the request of the branch with the given title and
+	// body. It asks the host for credentials of its own rather than using the ones
+	// it is given, because the ones of a run are out of date by the time a run asks:
+	// that is why a run gets here at all.
+	OpenChangeRequest(ctx context.Context, branch, title, body string) (ChangeRequest, error)
+}
+
 // Status is how one check of a role ended. The words are the ones the report of
 // doctor uses, so that a line of a role is a line of the report and not a
 // second dialect to translate.
@@ -165,15 +285,34 @@ var (
 // environment over as it is: an adapter must be able to look a program up in
 // PATH, start it with a closed stdin, and add to the environment of the process
 // what its own system needs (GH_HOST and the like).
+//
+// The three fields below are how an adapter that works as a bot of its host reaches
+// that host: the key of the App is in a store of secrets, the API is an HTTP client
+// and the token of a run is a promise about a moment of a clock. They are nil in a
+// test that has no bot to run, and a test of an adapter with a bot of its own hands
+// all three over, so that no test of crewflow reaches the keychain of a person and no
+// test of a token exchange reaches GitHub (docs/DESIGN.md §7i).
 type Env struct {
 	// LookPath finds a program the way the shell does, in PATH.
 	LookPath func(name string) (string, error)
-	// Run starts a program in dir with the extra environment added to the one
-	// of the process, and returns what it wrote and the code it exited with.
+	// Run starts a program in dir with the extra environment added to the one of
+	// the process, and returns what it wrote and the code it exited with.
 	Run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
 	// ConfigPath is the crewflow.toml a hint names, so that a person is told
 	// which file to change.
 	ConfigPath string
+	// Secrets is where a role keeps what it must not print: the key of the App of a
+	// project, and whatever else a system of a project needs a secret for. Only
+	// crewflow reads it, in the moment it signs a token, and never hands it to an
+	// executor (docs/DESIGN.md §7e, §7i).
+	Secrets secret.Store
+	// HTTP is the client an adapter asks the API of a host over. A role that talks
+	// through a program of the system — gh, glab — has no use for it and leaves it
+	// nil.
+	HTTP *http.Client
+	// Now is the clock of the machine. A token of a run is signed with it and lives
+	// an hour, so a role that mints tokens needs to know what time it is.
+	Now func() time.Time
 }
 
 // Set is what a project has for the three roles: the implementations its
@@ -186,6 +325,11 @@ type Set struct {
 	Tracker Tracker
 	// CI is where the checks of a commit run.
 	CI CI
+	// Opener opens the change request of a branch on behalf of a run whose executor
+	// did not, and is nil where the project has asked for none: a project in the
+	// mode of the bot has the App for it, and a project in the mode of the owner has
+	// the login of the person, which is what a run has always had (§7i).
+	Opener RequestOpener
 }
 
 // Checkers returns the adapters of the set that can check the machine, in the

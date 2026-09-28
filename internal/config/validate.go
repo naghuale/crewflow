@@ -28,6 +28,7 @@ var (
 	forgeKinds      = []string{"github", "gitlab", "bitbucket", "gitea", "azure", "none"}
 	trackerKinds    = []string{"forge", "jira", "linear", "files"}
 	ciKinds         = []string{"forge", "jenkins", "command", "none"}
+	identityModes   = []string{"owner", "bot"}
 	mergeBys        = []string{"orchestrator", "executor", "human"}
 	mergeStrategies = []string{"ff-only"}
 	mergeVias       = []string{"git-push", "forge"}
@@ -49,6 +50,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := oneOf("ci.kind", c.CI.Kind, ciKinds); err != nil {
+		return err
+	}
+	if err := validateIdentity(c); err != nil {
 		return err
 	}
 	if err := validateRoles(c); err != nil {
@@ -94,6 +98,33 @@ func (c Config) Validate() error {
 		return err
 	}
 	return uniqueNames("capabilities", c.Capabilities, func(c Capability) string { return c.Name })
+}
+
+// validateIdentity checks the mode of the executor against the host of the project
+// and against the bot it names. The mode is the same word everywhere, and what a bot
+// of a host is called is the business of the adapter of that host: a file that asks
+// for a mode no host of it has a bot for is refused here, where the owner reads the
+// reason, and not in the middle of a task (docs/DESIGN.md §7g, §7i).
+func validateIdentity(c Config) error {
+	if err := oneOf("identity.mode", c.Identity.Mode, identityModes); err != nil {
+		return err
+	}
+	if c.Identity.Mode != "bot" {
+		return nil
+	}
+	if c.Forge.Kind != "github" {
+		return fmt.Errorf("identity.mode: the bot of a run is an account of the host of the code, "+
+			"and the only one crewflow has is the GitHub App; forge.kind is %q", c.Forge.Kind)
+	}
+	if c.Identity.GitHubApp.AppID <= 0 {
+		return fmt.Errorf("identity.github_app.app_id: must be the number of the app as it stands in the settings of GitHub, got %d",
+			c.Identity.GitHubApp.AppID)
+	}
+	if c.Identity.GitHubApp.InstallationID < 0 {
+		return fmt.Errorf("identity.github_app.installation_id: must be a number of an installation or 0 to find it, got %d",
+			c.Identity.GitHubApp.InstallationID)
+	}
+	return nil
 }
 
 // validateRoles checks the roles of DESIGN §7g against each other: a project

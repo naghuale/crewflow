@@ -30,13 +30,14 @@ func (r Runs) Write(w io.Writer) error {
 		}
 		return r.Notes(w)
 	}
-	rows := [][]string{{"#", "TASK", "ATTEMPTS", "OUTCOME", "WHEN", "FOR", "CHANGE"}}
+	rows := [][]string{{"#", "TASK", "ATTEMPTS", "OUTCOME", "EXECUTOR", "WHEN", "FOR", "CHANGE"}}
 	for _, entry := range r.Entries {
 		rows = append(rows, []string{
 			strconv.Itoa(entry.Task),
 			line(entry.Title),
 			strconv.Itoa(entry.Attempts),
 			string(entry.Outcome),
+			mode(entry),
 			entry.StartedAt.Local().Format(when),
 			length(entry),
 			entry.ChangeURL,
@@ -46,6 +47,18 @@ func (r Runs) Write(w io.Writer) error {
 		return err
 	}
 	return r.Notes(w)
+}
+
+// mode is the column of the mode of the executor: a run in the mode of the owner has
+// the rights of the login of the person and a run in the mode of the bot has rights of
+// an account of the host, and a list that does not say which was which cannot answer
+// the question a person asks of it first (docs/DESIGN.md §7i). A run of before crewflow
+// kept the mode says nothing, and a dash is said where there is nothing.
+func mode(entry Entry) string {
+	if entry.Identity.Mode == "" {
+		return "-"
+	}
+	return entry.Identity.Mode
 }
 
 // Notes is what a list could not show in the table: the runs that were left out of a

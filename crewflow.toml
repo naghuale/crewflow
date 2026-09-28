@@ -5,6 +5,12 @@ repo = "naghuale/crewflow"
 default_branch = "main"
 language = "ru"
 
+[identity]
+# The executor works under the login of the owner, and the powers of a run are the powers
+# of that login. The mode "bot" makes it a GitHub App of its own (§7i) — a change of the
+# powers of a run is a decision of the owner, not a default.
+mode = "owner"
+
 [executor]
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
 timeout = "120m"

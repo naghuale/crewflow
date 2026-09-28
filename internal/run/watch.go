@@ -25,6 +25,10 @@ type Watcher struct {
 	// journal is read through it: a journal is read the way the run that wrote it
 	// was read, whatever the project uses as its executor today.
 	Profile string
+	// Identity is whose name the executor of the attempt worked under, so that a
+	// watch says it before the journal and a person reading it in another terminal
+	// knows whose run they are watching (docs/DESIGN.md §7i).
+	Identity Identity
 	// Outcome, StartedAt and EndedAt are how far the attempt has come. The outcome
 	// of an attempt that has not ended yet is the outcome running.
 	Outcome   Kind
@@ -73,6 +77,7 @@ func Watch(home, repo string, number, attempt int) (*Watcher, error) {
 		Attempt:      found.Number,
 		Title:        state.Title,
 		Profile:      state.Profile,
+		Identity:     found.Identity,
 		Outcome:      found.Outcome,
 		StartedAt:    found.StartedAt,
 		EndedAt:      found.EndedAt,

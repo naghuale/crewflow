@@ -5,7 +5,11 @@
     "attempts": 1,
     "outcome": "running",
     "started_at": "2026-09-28T14:00:00Z",
-    "duration_seconds": 65
+    "duration_seconds": 65,
+    "identity": {
+      "mode": "owner",
+      "description": "owner — the login gh naghuale (shared rights)"
+    }
   },
   {
     "task": 49,
@@ -13,7 +17,11 @@
     "attempts": 1,
     "outcome": "interrupted",
     "started_at": "2026-09-28T13:00:00Z",
-    "duration_seconds": null
+    "duration_seconds": null,
+    "identity": {
+      "mode": "owner",
+      "description": "owner — the login gh naghuale (shared rights)"
+    }
   },
   {
     "task": 43,
@@ -23,6 +31,10 @@
     "started_at": "2026-09-28T10:00:00Z",
     "ended_at": "2026-09-28T10:42:00Z",
     "duration_seconds": 2520,
-    "change_url": "https://github.com/naghuale/crewflow/pull/44"
+    "change_url": "https://github.com/naghuale/crewflow/pull/44",
+    "identity": {
+      "mode": "owner",
+      "description": "owner — the login gh naghuale (shared rights)"
+    }
   }
 ]

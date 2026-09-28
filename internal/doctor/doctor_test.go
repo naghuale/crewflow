@@ -61,19 +61,33 @@ run = ["golangci-lint", "run", "./..."]
 	report := runOn(t, m, config)
 
 	want := []string{
-		"config", "git", "gh", "gh login", "executor", "executor fallback 1", "access read",
-		"gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
+		"config", "git", "gh", "gh login", "executor identity", "executor", "executor fallback 1",
+		"access read", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {
 		t.Errorf("checks = %v, want %v", got, want)
 	}
 	for _, check := range report.Checks {
-		if check.Status != OK {
-			t.Errorf("check %q = %q (%s, %s), want ok", check.Name, check.Status, check.Detail, check.Hint)
+		if check.Status == Fail {
+			t.Errorf("check %q = %q (%s), want it to pass", check.Name, check.Status, check.Detail)
 		}
 	}
 	if !report.OK() {
 		t.Error("report.OK() = false, want true when nothing failed")
+	}
+	// The one thing a machine of the pilot has to be told about itself is that the
+	// powers of its executor are the powers of its login: everything a run needs is
+	// there, and a personal project is a project crewflow has to work for. The mode of
+	// the bot is the answer, and a report says so (docs/DESIGN.md §7i).
+	identity := checkOf(t, report, "executor identity")
+	if identity.Status != Warn {
+		t.Errorf("check \"executor identity\" = %q, want %q: a run in the mode of the owner has the rights of the login", identity.Status, Warn)
+	}
+	if !strings.Contains(identity.Detail, "shared rights") {
+		t.Errorf("check \"executor identity\" detail = %q, want it to say the rights are shared", identity.Detail)
+	}
+	if !strings.Contains(identity.Hint, `mode = "bot"`) {
+		t.Errorf("check \"executor identity\" hint = %q, want it to name the mode that separates the powers", identity.Hint)
 	}
 }
 
