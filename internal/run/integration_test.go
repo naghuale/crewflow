@@ -259,6 +259,75 @@ func TestRunKeepsTheScratchOfTheExecutorOutOfTheProject(t *testing.T) {
 	}
 }
 
+// TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject runs a task
+// against a real repository with a fake executor that writes down the environment it
+// was started with. The folders the project named in [access] are opened to it for
+// reading and closed for writing, the places of secrets are closed, and the journal of
+// the run says what it was started with (docs/DESIGN.md §7d).
+func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	executor := fakeExecutor(t, "opencode",
+		"printf '%s' \"$OPENCODE_CONFIG_CONTENT\" > rights\n"+
+			"printf '%s' '"+theEvents+"'\n")
+	host := &host{task: taskOf(43)}
+	// The home of the person is a folder of the test, and so is the cache of the
+	// modules in it: the paths of the policy are the ones of this machine and no
+	// secret of the person who runs the tests is in any of them.
+	userHome := t.TempDir()
+	modules := filepath.Join(userHome, "go", "pkg", "mod")
+	if err := os.MkdirAll(modules, 0o700); err != nil {
+		t.Fatalf("make %s: %v", modules, err)
+	}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	// The project says how to find its dependencies, because the paths are different
+	// on every machine: here a command that prints the folder of the test.
+	cfg.Access.ReadFrom = [][]string{{"sh", "-c", "printf '%s\\n' '" + modules + "'"}}
+	env := System(t.TempDir())
+	env.UserHome, env.Environ = userHome, nil
+
+	result, err := Run(t.Context(), env, cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	// What the executor was given, as a program of a real run would find it.
+	rights := read(t, filepath.Join(result.Worktree, "rights"))
+	for _, want := range []string{
+		`"` + modules + `/**":"allow"`,                        // the folder of the dependencies, to read
+		`"` + modules + `/**":"deny"`,                         // the same folder, to write
+		`"` + filepath.Join(userHome, ".ssh") + `/**":"deny"`, // the keys of the person
+		`"**/.env":"deny"`,                                    // the environment of the project
+	} {
+		if !strings.Contains(rights, want) {
+			t.Errorf("the rights of the executor are %s,\nwant %q in them", rights, want)
+		}
+	}
+	// The journal of the run holds the policy it was started with, in its first line,
+	// so that a person reading it afterwards sees what the run was given.
+	journal := read(t, result.Journal)
+	if !strings.HasPrefix(journal, "crewflow: the executor may read outside the worktree: "+modules) {
+		t.Errorf("the journal starts with %q, want the rights of the run in it", firstLineOf(journal))
+	}
+	// A run that named what it may read and got it has nothing to say on the way out.
+	if said := read(t, result.ErrorJournal); said != "" {
+		t.Errorf("the way out of the run holds %q, want nothing said", said)
+	}
+}
+
+// firstLineOf is the first line of a text, for a test that is about where a file
+// starts and not about all of it.
+func firstLineOf(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
+}
+
 // repository is a git repository with a commit in it and an origin of its own, so
 // that a worktree can be made out of the default branch of it as a real one. It is
 // made in a folder of the test and thrown away with it.

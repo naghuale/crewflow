@@ -9,13 +9,18 @@ import (
 )
 
 // System returns the environment of the machine this process runs on: the
-// programs of PATH, the given project file and, for the probe, the given
-// temporary folder.
+// programs of PATH, the given project file, the home of the person and, for the
+// probe, the given temporary folder.
 func System(configPath, tempDir string, probe bool) Env {
+	// A machine that cannot say where the home of the person is has no folder crewflow
+	// may resolve a "~" of the file of a project to, and the report says so rather
+	// than guessing one.
+	home, _ := os.UserHomeDir()
 	return Env{
 		LookPath:   exec.LookPath,
 		Run:        Command,
 		ConfigPath: configPath,
+		Home:       home,
 		TempDir:    tempDir,
 		Probe:      probe,
 	}

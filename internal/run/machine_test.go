@@ -49,6 +49,11 @@ type machine struct {
 	// the worktrees of the project are made under. Both are folders of the test.
 	home      string
 	worktrees string
+	// userHome is the home of the person this run happens for: the paths of the file
+	// of a project are resolved against it, and the places crewflow keeps closed are
+	// the ones under it. It is a folder of the test, so that no run of a test ever
+	// resolves a path against the home of the person who runs the tests.
+	userHome string
 	// repo is the repository of the project. It is a folder and nothing else: a
 	// test of the flow of a run does not need a git at all, and the one that does
 	// makes a repository of its own (docs/DESIGN.md §7).
@@ -104,6 +109,7 @@ func newMachine(t *testing.T) *machine {
 	t.Helper()
 	m := &machine{
 		home:      t.TempDir(),
+		userHome:  t.TempDir(),
 		worktrees: t.TempDir(),
 		repo:      t.TempDir(),
 		git:       t.TempDir(),
@@ -136,7 +142,15 @@ func (m *machine) has(paths ...string) *machine {
 
 // env is the machine a run of a test happens on.
 func (m *machine) env() Env {
-	return Env{Home: m.home, Command: m.exec, Stream: m.stream, Now: m.now, Process: m.process}
+	return Env{
+		Home:     m.home,
+		UserHome: m.userHome,
+		Environ:  []string{"HOME=" + m.userHome, "PATH=/usr/bin"},
+		Command:  m.exec,
+		Stream:   m.stream,
+		Now:      m.now,
+		Process:  m.process,
+	}
 }
 
 // process is the process a run of a test happens in: a number and the moment it was

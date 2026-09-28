@@ -116,7 +116,7 @@ func TestRunDoctorJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
 	}
-	want := []string{"config", "git", "gh", "gh login", "executor"}
+	want := []string{"config", "git", "gh", "gh login", "executor", "access read"}
 	got := make([]string, 0, len(report.Checks))
 	for _, check := range report.Checks {
 		got = append(got, check.Name)
@@ -130,6 +130,24 @@ func TestRunDoctorJSON(t *testing.T) {
 		}
 		if check.Detail == "" {
 			t.Errorf("check %q has no detail, want what was found", check.Name)
+		}
+	}
+	// The reading policy is a part of every report: what the executor may read outside
+	// the worktree, what it may never read, and the paths crewflow would not open. The
+	// lists are there even when they are empty, because a script reads them on every
+	// report and a field that is missing in one of them is a field to guard against.
+	var whole map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &whole); err != nil {
+		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
+	}
+	policy, isTable := whole["access"].(map[string]any)
+	if !isTable {
+		t.Fatalf("the report holds %v, want an access section", whole)
+	}
+	for _, field := range []string{"read", "deny", "rejected"} {
+		list, isList := policy[field].([]any)
+		if !isList || list == nil {
+			t.Errorf("access.%s = %v, want a list, empty when there is nothing in it", field, policy[field])
 		}
 	}
 }
@@ -281,18 +299,24 @@ type machine struct {
 	seen doctor.Env
 	// folders are the folders a command was run in.
 	folders []string
+	// home is the home of the person the doctor command is run for: a folder of the
+	// test, so that no test of the command resolves a path against the home of the
+	// person who runs it.
+	home string
 }
 
 // use makes the doctor command check this machine, and puts the machine back
 // when the test is over.
 func (m *machine) use(t *testing.T) {
 	t.Helper()
+	m.home = t.TempDir()
 	t.Cleanup(func() { systemEnv = doctor.System })
 	systemEnv = func(configPath, tempDir string, probe bool) doctor.Env {
 		m.seen = doctor.Env{
 			LookPath:   m.lookPath,
 			Run:        m.run,
 			ConfigPath: configPath,
+			Home:       m.home,
 			TempDir:    tempDir,
 			Probe:      probe,
 		}

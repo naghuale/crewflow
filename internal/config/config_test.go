@@ -46,6 +46,12 @@ func TestLoadExample(t *testing.T) {
 		{"executor.timeout", cfg.Executor.Timeout, "90m"},
 		{"len(executor.fallback)", len(cfg.Executor.Fallback), 0},
 		{
+			"access.read_from",
+			cfg.Access.ReadFrom,
+			[][]string{{"go", "env", "GOMODCACHE"}, {"go", "env", "GOROOT"}},
+		},
+		{"access.read", cfg.Access.Read, []string{}},
+		{
 			"requirements.tools",
 			cfg.Requirements.Tools,
 			[]Tool{
@@ -107,6 +113,11 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"project.default_branch", cfg.Project.DefaultBranch, "main"},
 		{"project.language", cfg.Project.Language, "en"},
 		{"executor.timeout", cfg.Executor.Timeout, "90m"},
+		// A project that says nothing about [access] gets no folder to read: the
+		// executor of it works in its worktree and nowhere else, and a run does not
+		// hand out a permission nobody asked for (docs/DESIGN.md §7d).
+		{"access.read_from", cfg.Access.ReadFrom, [][]string(nil)},
+		{"access.read", cfg.Access.Read, []string(nil)},
 		{"worktrees.root", cfg.Worktrees.Root, "~/.crewflow/worktrees/{repo}"},
 		{"ci.required", cfg.CI.Required, true},
 		{"ci.timeout", cfg.CI.Timeout, "30m"},

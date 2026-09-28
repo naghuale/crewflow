@@ -17,6 +17,7 @@ type Config struct {
 	Forge        Forge        `toml:"forge"`
 	Tracker      Tracker      `toml:"tracker"`
 	Executor     Executor     `toml:"executor"`
+	Access       Access       `toml:"access"`
 	Worktrees    Worktrees    `toml:"worktrees"`
 	Gates        []Gate       `toml:"gates"`
 	CI           CI           `toml:"ci"`
@@ -88,6 +89,19 @@ type ExecutorSpec struct {
 	ModelFlag []string `toml:"model_flag"`
 	// Timeout is how long a run may take, as a duration such as "90m".
 	Timeout string `toml:"timeout"`
+}
+
+// Access is what the executor of a project may read outside the worktree of a task,
+// and how crewflow finds out where those folders are (docs/DESIGN.md §7d).
+type Access struct {
+	// ReadFrom are the commands that print the folders the project keeps its
+	// dependencies in, one path per line. A project says how to find them and not
+	// where they are: the paths are different on every machine, and the tools that
+	// know them already answer.
+	ReadFrom [][]string `toml:"read_from"`
+	// Read are the paths that may be read wherever they are, such as a system
+	// library or an SDK. A leading "~/" stands for the home of the person.
+	Read []string `toml:"read"`
 }
 
 // Worktrees says where the worktree of a task is created.

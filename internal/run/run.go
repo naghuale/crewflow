@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/naghuale/crewflow/internal/access"
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
@@ -33,6 +34,15 @@ type Env struct {
 	// Home is the root of what crewflow keeps of its own: the journal of every run
 	// and the state of every task (§7).
 	Home string
+	// UserHome is the home of the person crewflow runs for: what a leading "~/" in
+	// the file of the project stands for, and where the places crewflow keeps closed
+	// are. It is given and not read from the process, so that a test of a run never
+	// resolves a path against the home of the person it runs on (docs/DESIGN.md §7d).
+	UserHome string
+	// Environ is the environment crewflow itself was started with, which is where a
+	// person may have put settings of their own for the agent. A run writes the rights
+	// of the policy of the project over them and hands both on (§7d).
+	Environ []string
 	// Command starts a program in dir and returns what it wrote and the code it
 	// exited with. Git and the tools of a project go through it, the way they do in
 	// doctor (§7d).
@@ -60,7 +70,19 @@ type Env struct {
 // keeps of its own.
 func System(home string) Env {
 	machine := proc.System()
-	return Env{Home: home, Command: Start, Stream: Stream, Now: time.Now, Process: machine.Self}
+	// A machine that cannot say where the home of the person is has no folder crewflow
+	// may resolve a "~" of the file of a project to, and the policy of a run says so
+	// rather than guessing one.
+	userHome, _ := os.UserHomeDir()
+	return Env{
+		Home:     home,
+		UserHome: userHome,
+		Environ:  os.Environ(),
+		Command:  Start,
+		Stream:   Stream,
+		Now:      time.Now,
+		Process:  machine.Self,
+	}
 }
 
 // Start starts a program in dir and returns what it wrote and the code it exited
@@ -331,6 +353,15 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
+	// What the executor may read outside its worktree is worked out before it is
+	// started and is the first thing in the journal: a run that was given the right to
+	// read a folder of the machine has to say which, and a person who reads the journal
+	// of the run afterwards sees it there (docs/DESIGN.md §7d).
+	rights, err := r.rights(ctx, files)
+	if err != nil {
+		_ = files.Close()
+		return r.stopBeforeStart(state, err)
+	}
 
 	// The time limit of the run is on the context, and a program that is still
 	// going when it is out is asked to stop with it: the run has an end whatever the
@@ -342,7 +373,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// in memory, because a run is judged out of what the agent said, and the file is
 	// the only one of the two a person and a watch can read (docs/DESIGN.md §7a).
 	var out, errOut bytes.Buffer
-	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, tempEnv(r.worktree),
+	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, append(rights, tempEnv(r.worktree)...),
 		io.MultiWriter(&out, files.Out), io.MultiWriter(&errOut, files.ErrOut))
 	ended := r.endOf(ctx, runCtx)
 	closeErr := files.Close()
@@ -388,6 +419,53 @@ func (r *runner) stopBeforeStart(state State, err error) (Result, error) {
 	return Result{}, err
 }
 
+// rights is the environment of the executor with the reading policy of the project in
+// it: the folders the commands of [access] named are opened to the executor, the
+// places of secrets are closed, and nothing of either may be written. It is worked
+// out with the commands of the project and not with what a previous run worked out on
+// a machine that may have changed since (docs/DESIGN.md §7d).
+//
+// A path crewflow will not open is not a run that failed: the run goes on without it
+// and says so on the way out, because a person who looks at a run that was refused a
+// permission for a folder of a dependency has to see that the folder was named and
+// was not opened. A policy that cannot be named to the agent at all stops the run
+// before the executor is started: an agent that was told nothing is an agent whose
+// rights crewflow does not know.
+func (r *runner) rights(ctx context.Context, files *AttemptFiles) ([]string, error) {
+	policy, problems := access.Resolve(ctx, r.access(), r.cfg.Access)
+	for _, problem := range problems {
+		note(files.ErrorJournal, fmt.Errorf("access: %s: %s", problem.Path, problem.Reason))
+	}
+	env, err := r.profile.AccessEnv(policy, r.env.Environ)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(files.Out, "crewflow: the executor may read outside the worktree: %s; it may never read: %s\n",
+		listed(policy.Read), listed(policy.Deny))
+	return env, nil
+}
+
+// access is the machine as the policy of reading needs it: the home of the person and
+// the way a command of the project is started, the two of which a run already has for
+// everything else it runs (§7d).
+func (r *runner) access() access.Env {
+	return access.Env{
+		Home: r.env.UserHome,
+		Run: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
+			return r.env.Command(ctx, name, args, "")
+		},
+	}
+}
+
+// listed is a list of paths as one line of a journal reads: a person reads the line
+// and not a list of them, and an empty policy is said so rather than left blank.
+func listed(paths []string) string {
+	if len(paths) == 0 {
+		return "nothing"
+	}
+	return strings.Join(paths, ", ")
+}
+
 // endOf is how a run that has just stopped ended, asked of the two contexts of the
 // run: the one of the caller, which a signal of a person cancels, and the one with
 // the time limit of the project on it, which says that the run ran out of time. A
@@ -427,11 +505,18 @@ func (r *runner) keep(state State, result Result, judgeErr error) error {
 // noteError adds what went wrong to the way out of the run, so that the file a
 // person is sent to holds the reason and not only what the agent said.
 func (r *runner) noteError(errorJournal string, err error) string {
-	previous, readErr := os.ReadFile(errorJournal)
-	if readErr == nil {
-		_ = writeFile(errorJournal, append(previous, []byte(fmt.Sprintf("crewflow: %v\n", err))...))
-	}
+	note(errorJournal, err)
 	return errorJournal
+}
+
+// note adds what went wrong to a file of the run, and goes on when it cannot: the
+// file of a journal is not worth stopping a run for, and what crewflow has to say
+// about it is in the return of the caller.
+func note(path string, err error) {
+	previous, readErr := os.ReadFile(path)
+	if readErr == nil {
+		_ = writeFile(path, append(previous, []byte(fmt.Sprintf("crewflow: %v\n", err))...))
+	}
 }
 
 // command is the command line of the run: the command of the project with the text

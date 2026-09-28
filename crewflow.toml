@@ -9,6 +9,12 @@ language = "ru"
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
 timeout = "120m"
 
+[access]
+# The caches and the toolchain the executor may read outside the worktree (§7d).
+# The paths are different on every machine, so the project says how to find them.
+read_from = [["go", "env", "GOMODCACHE"], ["go", "env", "GOROOT"]]
+read = []
+
 [worktrees]
 root = "~/.crewflow/worktrees/{repo}"
 

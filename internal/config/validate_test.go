@@ -40,6 +40,8 @@ func TestLoadRejects(t *testing.T) {
 		{"fallback_command_no_prompt.toml", []string{"executor.fallback[0].command", "{prompt}"}},
 		{"fallback_timeout_invalid.toml", []string{"executor.fallback[0].timeout", "half an hour"}},
 		{"tasks_owner_approval_unknown.toml", []string{"tasks.owner_approval", "sometimes", "risky"}},
+		{"access_read_from_empty.toml", []string{"access.read_from[0]", "prints"}},
+		{"access_read_empty.toml", []string{"access.read[0]", "a path on the machine"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {

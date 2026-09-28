@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/naghuale/crewflow/internal/access"
 )
 
 // blockedPrefix is the word an executor finishes with when it cannot go on, and
@@ -48,6 +50,13 @@ type Profile interface {
 	// all for an agent that has no sessions to continue: a run of such an agent
 	// begins again, in the same worktree and with the task in hand.
 	ContinueArgs(session string) []string
+	// AccessEnv returns the variables that tell the agent what it may read outside
+	// the worktree of the run, and it is the one place where the rights of a run are
+	// given: every profile names them the way its own agent reads them, and a run
+	// writes down what it handed over (docs/DESIGN.md §7d). The environment of
+	// crewflow itself is passed in, because a person may have put settings of their
+	// own in it and a run of the policy of the project holds over them.
+	AccessEnv(policy access.Policy, environ []string) ([]string, error)
 }
 
 // opencodeProgram is the program of the first agent the pilot runs were made with.

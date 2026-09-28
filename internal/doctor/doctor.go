@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/naghuale/crewflow/internal/access"
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
@@ -48,6 +49,22 @@ type Check struct {
 // Report is every check of one run of doctor, in the order they were made.
 type Report struct {
 	Checks []Check `json:"checks"`
+	// Access is what the executor of the project may read outside the worktree of a
+	// task on this machine, and the paths crewflow would not open, because a refusal
+	// of the next run is about a permission that was given here (docs/DESIGN.md §7d).
+	Access Access `json:"access"`
+}
+
+// Access is the reading policy of a run as this machine works it out: the folders the
+// commands of the project named, the places that are closed whatever the project
+// wrote, and every path that was refused with the reason why.
+type Access struct {
+	// Read are the folders the executor of a run may read outside its worktree.
+	Read []string `json:"read"`
+	// Deny are the places crewflow keeps closed to it, whatever the project asked for.
+	Deny []string `json:"deny"`
+	// Rejected are the paths of the project that crewflow would not open, and why.
+	Rejected []access.Problem `json:"rejected"`
 }
 
 // OK reports whether nothing failed, which is what decides the exit code.
@@ -68,6 +85,11 @@ type Env struct {
 	Run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
 	// ConfigPath is the crewflow.toml to read.
 	ConfigPath string
+	// Home is the home of the person crewflow runs for: what a leading "~/" in the
+	// file of the project stands for, and where the places that hold secrets are. It
+	// is given and not read from the process, so that a test of doctor resolves no
+	// path against the home of the person who runs the tests.
+	Home string
 	// TempDir is the empty folder the probe runs the executor in, so that a
 	// probe touches nothing of the project.
 	TempDir string
@@ -90,6 +112,7 @@ func Run(ctx context.Context, env Env) Report {
 	}
 	c.roles(ctx, cfg)
 	c.executors(cfg)
+	c.reading(ctx, cfg)
 	if env.Probe {
 		c.probe(ctx, cfg)
 	}
@@ -98,10 +121,13 @@ func Run(ctx context.Context, env Env) Report {
 	return c.report()
 }
 
-// checker makes the checks of one Run and keeps them in order.
+// checker makes the checks of one Run and keeps them in order, together with the
+// reading policy of the project, which is not a check but a part of what a run is
+// about to be given.
 type checker struct {
 	env    Env
 	checks []Check
+	access Access
 }
 
 // add puts a check into the report.
@@ -109,9 +135,15 @@ func (c *checker) add(check Check) {
 	c.checks = append(c.checks, check)
 }
 
-// report is what Run returns.
+// report is what Run returns. The reading policy is there even when the file of the
+// project could not be read, as three empty lists: an orchestrator reads them on every
+// report and a field that is missing in one of the two is a field to guard against in
+// a script.
 func (c *checker) report() Report {
-	return Report{Checks: c.checks}
+	if c.access.Read == nil {
+		c.access = Access{Read: []string{}, Deny: []string{}, Rejected: []access.Problem{}}
+	}
+	return Report{Checks: c.checks, Access: c.access}
 }
 
 // config reads the project file, which every check below needs: which executor

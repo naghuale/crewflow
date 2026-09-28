@@ -1,0 +1,1 @@
+{"permission":{"edit":{"**/.env":"deny","**/.env.*":"deny","/Users/someone/.aws/**":"deny","/Users/someone/.ssh/**":"deny","/Users/someone/go/pkg/mod/**":"deny","/usr/local/go/**":"deny"},"external_directory":{"**/.env":"deny","**/.env.*":"deny","/Users/someone/.aws/**":"deny","/Users/someone/.ssh/**":"deny","/Users/someone/go/pkg/mod/**":"allow","/usr/local/go/**":"allow"}}}

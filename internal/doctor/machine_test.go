@@ -23,6 +23,9 @@ type machine struct {
 	lookedUp []string
 	// ran are the commands Run started, in order.
 	ran []command
+	// cache is the folder a tool of a project names as the place of its cache, and
+	// it is a folder of the test: a test of the report opens nothing of a person.
+	cache string
 	// run starts a command. It is a field so that a test may make the machine
 	// answer, or hang, whatever it needs.
 	run func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
@@ -71,15 +74,29 @@ func (m *machine) fails(commandLine, line string) *machine {
 	return m
 }
 
-// env is the environment that checks this machine.
+// env is the environment that checks this machine. The home of the person is a
+// folder of the test: a temporary folder of a test may be under a link, and the policy
+// of reading follows every link before it opens anything, so the test works with the
+// paths as this machine holds them.
 func (m *machine) env(t *testing.T, configPath string) Env {
 	t.Helper()
 	return Env{
 		LookPath:   m.lookPath,
 		Run:        m.run,
 		ConfigPath: configPath,
+		Home:       onThisMachine(t, t.TempDir()),
 		TempDir:    t.TempDir(),
 	}
+}
+
+// onThisMachine is the path as the machine of a test holds it.
+func onThisMachine(t *testing.T, path string) string {
+	t.Helper()
+	followed, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("follow %s: %v", path, err)
+	}
+	return followed
 }
 
 // lookPath is exec.LookPath on this machine.

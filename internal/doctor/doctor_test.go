@@ -61,7 +61,7 @@ run = ["golangci-lint", "run", "./..."]
 	report := runOn(t, m, config)
 
 	want := []string{
-		"config", "git", "gh", "gh login", "executor", "executor fallback 1",
+		"config", "git", "gh", "gh login", "executor", "executor fallback 1", "access read",
 		"gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {
@@ -640,6 +640,127 @@ func TestRunProbeWithoutTemporaryFolder(t *testing.T) {
 	}
 }
 
+// TestRunShowsWhatTheAgentMayRead is the section of the report a person reads before a
+// task starts: the folders the commands of the project named, and every path crewflow
+// would not open with the reason why. A refusal of a run is about one of these two
+// lists, and there is nowhere else to look for it (docs/DESIGN.md §7d).
+func TestRunShowsWhatTheAgentMayRead(t *testing.T) {
+	cases := []struct {
+		name string
+		// access is the [access] table of the project.
+		access string
+		// wantsCache says that the folder the tool named is the whole of what the
+		// executor may read, wantRejected are the words the check of the refused paths
+		// has to hold, and wantRefused how many of them there are. No words at all
+		// means that there is no such check.
+		wantsCache   bool
+		wantRejected []string
+		wantRefused  int
+	}{
+		{
+			name:   "a project that says nothing",
+			access: "\n[access]\n",
+		},
+		{
+			name:       "a project that says where its dependencies are",
+			access:     "\n[access]\nread_from = [[\"go\", \"env\", \"GOMODCACHE\"]]\n",
+			wantsCache: true,
+		},
+		{
+			name:         "a project that named a place of secrets and the root of a disk",
+			access:       "\n[access]\nread = [\"~/.ssh\", \"/\"]\n",
+			wantRejected: []string{"~/.ssh", "where secrets are", "/", "the root of a disk"},
+			wantRefused:  2,
+		},
+		{
+			name:         "a tool that cannot say where they are",
+			access:       "\n[access]\nread_from = [[\"npm\", \"config\", \"get\", \"cache\"]]\n",
+			wantRejected: []string{"npm config get cache", "did not run"},
+			wantRefused:  1,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine().has("git", "gh", "agent").
+				prints("git --version", "git version 2.47.1\n").
+				prints("gh --version", "gh version 2.62.0\n").
+				prints("gh auth status", "  ✓ Logged in to github.com account octocat\n")
+			// The tool of the project names the folder it keeps its cache in, and the
+			// folder is one of the test: a test of the report opens nothing of a
+			// person.
+			m.run = m.answering("go", func(context.Context) ([]byte, []byte, int, error) {
+				return []byte(m.cache + "\n"), nil, 0, nil
+			})
+			env := m.env(t, writeConfig(t, baseConfig+tc.access))
+			m.cache = filepath.Join(env.Home, "go", "pkg", "mod")
+			if err := os.MkdirAll(m.cache, 0o700); err != nil {
+				t.Fatalf("make %s: %v", m.cache, err)
+			}
+			m.cache = onThisMachine(t, m.cache)
+
+			report := Run(t.Context(), env)
+
+			read := checkOf(t, report, "access read")
+			if read.Status != OK {
+				t.Errorf("check \"access read\" = %q (%s), want ok", read.Status, read.Detail)
+			}
+			switch {
+			case tc.wantsCache && !slices.Equal(report.Access.Read, []string{m.cache}):
+				t.Errorf("the report allows reading %v, want the folder of the cache %q", report.Access.Read, m.cache)
+			case tc.wantsCache && read.Detail != m.cache:
+				t.Errorf("check \"access read\" detail = %q, want the folder of the cache %q", read.Detail, m.cache)
+			case !tc.wantsCache && len(report.Access.Read) != 0:
+				t.Errorf("the report allows reading %v, want nothing: the project named no folder", report.Access.Read)
+			case !tc.wantsCache && !strings.Contains(read.Detail, "names no folder"):
+				t.Errorf("check \"access read\" detail = %q, want it to say that the project named nothing", read.Detail)
+			}
+			// The keys of the person are closed to the executor whatever the project
+			// wrote, and the report says where they are.
+			if !slices.Contains(report.Access.Deny, filepath.Join(env.Home, ".ssh")) {
+				t.Errorf("the closed places are %v, want the keys of the person among them", report.Access.Deny)
+			}
+			rejected, isCheck := checkByName(report, "access rejected")
+			switch {
+			case len(tc.wantRejected) == 0 && isCheck:
+				t.Errorf("check \"access rejected\" = %q (%s), want no such check", rejected.Status, rejected.Detail)
+			case len(tc.wantRejected) == 0 && len(report.Access.Rejected) != 0:
+				t.Errorf("the refused paths are %+v, want none", report.Access.Rejected)
+			case len(tc.wantRejected) > 0:
+				// A refused path is worth a look and not a broken machine: the run goes
+				// on without it, and a task may still run.
+				if rejected.Status != Warn || !report.OK() {
+					t.Errorf("the refused paths are %q and the report is ok %t, want a warning that does not stop crewflow",
+						rejected.Status, report.OK())
+				}
+				if !strings.Contains(rejected.Hint, "crewflow.toml") {
+					t.Errorf("check \"access rejected\" hint = %q, want it to name the file to change", rejected.Hint)
+				}
+				for _, want := range tc.wantRejected {
+					if !strings.Contains(rejected.Detail, want) {
+						t.Errorf("check \"access rejected\" detail = %q, want it to mention %q", rejected.Detail, want)
+					}
+				}
+				if len(report.Access.Rejected) != tc.wantRefused {
+					t.Errorf("the refused paths are %+v, want %d of them", report.Access.Rejected, tc.wantRefused)
+				}
+			}
+		})
+	}
+}
+
+// TestRunOfAReportWithoutTheFileOfTheProject: the reading policy is a part of every
+// report, and a report made without a file to read holds empty lists rather than no
+// lists at all, because an orchestrator reads them on every report.
+func TestRunOfAReportWithoutTheFileOfTheProject(t *testing.T) {
+	m := newMachine().has("git").prints("git --version", "git version 2.47.1\n")
+
+	report := runOn(t, m, filepath.Join(t.TempDir(), "missing.toml"))
+
+	if report.Access.Read == nil || report.Access.Deny == nil || report.Access.Rejected == nil {
+		t.Errorf("the report of a run without a file holds %+v, want three empty lists", report.Access)
+	}
+}
+
 // runOn checks the fake machine and returns what the report says.
 func runOn(t *testing.T, m *machine, configPath string) Report {
 	t.Helper()
@@ -657,6 +778,17 @@ func checkOf(t *testing.T, report Report, name string) Check {
 	}
 	t.Fatalf("no check named %q in %v", name, checkNames(report))
 	return Check{}
+}
+
+// checkByName returns the check with the name and whether there is one, for a test
+// that is about a check that may be absent.
+func checkByName(report Report, name string) (Check, bool) {
+	for _, check := range report.Checks {
+		if check.Name == name {
+			return check, true
+		}
+	}
+	return Check{}, false
 }
 
 // checkNames are the names of the checks, in the order they were made.

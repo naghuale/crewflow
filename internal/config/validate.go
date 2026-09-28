@@ -65,6 +65,9 @@ func (c Config) Validate() error {
 	if err := validateGates(c.Gates); err != nil {
 		return err
 	}
+	if err := validateAccess(c.Access); err != nil {
+		return err
+	}
 	if err := validateTimeout("ci.timeout", c.CI.Timeout); err != nil {
 		return err
 	}
@@ -160,6 +163,24 @@ func validateGates(gates []Gate) error {
 			return fmt.Errorf("%s.run: must not be empty: a gate without a command cannot fail", key)
 		}
 		names = append(names, gate.Name)
+	}
+	return nil
+}
+
+// validateAccess checks the commands that name the folders of a project: a command
+// line with no program in it cannot print a path, and a path the file names has to
+// say something about itself, because an empty one is not a place on the machine.
+func validateAccess(access Access) error {
+	for i, command := range access.ReadFrom {
+		if len(command) == 0 {
+			return fmt.Errorf("access.read_from[%d]: must not be empty: "+
+				"it is a command that prints the folders the project may read", i)
+		}
+	}
+	for i, path := range access.Read {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("access.read[%d]: must not be empty: it is a path on the machine", i)
+		}
 	}
 	return nil
 }

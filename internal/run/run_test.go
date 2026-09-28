@@ -173,7 +173,7 @@ func TestRunOutcomes(t *testing.T) {
 
 			// What the executor wrote is left where a person can read it, and the
 			// state of the task says how the attempt ended.
-			if got := read(t, result.Journal); got != tc.stdout {
+			if got := whatWasWritten(t, result.Journal); got != tc.stdout {
 				t.Errorf("the journal holds %q, want what the executor wrote", got)
 			}
 			if got := read(t, result.ErrorJournal); got != tc.stderr {

@@ -30,6 +30,19 @@ refused without asking, and a refusal ends your run. Put scratch files and probe
 `.scratch/` at the root of the worktree (it is git-ignored) and delete them before you commit.
 `go test` and `t.TempDir()` are fine: the toolchain manages its own temporary files.
 
+## Reading outside the worktree
+
+You may **read** the dependencies of the project: `go env GOMODCACHE` and `go env GOROOT` are open
+to you for reading, because `[access]` in `crewflow.toml` names them. Read the sources of a library
+in the module cache with your own tools — `read`, `grep`, `go doc`, whatever fits — instead of
+giving up on it. `go doc -src` is not required and is not a workaround for anything.
+
+Writing there is refused, and so is reading the places that hold secrets (`~/.ssh`, `~/.gnupg`,
+`~/Library/Keychains`, `~/.config/gh`, `~/.aws`, `~/.netrc`, `~/.docker/config.json`, `~/.kube`,
+`.env` files). A refusal is a fact, not a puzzle to get around: if you need one of those, or a
+path that is not open, stop with `BLOCKED: needs <what> — <why>` and say which path was refused.
+`crewflow doctor` shows what is open on this machine.
+
 ## If something is in the way
 
 - If the task is ambiguous or contradicts the code, do not guess: stop and say so in your
@@ -37,7 +50,7 @@ refused without asking, and a refusal ends your run. Put scratch files and probe
 - If you need access outside the worktree, a system package, a secret or a network service
   that is not already available, do not work around it: stop with `BLOCKED: needs <what> — <why>`.
 - Never invent an API from memory. Check the real source (`go doc`, the module source in the
-  module cache via `go doc`, the official docs in the repo).
+  module cache, the official docs in the repo).
 
 ## Code conventions
 

@@ -1,0 +1,10 @@
+# A command with no program in it: it cannot print where anything is.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[access]
+read_from = [[]]

@@ -24,6 +24,11 @@ const theWork = `{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","t
 const theRefusals = "INFO  service=default starting opencode\n" +
 	"! permission requested: external_directory (/tmp/*); auto-rejecting\n"
 
+// configContent is the variable of the profile of OpenCode in which the rights of a
+// run are named, and a test of a run finds the rights of the run in the environment
+// the executor was started with (docs/DESIGN.md §7d).
+const configContent = "OPENCODE_CONFIG_CONTENT"
+
 // TestRunWritesTheJournalWhileTheExecutorWorks is the case the pilot of M1.4 showed
 // the need for: the journal of a run holds what the executor wrote while it is still
 // writing it, and the state of the task says the attempt is going. A run that
@@ -44,7 +49,7 @@ func TestRunWritesTheJournalWhileTheExecutorWorks(t *testing.T) {
 
 	<-wrote
 	journals := newJournals(m.home, "naghuale-crewflow")
-	if got := read(t, journals.JournalPath(43, 1)); got != theRun {
+	if got := whatWasWritten(t, journals.JournalPath(43, 1)); got != theRun {
 		t.Errorf("the journal holds %q while the executor works, want what it wrote", got)
 	}
 	running := stateOf(t, m, 43)
@@ -70,7 +75,7 @@ func TestRunWritesTheJournalWhileTheExecutorWorks(t *testing.T) {
 	if got := after.Attempts[0].Outcome; got != ChangeRequestOpened {
 		t.Errorf("the outcome of the attempt in the state = %q after the run, want %q", got, ChangeRequestOpened)
 	}
-	if got := read(t, after.Attempts[0].Journal); got != theRun {
+	if got := whatWasWritten(t, after.Attempts[0].Journal); got != theRun {
 		t.Errorf("the journal holds %q after the run, want what the executor wrote", got)
 	}
 }
@@ -116,7 +121,7 @@ func TestRunStoppedByAPerson(t *testing.T) {
 	}
 	// What the executor had written until it was stopped is where the continuation
 	// of the run reads it from.
-	if got := read(t, attempt.Journal); got != theRun {
+	if got := whatWasWritten(t, attempt.Journal); got != theRun {
 		t.Errorf("the journal of the stopped run holds %q, want what the executor wrote", got)
 	}
 }
@@ -160,9 +165,17 @@ func TestRunKeepsTheTemporaryFilesOfTheExecutorInTheWorktree(t *testing.T) {
 	} else if !info.IsDir() {
 		t.Errorf("%s is not a folder, want the folder the executor keeps its temporary files in", scratch)
 	}
-	want := []string{"TMPDIR=" + scratch, "TMP=" + scratch, "TEMP=" + scratch}
-	if got := m.envOf(); !slices.Equal(got, want) {
-		t.Errorf("the executor was started with the environment %q, want %q", got, want)
+	// The rights of the run go to the executor as well: the environment of a run is
+	// the policy of reading and the folder of the temporary files, and nothing else
+	// changes because of this.
+	handed := m.envOf()
+	for _, want := range []string{"TMPDIR=" + scratch, "TMP=" + scratch, "TEMP=" + scratch} {
+		if !slices.Contains(handed, want) {
+			t.Errorf("the executor was started with the environment %q, want %q in it", handed, want)
+		}
+	}
+	if len(handed) != 4 || !strings.HasPrefix(handed[0], configContent+"=") {
+		t.Errorf("the executor was started with the environment %q,\nwant the rights of the run and the folder of the temporary files", handed)
 	}
 	// The assignment names the folder as a path, so that the agent is not left to
 	// work out where it may write.

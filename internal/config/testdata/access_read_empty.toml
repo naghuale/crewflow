@@ -1,0 +1,10 @@
+# A path of spaces is not a place on the machine.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[access]
+read = ["  "]

@@ -300,3 +300,15 @@ func read(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// whatWasWritten is what the executor wrote: the journal of a run without its first
+// line, which is the rights the run was started with and which is crewflow's own
+// rather than the agent's (docs/DESIGN.md §7d).
+func whatWasWritten(t *testing.T, path string) string {
+	t.Helper()
+	_, written, found := strings.Cut(read(t, path), "\n")
+	if !found {
+		t.Fatalf("the journal %s holds no line of its own, want the rights of the run and then what the executor wrote", path)
+	}
+	return written
+}
