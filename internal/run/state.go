@@ -46,6 +46,13 @@ type State struct {
 	// runs of a project points at the work without asking the host anything
 	// (docs/DESIGN.md §7).
 	Change *Change `json:"change,omitempty"`
+	// MergedSHA is the commit that was fast-forwarded into the default branch of the
+	// project, and VerifiedAt when the merge was checked after it. Both are facts of
+	// the process and not a verdict: whether the change may be merged is worked out
+	// from the host and from git every time it is asked for, and what the state says
+	// here is what has already happened (docs/DESIGN.md §7h).
+	MergedSHA  string     `json:"merged_sha,omitempty"`
+	VerifiedAt *time.Time `json:"verified_at,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
 }
@@ -253,6 +260,15 @@ func newJournals(home, repo string) Journals {
 	return Journals{home: home, repo: repo}
 }
 
+// JournalsOf is where the files of one project are kept under the root crewflow has
+// of its own: the state of every task, the journal of every run and the journal of
+// every merge of it. A command outside this package that keeps what it knows of a
+// task — the merge of a change, the check after it — writes it where a run of that
+// task wrote its own, so that a person has one place to look (docs/DESIGN.md §7).
+func JournalsOf(home, repo string) Journals {
+	return newJournals(home, repo)
+}
+
 // StatePath is the file that says where the last run of a task stopped.
 func (j Journals) StatePath(number int) string {
 	return filepath.Join(j.stateFolder(), strconv.Itoa(number)+".json")
@@ -274,6 +290,14 @@ func (j Journals) JournalPath(number, attempt int) string {
 // errorJournalPath is the way out of an attempt, next to what it wrote.
 func (j Journals) errorJournalPath(number, attempt int) string {
 	return filepath.Join(j.home, "runs", j.repo, j.file(number, attempt, ".err"))
+}
+
+// MergeJournalPath is what the merge of the change of a task wrote, next to the
+// journals of the runs of that task: a merge is not an attempt of the executor and
+// has no attempt of its own, and what git said about it is kept where a person
+// looks for what a task of theirs did (docs/DESIGN.md §6, §7h).
+func (j Journals) MergeJournalPath(number int) string {
+	return filepath.Join(j.home, "runs", j.repo, strconv.Itoa(number)+"-merge.jsonl")
 }
 
 // file is the name of the file of an attempt, whatever it holds.

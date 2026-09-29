@@ -307,8 +307,10 @@ func TestEvaluate(t *testing.T) {
 
 // TestEveryReasonIsJudged is the promise the table of §7h makes and the tests above
 // keep: a reason the gate can give is a reason a test names. The two that the gate
-// cannot give are the ones of the push of a merge, which is the next step of the
-// cycle and is written by the merge and not by [Evaluate] (docs/DESIGN.md §7h).
+// cannot give are the ones of the push of a merge: they are written by the merge of the
+// cycle and not by [Evaluate], and the tests of package merge walk every reason of this
+// table against a real git — a table case there and its meta-test that fails when a
+// reason has none (docs/DESIGN.md §7h).
 func TestEveryReasonIsJudged(t *testing.T) {
 	judged := map[Reason]bool{}
 	for _, reason := range Reasons {

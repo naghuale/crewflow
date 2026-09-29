@@ -38,6 +38,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runTask(args[1:], stdout, stderr)
 	case "review":
 		return runReview(args[1:], stdout, stderr)
+	case "merge":
+		return runMerge(args[1:], stdout, stderr)
+	case "verify":
+		return runVerify(args[1:], stdout, stderr)
 	case "auth":
 		return runAuth(args[1:], stdout, stderr)
 	case "version":
@@ -72,8 +76,9 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 
 // usage lists the subcommands: a check of the machine, a run of a task, what a check
 // of a task is missing before it is run, a watch of a run that is going on, a list of
-// the runs of the project, a review of a change, the key of the app a run works as,
-// and the version. The rest of the cycle arrives with the next steps of
+// the runs of the project, a review of a change, the merge of a change the gate allows
+// and the check of a merge that went through, the key of the app a run works as, and
+// the version. The rest of the cycle arrives with the next steps of
 // docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
@@ -89,6 +94,8 @@ Subcommands:
   task watch <N> Show what the executor of a task is doing, as it is doing it
   task list      List the runs of the project, and of the whole machine with -all
   review <PR>    Say whether a change may be merged, and why it may not (§7h)
+  merge <PR>     Merge a change the gate allows: fast-forward of the approved commit (§7h)
+  verify <PR>    Check a merge: the branch of the host, the task and the CI of it (§7h)
   auth app       The GitHub App a run works as: import its key, check it (§7i)
   help           Show this message
   version        Print the version, the commit and the build time
@@ -98,6 +105,8 @@ Subcommands:
   crewflow task watch <N> [-config path] [-attempt K]
   crewflow task list [-all] [-json] [-config path] [-repo path]
   crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
+  crewflow merge <PR> [-config path] [-repo path] [-json]
+  crewflow verify <PR> [-config path] [-repo path] [-json]
   crewflow auth app import <file.pem> [-config path]
   crewflow auth app check [-config path] [-json]
 `)

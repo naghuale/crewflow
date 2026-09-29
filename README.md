@@ -48,10 +48,12 @@ Works today:
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
   one of the reasons of §7h says why it may not
+- ✅ the merge itself: `crewflow merge` fast-forwards the branch to exactly the approved
+  commit and proves it with `git ls-remote`; `crewflow verify` checks the branch, the
+  issue and the CI of it afterwards
 
 In progress:
 
-- ⏳ the merge itself and the check after it (`crewflow merge`, `crewflow verify`)
 - ⏳ the owner's acceptance of a review build before a merge
 - ⏳ `crewflow init` and recovery of an interrupted task
 
@@ -75,6 +77,8 @@ crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
 crewflow review 14         # may PR #14 be merged, and if not, why not
 crewflow review 14 -approve   # write REVIEW: APPROVED <full sha> on the head
+crewflow merge 14         # fast-forward main to that sha, and prove where main is
+crewflow verify 14        # main is the merged commit, the issue is closed, CI is green
 crewflow task watch 12     # follow a run live
 crewflow task list         # runs of this project, the ones that want you on top, and what else runs here
 crewflow task list -all    # every run of every project on this machine
@@ -111,6 +115,36 @@ table of §7h — `approval-missing`, `approval-untrusted`, `approval-edited`, `
 - anything the host did not answer is `forge-unavailable`, never a pass.
 
 See §7h of the design for the whole rule.
+
+## The merge
+
+`crewflow merge <PR>` asks the gate again, in the moment of the merge, and pushes
+nothing unless it says the change may go in. What it pushes is one refspec of one commit —
+`<full sha>:refs/heads/<default branch>`, no `--force`, given to git as arguments and
+never as a line of a shell, because in a shell `$SHA:refs/…` is a modifier of a variable
+and not a refspec.
+
+The outcome is worked out from `git ls-remote`, not from the code `git push` exited with:
+
+- `merged` — the branch of the host is at the approved commit; the task is waited for
+  (the host closes it), the commit is recorded in the state of the task and the worktree
+  of the task is taken away;
+- `already-merged` — the branch already holds the head of the change, nothing was pushed;
+- `push-rejected` / `not-fast-forward` — the host refused the push, or the branch moved
+  on between the check and the push and the merge arrived too late;
+- `verify-mismatch` — the push was accepted and the branch is somewhere else;
+- a refusal of the gate — one reason of §7h and what to do about it, code ≠ 0, nothing
+  pushed at all.
+
+A merge that went through and a cleanup that did not is `merged-with-cleanup-warning`: the
+merge stands, and the report says what is left to take away by hand. Every command of git
+and everything it wrote is in `~/.crewflow/runs/<repo>/<N>-merge.jsonl`, next to the facts
+the gate judged.
+
+`crewflow verify <PR>` asks the three questions that close the cycle: is the branch of the
+host at the commit that was merged, is the task closed, is the CI of that branch green. It
+waits for the checks while they are going on, up to `[ci] timeout`, and records the moment
+of the check in the state of the task.
 
 ## Executors
 

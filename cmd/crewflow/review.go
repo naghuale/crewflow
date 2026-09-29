@@ -49,7 +49,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 	approve := flags.Bool("approve", false, "write a record of an approval of the head of the change")
 	requestChanges := flags.String("request-changes", "", "write a record asking for changes, with the findings in this file")
 	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
-	change, code := takeChange(args, flags, stderr)
+	change, code := takeChange("review", args, flags, stderr)
 	if code != exitOK {
 		return code
 	}
@@ -286,11 +286,12 @@ func reviewFlags(stderr io.Writer) *flag.FlagSet {
 	return flags
 }
 
-// takeChange takes the number of the change request out of the arguments and parses
-// the rest as its flags: a person writes the number first and the flag package of Go
-// stops at the first word that is not a flag, so both orders have to mean the same
-// thing.
-func takeChange(args []string, flags *flag.FlagSet, stderr io.Writer) (int, int) {
+// takeChange takes the number of the change request out of the arguments of the command
+// and parses the rest as its flags: a person writes the number first and the flag
+// package of Go stops at the first word that is not a flag, so both orders have to mean
+// the same thing. The command is named in every refusal, because a wrong call says which
+// command it was a wrong call of.
+func takeChange(command string, args []string, flags *flag.FlagSet, stderr io.Writer) (int, int) {
 	number, rest := "", args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		number, rest = args[0], args[1:]
@@ -302,13 +303,13 @@ func takeChange(args []string, flags *flag.FlagSet, stderr io.Writer) (int, int)
 	case number == "" && flags.NArg() == 1:
 		number = flags.Arg(0)
 	case number != "" && flags.NArg() > 0:
-		fmt.Fprintf(stderr, "crewflow review: unexpected argument %q\n\n", flags.Arg(0))
+		fmt.Fprintf(stderr, "crewflow %s: unexpected argument %q\n\n", command, flags.Arg(0))
 		usage(stderr)
 		return 0, exitUsage
 	}
 	change, err := strconv.Atoi(number)
 	if err != nil || change < 1 {
-		fmt.Fprintf(stderr, "crewflow review: which change? a number, as in `crewflow review 7`\n\n")
+		fmt.Fprintf(stderr, "crewflow %s: which change? a number, as in `crewflow %s 7`\n\n", command, command)
 		usage(stderr)
 		return 0, exitUsage
 	}
