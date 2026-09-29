@@ -32,6 +32,15 @@ const wholeTask = "## Why\n\nA person builds a long command by hand for every ta
 	"### Acceptance criteria\n\n- [ ] the run opens a change request\n\n" +
 	"### Boundaries\n\n```\ninternal/run/**\n```\n\n</details>\n"
 
+// The refusals a run of a test is stopped by, in the words of the agent that is
+// refused: the temporary folder of the machine, which is a habit crewflow answers by
+// itself, and a place of secrets, which is closed whatever the project wrote
+// (docs/DESIGN.md §7a, §7d).
+const (
+	theRefusalToTmp     = "! permission requested: external_directory (/tmp/*); auto-rejecting\n"
+	theRefusalToASecret = "! permission requested: external_directory (~/.ssh/config); auto-rejecting\n"
+)
+
 // TestRunTaskOpenedTheChangeRequest is the case a person waits for: the run opened
 // the change request of its branch, and the report says where it is, what a person
 // has to look at, and where the journal of the run is.
@@ -68,20 +77,30 @@ func TestRunTaskOpenedTheChangeRequest(t *testing.T) {
 // because a script has to be able to tell them from a run that went well.
 func TestRunTaskExitCode(t *testing.T) {
 	cases := []struct {
-		name  string
-		host  *host
-		want  []string
+		name string
+		host *host
+		want []string
+		// notOK says that the run was not what a run is for, and the code of the
+		// command is not zero.
 		notOK bool
-		// refused says that the executor was refused a permission, which ends the
-		// run with the code of a success.
-		refused bool
+		// refusal is what the executor says on the way out: a run that is refused a
+		// permission ends with the code of a success, and what it was refused is the
+		// whole difference between the cases.
+		refusal string
 	}{
 		{
 			name:    "the run was refused a permission",
 			host:    &host{task: taskOf(43)},
 			want:    []string{"blocked-permission", "external_directory /tmp/*"},
 			notOK:   true,
-			refused: true,
+			refusal: theRefusalToTmp,
+		},
+		{
+			name:    "the run was refused a place of secrets",
+			host:    &host{task: taskOf(43)},
+			want:    []string{"blocked-permission", "external_directory ~/.ssh/config", "a secret"},
+			notOK:   true,
+			refusal: theRefusalToASecret,
 		},
 		{
 			name:  "the run ended without a change request",
@@ -104,8 +123,8 @@ func TestRunTaskExitCode(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.refused {
-				tc.host.refuses(t)
+			if tc.refusal != "" {
+				tc.host.refusal = tc.refusal
 			}
 			tc.host.use(t)
 			project := tc.host.config(t)
@@ -263,8 +282,7 @@ func TestRunTaskContinue(t *testing.T) {
 // the task by hand, and a run nobody asked for has to be visible as one
 // (docs/DESIGN.md §7a).
 func TestRunTaskSaysItWentOnByItself(t *testing.T) {
-	host := &host{task: taskOf(43)}
-	host.refuses(t)
+	host := &host{task: taskOf(43), refusal: theRefusalToTmp}
 	host.use(t)
 	project := host.config(t)
 	var stdout, stderr bytes.Buffer
@@ -1275,12 +1293,6 @@ func (h *host) use(t *testing.T) {
 // never the home of the person who runs them.
 func testHome() string {
 	return os.Getenv("HOME")
-}
-
-// refuses is the way out of a run of a test: the executor exits zero, as it does
-// when a permission is refused, and the refusal is on it.
-func (h *host) refuses(_ *testing.T) {
-	h.refusal = "! permission requested: external_directory (/tmp/*); auto-rejecting\n"
 }
 
 // config is the crewflow.toml of the project of this host: its worktrees are a

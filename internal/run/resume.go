@@ -115,15 +115,18 @@ func (n resume) line() string {
 }
 
 // goesOnByItself is what crewflow goes on with after an attempt that stopped on a
-// habit it knows, and an empty resume where a run has to stop. Four things keep a run
+// habit it knows, and an empty resume where a run has to stop. Five things keep a run
 // from going on by itself:
 //
 //   - it did not stop on a refusal at all, or it was stopped by a person or by the
 //     time of the project: those are decided by a person, and the orchestrator knows
 //     what a person meant;
+//   - it was refused a place of secrets, or a command that reaches for one: a run that
+//     was reading a key is not a run that forgot where its scratch is, and a refusal
+//     of secrets reaches the orchestrator whatever the shape of the command was
+//     (docs/DESIGN.md §7a, §7d);
 //   - one of its refusals is a habit of nobody's: the text of a habit would answer
-//     for another, and a refusal of `~/.ssh` is not a habit of a run that forgets
-//     where its scratch is;
+//     for another;
 //   - the refusals of the attempt are of more than one habit, for the same reason;
 //   - the attempt before it went on by itself for this very habit: an executor that
 //     was told where its scratch is and wrote into /tmp again is not to be told a
@@ -152,12 +155,12 @@ func (r *runner) oneHabitOf(rejections []string, calls []profile.Call) (resume, 
 	if len(rejections) == 0 {
 		return resume{}, false
 	}
-	one, known := habits[habitOf(rejections[0], calls, r.worktree)]
+	one, known := habits[r.habitOf(rejections[0], calls)]
 	if !known {
 		return resume{}, false
 	}
 	for _, rejection := range rejections[1:] {
-		if habitOf(rejection, calls, r.worktree) != one.reason {
+		if r.habitOf(rejection, calls) != one.reason {
 			return resume{}, false
 		}
 	}
@@ -178,16 +181,23 @@ func (r *runner) ended(state State) Attempt {
 // and the whole of what crewflow knows of the ways an executor stops (docs/DESIGN.md
 // §7a). A refusal names the kind of the permission and what it was about, and only
 // the second of the two says whether the run made a mistake crewflow knows of.
-func habitOf(refusal string, calls []profile.Call, worktree string) reason {
+//
+// A refusal that is about a place of secrets is no habit of anybody, whatever the shape
+// of the command it came in: the habits of this file are about where a run keeps its
+// temporary files and how it addresses a folder, and a run that was reading a key has
+// stopped for a reason of its own that a person decides about (docs/DESIGN.md §7d, §7e).
+func (r *runner) habitOf(refusal string, calls []profile.Call) reason {
 	path := refusedPath(refusal)
 	switch {
 	case path == "":
 		return reasonOther
+	case r.closed.reaches(path, calls, r.worktree) != "":
+		return reasonOther
 	case temporary(path):
 		return reasonTmp
-	case beside(path, worktree):
+	case beside(path, r.worktree):
 		return reasonOutside
-	case onlyNamed(path, calls, worktree):
+	case onlyNamed(path, calls, r.worktree):
 		return reasonMention
 	default:
 		return reasonOther

@@ -2,11 +2,14 @@ package run
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/naghuale/crewflow/internal/access"
+	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/run/profile"
 )
 
@@ -268,9 +271,157 @@ func TestRunGoesOnByItselfAfterAPathOfTheMachineWasOnlyWrittenDown(t *testing.T)
 	}
 }
 
+// theCall is the event of a run that called a shell with a command that was refused:
+// where a run reads the commands of a run from, and what tells it that a path of the
+// machine was only written down in one of them (docs/DESIGN.md §7a).
+func theCall(command string) string {
+	quoted, err := json.Marshal(command)
+	if err != nil {
+		panic(err)
+	}
+	return `{"type":"tool_use","sessionID":"ses_7fKq2","part":{"tool":"bash","state":{"status":"error",` +
+		`"input":{"command":` + string(quoted) + `}}}}` + "\n"
+}
+
+// TestRunDoesNotGoOnByItselfAfterASecret: a place of secrets is no habit of anybody,
+// and a run that was refused one is not a run crewflow answers by itself — whatever the
+// shape of the command it was refused in. Every place of the deny list of the machine
+// is reached here in each of the three shapes a run is answered by itself on, and the
+// run of every one of them stops for the orchestrator with the refusal said to be what
+// it is (docs/DESIGN.md §7a, §7d).
+func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
+	// The home of the person is one for the whole test, and the places of secrets are
+	// the ones of it: a run reads its closed places against the home it was given, and
+	// a test whose places came from another home would be testing a machine that is
+	// not the one the run is on (docs/DESIGN.md §7d).
+	home := t.TempDir()
+	// The three shapes a run is answered by itself on, each of them reaching for the
+	// place of secrets on the way: the temporary folder of the machine, a path that
+	// climbs out of the worktree, and a heredoc that writes a file of the project with
+	// the place of secrets in the text of it.
+	shapes := []struct {
+		name    string
+		refusal func(t *testing.T, worktree, place string) string
+		command func(t *testing.T, worktree, place string) string
+		note    string
+	}{
+		{
+			name:    "a write under /tmp that reads a secret",
+			refusal: func(*testing.T, string, string) string { return "/tmp/*" },
+			command: func(_ *testing.T, _, place string) string { return "cat '" + place + "' > /tmp/copy" },
+			note:    secretCommand,
+		},
+		{
+			name: "a path that climbs out of the worktree to a secret",
+			refusal: func(t *testing.T, worktree, place string) string {
+				return climbedTo(t, worktree, place)
+			},
+			command: func(t *testing.T, worktree, place string) string {
+				return "cat '" + climbedTo(t, worktree, place) + "' > docs/notes.md"
+			},
+			note: secretPath,
+		},
+		{
+			name:    "a heredoc that writes a secret into a file of the worktree",
+			refusal: func(_ *testing.T, _, place string) string { return place },
+			command: func(_ *testing.T, _, place string) string {
+				return "cat > docs/DESIGN.md <<'EOF'\nthe key is in " + place + "\nEOF"
+			},
+			note: secretPath,
+		},
+	}
+	for _, place := range placesOfSecrets(t, home) {
+		for _, shape := range shapes {
+			t.Run(place+" — "+shape.name, func(t *testing.T) {
+				m := newMachine(t)
+				m.userHome = home
+				worktree := filepath.Join(m.worktrees, "naghuale-crewflow", "43")
+				refused := shape.refusal(t, worktree, place)
+				m.answers["opencode"] = answer{
+					stdout: theCall(shape.command(t, worktree, place)) + theRun,
+					stderr: "! permission requested: external_directory (" + refused + "); auto-rejecting\n",
+				}
+				host := &host{task: taskOf(43), opened: true}
+
+				result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+					Request{Number: 43, RepoDir: m.repo})
+				if err != nil {
+					t.Fatalf("Run returned an error: %v", err)
+				}
+
+				if result.Outcome != BlockedPermission {
+					t.Errorf("the outcome = %q, want %q: a run that reads a secret stops for the orchestrator",
+						result.Outcome, BlockedPermission)
+				}
+				if result.Attempt != 1 || result.AutoResumed != "" {
+					t.Errorf("the run is the attempt %d (resumed for %q), want the first and no resume",
+						result.Attempt, result.AutoResumed)
+				}
+				if got := len(m.commandsOf("opencode")); got != 1 {
+					t.Errorf("the executor was run %d times, want once", got)
+				}
+				// The report says what the refusal was about, so that a person reading
+				// the run does not read a key among the habits of a run.
+				if len(result.Rejections) != 1 {
+					t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
+				}
+				for _, want := range []string{refused, shape.note} {
+					if !strings.Contains(result.Rejections[0], want) {
+						t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
+					}
+				}
+			})
+		}
+	}
+}
+
+// placesOfSecrets is every place the deny list holds for the home given, as a path
+// that can be refused: the folders of the machine in every spelling of it, and the
+// patterns of every machine as a file of a worktree, which is where they are written at
+// on every machine (docs/DESIGN.md §7d).
+func placesOfSecrets(t *testing.T, home string) []string {
+	t.Helper()
+	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
+	if len(policy.Deny) == 0 {
+		t.Fatal("the policy of a machine has no closed place, so there is nothing to test")
+	}
+	worktree := filepath.Join(t.TempDir(), "naghuale-crewflow", "43")
+	var places []string
+	for _, place := range policy.Deny {
+		if _, tail, isPattern := strings.Cut(place, "**/"); isPattern {
+			place = filepath.Join(worktree, strings.ReplaceAll(tail, "*", "local"))
+		}
+		places = append(places, place)
+	}
+	return places
+}
+
+// climbedTo is the place of secrets as a path out of the worktree, which is what a
+// shell of a run writes when it climbs to a key: `..` and what is under it, however
+// deep the worktree lies (docs/DESIGN.md §7a, §7d).
+func climbedTo(t *testing.T, worktree, place string) string {
+	t.Helper()
+	climbed, err := filepath.Rel(worktree, place)
+	if err != nil {
+		t.Fatalf("the path of %s from %s: %v", place, worktree, err)
+	}
+	return climbed
+}
+
+// closedOf is the places that stay closed to the executor on the machine of a test,
+// worked out the way a run works them out — from the access policy of the project and
+// the home of the person — so that a test of the classifier reads the same list a run
+// does and not a list made up for it (docs/DESIGN.md §7d).
+func closedOf(t *testing.T, home string) closed {
+	t.Helper()
+	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
+	return newClosed(policy, home)
+}
+
 // TestHabitOf is the classifier of a refusal, which is the whole of what crewflow
 // knows of the ways an executor stops a run (docs/DESIGN.md §7a).
 func TestHabitOf(t *testing.T) {
+	home := "/home/andrey"
 	worktree := "/home/andrey/.crewflow/worktrees/naghuale-crewflow/43"
 	application := "~/Library/Application Support/crewflow"
 	// A heredoc of a file of the project that holds a path of the machine in its
@@ -332,28 +483,10 @@ func TestHabitOf(t *testing.T) {
 			want:     reasonOther,
 		},
 		{
-			name:     "a place of the machine that is closed for a reason of its own",
-			refusal:  "external_directory ~/.ssh/config",
-			worktree: worktree,
-			want:     reasonOther,
-		},
-		{
-			name:    "the same place where a run of it cannot tell where it stands",
-			refusal: "external_directory ~/.ssh/config",
-			want:    reasonOther,
-		},
-		{
-			name:     "a place of the machine edited in place by a command of a shell",
-			refusal:  "external_directory /Users/someone/.ssh/config",
-			calls:    []profile.Call{{Tool: "bash", Argument: "sed -i '' /Users/someone/.ssh/config"}},
-			worktree: worktree,
-			want:     reasonOther,
-		},
-		{
-			name:    "a path of the machine that a script edits a file of the worktree for",
-			refusal: "external_directory /Users/someone/.ssh/config",
+			name:    "a path of the machine a script edits a file of the worktree for",
+			refusal: "external_directory /Users/someone/Library/Preferences/crewflow",
 			calls: []profile.Call{
-				{Tool: "bash", Argument: "sed -i '' -e 's|/Users/someone/.ssh/config|~/.ssh/config|' docs/DESIGN.md"},
+				{Tool: "bash", Argument: "sed -i '' -e 's|/Users/someone/Library/Preferences/crewflow|~|' docs/DESIGN.md"},
 			},
 			worktree: worktree,
 			want:     reasonMention,
@@ -362,6 +495,13 @@ func TestHabitOf(t *testing.T) {
 			name:    "a refusal of a permission that names no path",
 			refusal: "do something dangerous",
 			want:    reasonOther,
+		},
+		{
+			name:     "a refusal of a permission that names no path, beside a command with a secret in it",
+			refusal:  "do something dangerous",
+			calls:    []profile.Call{{Tool: "bash", Argument: "cat '" + home + "/.ssh/id_ed25519' > /tmp/copy"}},
+			worktree: worktree,
+			want:     reasonOther,
 		},
 		{
 			name:     "a file of the worktree itself",
@@ -375,10 +515,50 @@ func TestHabitOf(t *testing.T) {
 			worktree: worktree,
 			want:     reasonOther,
 		},
+		// A place of secrets is no habit of anybody, whatever the shape of the command
+		// it came in: these three are the shapes a run is answered by itself on, and
+		// none of them makes a run that was reading a key a run that forgot where its
+		// scratch is (docs/DESIGN.md §7d).
+		{
+			name:    "a place of secrets in the spelling the run wrote it in",
+			refusal: "external_directory ~/.ssh/id_ed25519",
+			want:    reasonOther,
+		},
+		{
+			name:     "a place of secrets in the spelling of the machine",
+			refusal:  "external_directory /home/andrey/.ssh/id_ed25519",
+			worktree: worktree,
+			want:     reasonOther,
+		},
+		{
+			name:    "a place of secrets behind the other name of the machine",
+			refusal: "external_directory /private/tmp/../../../home/andrey/.ssh/config",
+			want:    reasonOther,
+		},
+		{
+			name:     "a place of secrets a command climbed to out of the worktree",
+			refusal:  "external_directory ../../../../.ssh/config",
+			worktree: worktree,
+			want:     reasonOther,
+		},
+		{
+			name:     "a file of a pattern of secrets inside the worktree",
+			refusal:  "external_directory " + filepath.Join(worktree, ".env"),
+			worktree: worktree,
+			want:     reasonOther,
+		},
+		{
+			name:     "a place of secrets named in a command that writes a file of the worktree",
+			refusal:  "external_directory /tmp/*",
+			calls:    []profile.Call{{Tool: "bash", Argument: "cat > /tmp/copy <<'EOF'\n" + home + "/.ssh/id_ed25519\nEOF"}},
+			worktree: worktree,
+			want:     reasonOther,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := habitOf(tc.refusal, tc.calls, tc.worktree); got != tc.want {
+			r := &runner{worktree: tc.worktree, closed: closedOf(t, home)}
+			if got := r.habitOf(tc.refusal, tc.calls); got != tc.want {
 				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
 			}
 		})

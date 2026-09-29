@@ -230,6 +230,10 @@ type runner struct {
 	journals Journals
 	// session is the session a continuation goes on in, if there is one to go on in.
 	session string
+	// closed is what stays closed to the executor of this run on this machine, worked
+	// out before it was started and read back when it was refused something: a refusal
+	// of a secret is one crewflow never answers by itself (docs/DESIGN.md §7d).
+	closed closed
 	// auto is the habit of the attempt that is going on, when crewflow is the one
 	// that goes on with it: an attempt the orchestrator continued has none, and a
 	// habit crewflow knows is the one thing a run answers by itself (docs/DESIGN.md
@@ -502,13 +506,18 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	result.Session = r.profile.SessionID(out.Bytes())
 
 	result, judgeErr := r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended)
-	// What the run is going on with is worked out and said while the journal of the
-	// attempt is still open: the line belongs to the attempt that ended here, and a
+	// What the run is going on with is worked out first and said while the journal of
+	// the attempt is still open: the line belongs to the attempt that ended here, and a
 	// watch of it shows why the next one was given what it was (docs/DESIGN.md §7a).
-	if next := r.goesOnByItself(result, state, r.profile.Calls(out.Bytes())); next.reason != reasonNone {
+	calls := r.profile.Calls(out.Bytes())
+	if next := r.goesOnByItself(result, state, calls); next.reason != reasonNone {
 		fmt.Fprintf(files.Out, "%s\n", next.line())
 		r.resume = next
 	}
+	// The refusals of a run are then said with the places of secrets in them: a report
+	// that shows a refusal of a key among refusals of a scratch folder reads as a
+	// habit, and the orchestrator decides on what it reads (docs/DESIGN.md §7a, §7d).
+	result.Rejections = r.closed.mark(result.Rejections, calls, r.worktree)
 	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
 		return result, closeErr
 	}
@@ -547,6 +556,11 @@ func (r *runner) rights(ctx context.Context, files *AttemptFiles) ([]string, err
 	if err != nil {
 		return nil, err
 	}
+	// The agent is told what is closed to it, and the run keeps the same list to read a
+	// refusal against: a run of a machine that was refused a key is a run that stopped
+	// for a reason of its own, whatever the command around it looked like, and the
+	// orchestrator is the one who decides about that (docs/DESIGN.md §7a, §7d).
+	r.closed = newClosed(policy, r.env.UserHome)
 	fmt.Fprintf(files.Out, "crewflow: the executor may read outside the worktree: %s; it may never read: %s\n",
 		listed(policy.Read), listed(policy.Deny))
 	return env, nil

@@ -67,9 +67,10 @@ func TestRunOutcomes(t *testing.T) {
 			wantOK:  true,
 		},
 		{
-			// The refusal here is of a place of the machine that is closed for a
-			// reason of its own and not for a habit of the run: a run that crewflow can
-			// answer goes on by itself, and that is what the tests of a resume are for.
+			// The refusal here is of a place of secrets, which is closed to the
+			// executor whatever the project wrote and is never a habit crewflow
+			// answers by itself: the run stops and the report says what it was
+			// refused (docs/DESIGN.md §7a, §7d).
 			name:    "the run was refused a permission",
 			stdout:  theRun,
 			stderr:  "! permission requested: external_directory (~/.ssh/config); auto-rejecting\n",
@@ -77,7 +78,7 @@ func TestRunOutcomes(t *testing.T) {
 			changed: "internal/run/run.go\n",
 			want:    BlockedPermission,
 			wantRejects: []string{
-				"external_directory ~/.ssh/config",
+				"external_directory ~/.ssh/config" + secretPath,
 			},
 		},
 		{
