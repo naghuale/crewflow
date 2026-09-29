@@ -304,6 +304,37 @@ func TestContinueArgs(t *testing.T) {
 	}
 }
 
+// TestCalls is what a run reads a run of an agent by, apart from what it said: every
+// tool it called and the one argument of the call that names it. A run that works out
+// where a refused path was named needs the whole of a command — a line of a watch is
+// cut off, and a command cut off before the path says nothing about it
+// (docs/DESIGN.md §7a).
+func TestCalls(t *testing.T) {
+	journal := []byte(strings.Join(linesOf(t, "testdata/run.jsonl"), "\n") + "\n")
+
+	got := (opencode{}).Calls(journal)
+
+	want := []Call{
+		{Tool: "bash", Argument: "go test -race -count=1 ./..."},
+		{Tool: "read", Argument: "internal/run/run.go"},
+		{Tool: "grep", Argument: `func \w+ run`},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Calls = %+v,\nwant %+v", got, want)
+	}
+	// A command longer than a line of a watch is whole here: it is the run that asks
+	// what was in it, and a line that is cut off would hide the very path the run
+	// asks about.
+	long := `{"type":"tool-use","sessionID":"ses_7fKq2","part":{"tool":"bash","state":{"status":"completed",` +
+		`"input":{"command":"` + strings.Repeat("a very long command ", 20) + `"}}}}` + "\n"
+	if got := (opencode{}).Calls([]byte(long)); len(got) != 1 || strings.Contains(got[0].Argument, "...") {
+		t.Errorf("Calls of a long command = %+v, want the whole of it", got)
+	}
+	if got := (generic{}).Calls(journal); got != nil {
+		t.Errorf("Calls of an agent crewflow knows nothing about = %+v, want none", got)
+	}
+}
+
 // TestGeneric walks what crewflow can say about an agent it has never run: no
 // session to name, no refusal to read, and no session to continue in — but the
 // word BLOCKED is understood all the same, because that is crewflow's own word for

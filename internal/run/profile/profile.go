@@ -46,6 +46,13 @@ type Profile interface {
 	// of a journal rather than the whole of it, because a journal is read as it grows
 	// and a line the agent has not finished writing is not a line yet.
 	Read(journal, errorJournal []string) []string
+	// Calls returns what the agent called and the one argument of the call that names
+	// it — the command of a shell, the path of a file, the pattern of a search — in
+	// the order it called them, and the whole of every argument rather than the
+	// beginning of it. A run that works out where a refused path was named needs all
+	// of a command: a command cut off before the path says nothing about it
+	// (docs/DESIGN.md §7a, §7b).
+	Calls(stdout []byte) []Call
 	// ContinueArgs returns the arguments that go on in the session, and nothing at
 	// all for an agent that has no sessions to continue: a run of such an agent
 	// begins again, in the same worktree and with the task in hand.
@@ -57,6 +64,17 @@ type Profile interface {
 	// crewflow itself is passed in, because a person may have put settings of their
 	// own in it and a run of the policy of the project holds over them.
 	AccessEnv(policy access.Policy, environ []string) ([]string, error)
+}
+
+// Call is one tool the agent called, with the one argument of it that names the call.
+// The rest of what the tool was given is the answer of the agent and not what the
+// call was for, and a run does not read it (docs/DESIGN.md §7a).
+type Call struct {
+	// Tool is what the agent called it, as the agent calls it: "bash", "read".
+	Tool string
+	// Argument is the command of a shell, the path of a file or the pattern of a
+	// search, whole.
+	Argument string
 }
 
 // opencodeProgram is the program of the first agent the pilot runs were made with.
@@ -155,6 +173,21 @@ func (opencode) Blocked(stdout []byte) string {
 	return reason
 }
 
+// Calls is every call of a tool the run made, with the whole of the argument that
+// names it.
+func (opencode) Calls(stdout []byte) []Call {
+	var called []Call
+	for _, event := range events(stdout) {
+		if !event.isTool() {
+			continue
+		}
+		if argument := event.named(0); argument != "" {
+			called = append(called, Call{Tool: event.Part.Tool, Argument: argument})
+		}
+	}
+	return called
+}
+
 // ContinueArgs is the session to go on in: a run that stopped may be continued in
 // it, with the worktree and the context it already has (docs/DESIGN.md §7a).
 func (opencode) ContinueArgs(session string) []string {
@@ -205,6 +238,10 @@ func (generic) Read(journal, errorJournal []string) []string {
 // ContinueArgs is nothing: a run of an agent of this kind begins again, in the
 // same worktree and with the task in hand.
 func (generic) ContinueArgs(string) []string { return nil }
+
+// Calls is nothing: an agent of this kind is not known to say where it called what,
+// and a run that does not know does not guess (docs/DESIGN.md §7b).
+func (generic) Calls([]byte) []Call { return nil }
 
 // event is one line of the stream of an agent, as far as a run is concerned: which
 // session it belongs to, and the part of the answer it carries. The state of a tool
@@ -267,13 +304,21 @@ func (e event) toolLine() string {
 	return line
 }
 
-// argument is the one field of what a tool was given that says which call it is, in
-// the order the calls of the runs of the pilot came in: a command, a path, a pattern.
+// argument is the one field of what a tool was given that says which call it is, cut
+// short to what a line of a watch holds.
 func (e event) argument() string {
+	return e.named(argLimit)
+}
+
+// named is the one argument of the call, whole or cut off after a limit. A watch
+// reads a line and not a command, and a run that works out where a path was named
+// needs the whole of it: a command cut off before the path says nothing about it
+// (docs/DESIGN.md §7a).
+func (e event) named(limit int) string {
 	for _, argument := range []string{e.Part.State.Input.Command, e.Part.State.Input.FilePath, e.Part.State.Input.Pattern} {
 		if argument = strings.TrimSpace(argument); argument != "" {
-			if len(argument) > argLimit {
-				return argument[:argLimit] + "..."
+			if limit > 0 && len(argument) > limit {
+				return argument[:limit] + "..."
 			}
 			return argument
 		}

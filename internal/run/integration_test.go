@@ -63,11 +63,15 @@ func TestRunAgainstRealGit(t *testing.T) {
 			wantFiles: []string{"docs/DESIGN.md", "internal/run/run.go"},
 		},
 		{
+			// The refusal is of a place of the machine that is closed for a reason of
+			// its own: a refusal of a habit crewflow knows would not stop the run here,
+			// and the run would go on by itself (docs/DESIGN.md §7a).
 			name:    "the run was refused a permission and stopped",
 			program: "opencode",
 			body:    "exit 0\n",
-			stderr:  "INFO  service=default starting\n! permission requested: external_directory (/tmp/*); auto-rejecting\n",
-			want:    BlockedPermission,
+			stderr: "INFO  service=default starting\n" +
+				"! permission requested: external_directory (~/.ssh/config); auto-rejecting\n",
+			want: BlockedPermission,
 		},
 		{
 			name:       "an agent crewflow knows nothing about stopped by itself",
@@ -187,6 +191,68 @@ func TestRunAgainstRealGitContinuesTheSession(t *testing.T) {
 	}
 	if branch := gitOut(t, result.Worktree, "rev-parse", "--abbrev-ref", "HEAD"); branch != result.Branch {
 		t.Errorf("the second run worked in a worktree on %q, want the branch of the task %q", branch, result.Branch)
+	}
+}
+
+// TestRunGoesOnByItselfAfterARealExecutorWroteToTmp: the manual check of §7a against
+// a real repository — an executor that is refused /tmp in the first run and does the
+// work in the second, and the run of the task goes on by itself between them, in the
+// same worktree and the same session, and comes to a change request. The fake executor
+// does not write into the temporary folder of the machine: it says the refusal the way
+// OpenCode says it, which is what a run reads.
+func TestRunGoesOnByItselfAfterARealExecutorWroteToTmp(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	// The fake executor writes down the arguments of every run in the scratch of the
+	// worktree, and remembers that it has been refused once.
+	executor := fakeExecutor(t, "opencode",
+		"mkdir -p .scratch/tmp\n"+
+			"printf '%s\\n' \"$*\" >> .scratch/tmp/args\n"+
+			"printf '%s' '"+theEvents+"'\n"+
+			"if [ -f .scratch/tmp/refused ]; then\n"+
+			commit("internal/run/run.go", "package run\n")+
+			"else\n"+
+			"  touch .scratch/tmp/refused\n"+
+			said("! permission requested: external_directory (/tmp/*); auto-rejecting\n")+
+			"fi\n")
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	home := t.TempDir()
+
+	result, err := Run(t.Context(), System(home), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	if result.Outcome != ChangeRequestOpened || result.Attempt != 2 {
+		t.Fatalf("the run is the attempt %d and ended as %q, want the second and %q",
+			result.Attempt, result.Outcome, ChangeRequestOpened)
+	}
+	if result.AutoResumed != string(reasonTmp) {
+		t.Errorf("the run went on by itself for %q, want %q", result.AutoResumed, reasonTmp)
+	}
+	asked := read(t, filepath.Join(result.Worktree, ".scratch", "tmp", "args"))
+	if got := strings.Count(asked, "--session ses_fake"); got != 1 {
+		t.Errorf("the executor was run with the session of the first run %d times, want once:\n%s", got, asked)
+	}
+	if !strings.Contains(asked, ".scratch/tmp") {
+		t.Errorf("the second run was asked no text about the scratch of the worktree:\n%s", asked)
+	}
+	// The line about the resume is in the journal of the attempt that ended, which is
+	// what a watch of the run shows.
+	state, err := LoadState(newJournals(home, "naghuale-crewflow").StatePath(43))
+	if err != nil {
+		t.Fatalf("load the state of the task: %v", err)
+	}
+	if len(state.Attempts) != 2 || state.Attempts[1].AutoResumed != string(reasonTmp) {
+		t.Fatalf("the state holds %+v, want two attempts, the second of them a resume", state.Attempts)
+	}
+	first := read(t, state.Attempts[0].Journal)
+	if want := "crewflow: resumed once — " + habits[reasonTmp].headline; !strings.Contains(first, want) {
+		t.Errorf("the journal of the attempt that ended holds no line %q:\n%s", want, first)
 	}
 }
 

@@ -133,6 +133,11 @@ type Attempt struct {
 	Outcome Kind `json:"outcome"`
 	// Continued says that the attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
+	// AutoResumed is the habit an attempt went on by itself for, and is empty for a
+	// first run and for a continuation the orchestrator asked for. It is what keeps a
+	// task from being resumed by itself twice for the same habit: the second time
+	// round the run stops and the orchestrator decides (docs/DESIGN.md §7a, §7j).
+	AutoResumed string `json:"auto_resumed,omitempty"`
 	// PID and ProcessStartedAt are the process of the run of crewflow itself: its
 	// number and when that process started. It is crewflow and not the executor, and
 	// that is on purpose — crewflow lives exactly as long as the run and stops the
@@ -184,6 +189,9 @@ type StartOf struct {
 	Session  string
 	// Continued says that the attempt goes on in the session of an earlier one.
 	Continued bool
+	// AutoResumed is the habit crewflow went on by itself for, when nobody asked it
+	// to: an attempt the orchestrator continued is not one, and says nothing here.
+	AutoResumed string
 	// Process is the process the run of crewflow is happening in, which is what a
 	// later list asks the machine about, and the identity is whose name the
 	// executor of the run is about to work under, so that the state says it from
@@ -208,6 +216,7 @@ func (s State) NextAttempt(start StartOf) State {
 		Identity:     start.Identity,
 		Outcome:      Running,
 		Continued:    start.Continued,
+		AutoResumed:  start.AutoResumed,
 	}
 	if start.Process.Pid > 0 {
 		started := start.Process.StartedAt

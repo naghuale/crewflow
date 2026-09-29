@@ -481,6 +481,12 @@ func printResult(w io.Writer, result taskrun.Result) {
 	if result.Continued {
 		fmt.Fprintf(w, "  went on in the session %s of the last run\n", result.Session)
 	}
+	// A run that went on by itself is said in the report, because the orchestrator
+	// reads whether it has to continue the task by hand, and a run nobody asked for
+	// has to be visible as one (docs/DESIGN.md §7a).
+	if result.AutoResumed != "" {
+		fmt.Fprintf(w, "  crewflow went on by itself after a refusal for %s\n", result.AutoResumed)
+	}
 	if result.Outcome == taskrun.Interrupted {
 		fmt.Fprintf(w, "  the run was stopped and is not over: go on in it with "+
 			"`crewflow task run %d -continue \"what is left to do\"`\n", result.Task)

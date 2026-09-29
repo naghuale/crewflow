@@ -63,6 +63,12 @@ type machine struct {
 	git string
 	// answers is what a command writes and the code it exits with.
 	answers map[string]answer
+	// then is what a program answers run after run, for a test that runs the same
+	// program more than once and needs to tell the runs apart: the two runs of a task
+	// that crewflow goes on with by itself are two runs of one executor, and what it
+	// says in them is not the same. An entry is taken off as the program is run, and
+	// the last one of them is what every run after it answers.
+	then map[string][]answer
 	// mu guards ran and handed, which the run of an executor writes from its own
 	// goroutine while the test of a running executor looks at the machine.
 	mu sync.Mutex
@@ -118,6 +124,7 @@ func newMachine(t *testing.T) *machine {
 			"git worktree add":     {},
 			"git diff --name-only": {},
 		},
+		then:  map[string][]answer{},
 		clock: time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC),
 	}
 	// Git is asked where the repository of the project is, because the scratch of a
@@ -138,6 +145,33 @@ func (m *machine) has(paths ...string) *machine {
 		}
 	}
 	return m
+}
+
+// says is what a program of the machine answers, run after run, and a run of it after
+// the last answer is given answers whatever was given before: a test that needs a
+// second run of an executor to be different from the first says so, and a test that
+// does not says nothing.
+func (m *machine) says(program string, answers ...answer) *machine {
+	m.then[program] = answers
+	return m
+}
+
+// answerNext is the answer of a program that has more than one to give, taken off the
+// list under the lock: the executor of a run is started by the goroutine of that run,
+// and a test that looks at the machine looks at it from its own.
+func (m *machine) answerNext(program string) (answer, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	answers, ok := m.then[program]
+	if !ok || len(answers) == 0 {
+		return answer{}, false
+	}
+	if len(answers) > 1 {
+		m.then[program] = answers[1:]
+	} else {
+		delete(m.then, program)
+	}
+	return answers[0], true
 }
 
 // env is the machine a run of a test happens on.
@@ -252,9 +286,9 @@ func (m *machine) stored(answer answer) {
 }
 
 // answerOf is what the machine says to a command: the entry of the whole command
-// line, or of the longest beginning of it that the machine knows, or of the program
-// alone. A test may therefore answer a command that takes a path of its own without
-// writing the path out.
+// line, or of the longest beginning of it that the machine knows, or the next of what
+// the program says run after run, or the program alone. A test may therefore answer a
+// command that takes a path of its own without writing the path out.
 func (m *machine) answerOf(program string, args []string) (answer, bool) {
 	line := program
 	for _, arg := range args {
@@ -262,6 +296,9 @@ func (m *machine) answerOf(program string, args []string) (answer, bool) {
 		if answer, ok := m.answers[line]; ok {
 			return answer, true
 		}
+	}
+	if answer, ok := m.answerNext(program); ok {
+		return answer, true
 	}
 	answer, ok := m.answers[program]
 	return answer, ok

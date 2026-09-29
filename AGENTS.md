@@ -28,10 +28,17 @@ GitHub issues, reviews your pull request and merges it. You implement exactly on
 
 ## Scratch files
 
-You may only touch files inside your worktree. Anything outside it — including `/tmp` — is
-refused without asking, and a refusal ends your run. Put scratch files and probes in
-`.scratch/` at the root of the worktree (it is git-ignored) and delete them before you commit.
-`go test` and `t.TempDir()` are fine: the toolchain manages its own temporary files.
+`/tmp` is refused, and a run that is refused a permission ends there with the work
+uncommitted — every time, with no way to go on. Keep what is temporary in the folder the
+assignment names, `.scratch/tmp` inside the worktree (it is git-ignored); a test you want to
+watch while you work on it belongs in the package with the other tests, as `zz_debug_test.go`,
+and you delete it before you commit. `go test` and `t.TempDir()` are fine: the toolchain manages
+its own temporary files.
+
+You may only touch files inside your worktree. Anything outside it — `/tmp` above all — is
+refused without asking, and a refusal ends your run. A path of the machine that you only write
+into the text of a file is still a refusal: edit such a file with the tools of `edit` and
+`write`, not with a script or a heredoc.
 
 ## Reading outside the worktree
 

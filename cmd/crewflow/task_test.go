@@ -258,6 +258,32 @@ func TestRunTaskContinue(t *testing.T) {
 	}
 }
 
+// TestRunTaskSaysItWentOnByItself: the run that crewflow answered by itself is said in
+// the report of the task, because the orchestrator reads whether it has to continue
+// the task by hand, and a run nobody asked for has to be visible as one
+// (docs/DESIGN.md §7a).
+func TestRunTaskSaysItWentOnByItself(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.refuses(t)
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr)
+
+	if code == exitOK {
+		t.Errorf("crewflow task run = 0, want not 0 after two refusals of the same habit:\n%s", stdout.String())
+	}
+	if !host.continuedIn("ses_7fKq2") {
+		t.Errorf("the executor was run with %v, want it to go on by itself in the session of the first run", host.started)
+	}
+	for _, want := range []string{"attempt 2", "went on by itself", "tmp"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task run wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+}
+
 // TestRunTaskKeepsEveryFileInItsOwnFolders is the net under the tests: a run leaves
 // a journal, a state and a worktree behind, and every one of them has to be under
 // the home crewflow was given and the root of worktrees the project named. A command

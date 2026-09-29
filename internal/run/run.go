@@ -140,6 +140,11 @@ type Result struct {
 	Identity Identity `json:"identity"`
 	// Continued says that this attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
+	// AutoResumed is the habit crewflow went on by itself for in this attempt, and is
+	// empty for a first run and for a continuation the orchestrator asked for. A
+	// report says it because a run that was answered by itself is not a run two
+	// people had (docs/DESIGN.md §7a).
+	AutoResumed string `json:"auto_resumed,omitempty"`
 	// StartedAt and EndedAt are when the executor was started and stopped.
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
@@ -169,8 +174,13 @@ func (r Result) OK() bool {
 	return r.Outcome == ChangeRequestOpened
 }
 
-// Run takes the task from the tracker, checks that it is ready, makes the branch
-// and the worktree of it, runs the executor there and works out what came of it.
+// Run takes the task from the tracker, checks that it is ready, makes the branch and
+// the worktree of it, runs the executor there and works out what came of it.
+//
+// A run that stopped on a habit crewflow knows goes on by itself, once, in the same
+// worktree and the same session: the work of a task is worth more than the minutes an
+// orchestrator spends telling the same executor a second time where its scratch is
+// (docs/DESIGN.md §7a).
 //
 // Nothing is created for a task that is not ready or that the tracker does not
 // have, and a run that ends in any other way than a change request is still a run
@@ -184,7 +194,19 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 	if err := r.prepare(ctx); err != nil {
 		return Result{}, err
 	}
-	return r.start(ctx)
+	for {
+		result, err := r.start(ctx)
+		if err != nil || r.resume.reason == reasonNone {
+			return result, err
+		}
+		// The run goes on by itself in the session of the attempt that has just ended,
+		// with the text of the habit it was refused for. The worktree and the branch
+		// are the ones of that attempt, the attempt after it is a continuation like
+		// any other with the number of it one higher, and the outcome of the task is
+		// the one of the last attempt (docs/DESIGN.md §7a, §7h).
+		r.auto, r.req.Continue, r.session = string(r.resume.reason), r.resume.text, result.Session
+		r.resume = resume{}
+	}
 }
 
 // runner is one run of one task, and what it has found out about it so far.
@@ -208,6 +230,15 @@ type runner struct {
 	journals Journals
 	// session is the session a continuation goes on in, if there is one to go on in.
 	session string
+	// auto is the habit of the attempt that is going on, when crewflow is the one
+	// that goes on with it: an attempt the orchestrator continued has none, and a
+	// habit crewflow knows is the one thing a run answers by itself (docs/DESIGN.md
+	// §7a).
+	auto string
+	// resume is what the attempt that has just ended is followed by, and is empty
+	// unless the run goes on by itself: it is worked out while the journal of the
+	// attempt is still open, so that the journal holds the line about it.
+	resume resume
 }
 
 // readTask takes the task from the tracker and checks that it may be run at all.
@@ -346,6 +377,7 @@ func (r *runner) stateOf(started time.Time) State {
 		Executor:     r.profile.Name(),
 		Session:      r.session,
 		Continued:    r.req.Continue != "",
+		AutoResumed:  r.auto,
 		Process:      process,
 		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
 	})
@@ -443,7 +475,6 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// secret, and the run is over: it is written before the files are closed.
 	ended := r.endOf(ctx, runCtx)
 	flushed := errors.Join(journal.Flush(), wayOut.Flush())
-	closeErr := errors.Join(files.Close(), flushed)
 	result := Result{
 		Task:         r.task.Number,
 		Title:        r.task.Title,
@@ -453,6 +484,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		Session:      r.session,
 		Attempt:      attempt.Number,
 		Continued:    r.req.Continue != "",
+		AutoResumed:  r.auto,
 		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
 		StartedAt:    attempt.StartedAt,
 		EndedAt:      r.env.Now(),
@@ -465,15 +497,22 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		// reads the way out of a run, and the outcome is a run that failed.
 		result.ErrorJournal = r.noteError(files.ErrorJournal, err)
 	}
-	if closeErr != nil {
-		return result, closeErr
-	}
 	// The session of the run is what a continuation goes on in, and it is found in
 	// what the executor wrote even when the run ended badly.
 	result.Session = r.profile.SessionID(out.Bytes())
 
-	result, err = r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended)
-	return result, r.keep(state, result, err)
+	result, judgeErr := r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended)
+	// What the run is going on with is worked out and said while the journal of the
+	// attempt is still open: the line belongs to the attempt that ended here, and a
+	// watch of it shows why the next one was given what it was (docs/DESIGN.md §7a).
+	if next := r.goesOnByItself(result, state, r.profile.Calls(out.Bytes())); next.reason != reasonNone {
+		fmt.Fprintf(files.Out, "%s\n", next.line())
+		r.resume = next
+	}
+	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
+		return result, closeErr
+	}
+	return result, r.keep(state, result, judgeErr)
 }
 
 // stopBeforeStart is what a run does when the executor could not be started at all:
