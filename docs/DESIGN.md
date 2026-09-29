@@ -747,33 +747,41 @@ push — `push-rejected` (если `main` успел уйти вперёд — `
 без изменений. Ошибка уборки после слияния (рабочая копия, ветка) — `merged-with-cleanup-warning`:
 слияние состоялось, уборка — нет.
 
-### Интеграционные тесты M2
+### Проверяемые обещания системы
 
-На настоящем git (временный bare-репозиторий как «хостинг») и подставном API хостинга.
+crewflow обещает гарантии процесса, а не набор тестов. Под каждым обещанием — тесты, которые его
+доказывают. Реестр живёт в коде (таблица тестов: обещание, номер, причина); мета-тесты сверяют его
+с этим разделом и с перечнем причин отказа, чтобы обещание не ссылалось на несуществующий тест, а
+причина отказа не осталась без проверки.
 
-| № | Дано | Ожидается |
-|---|---|---|
-| IT-001 | одобрен A, head = B, A — предок B | `approval-stale` |
-| IT-002 | одобрен A, force push, head = C, A не предок C | `history-rewritten` |
-| IT-003 | записи ревью нет | `approval-missing` |
-| IT-004 | `REVIEW: APPROVED <head>` от исполнителя (бота) | `approval-untrusted` |
-| IT-005 | одобрение владельца отредактировано после публикации | `approval-edited` |
-| IT-006 | `APPROVED <head>`, затем `CHANGES REQUESTED` | `approval-missing` (последняя запись — не одобрение) |
-| IT-007 | одобрен B = head, CI зелёный только для A | `ci-sha-mismatch` |
-| IT-008 | обязательны lint и test; test зелёный, lint нет | `required-check-missing` |
-| IT-009 | проверка в статусе pending | `required-check-incomplete` |
-| IT-010 | проверка упала | `required-check-failed` |
-| IT-011 | зелёная отметка выставлена через API статусов, не Actions | `required-check-untrusted` |
-| IT-012 | default_branch ушёл вперёд до проверки | `not-fast-forward` |
-| IT-013 | default_branch ушёл вперёд между проверкой и push | `not-fast-forward`, ветка не изменена |
-| IT-014 | в диапазоне base..head файл вне границ | `out-of-scope` |
-| IT-015 | то же, с `SCOPE: ACCEPTED <head>` от владельца | слияние разрешено |
-| IT-016 | PR закрыт / черновик | `pr-not-open` / `pr-draft` |
-| IT-017 | PR в другую ветку или из другого репозитория | `wrong-target-branch` / `wrong-repository` |
-| IT-018 | хостинг вернул ошибку или неполный ответ | `forge-unavailable`, ничего не запушено |
-| IT-019 | всё в порядке | удалённый default_branch == одобренный SHA по `ls-remote` |
-| IT-020 | повторный `merge` после успешного | `already-merged`, без изменений |
-| IT-021 | слияние прошло, удаление рабочей копии упало | `merged-with-cleanup-warning` |
+**1. После одобрения код нельзя незаметно подменить.**
+IT-001 `approval-stale` · IT-002 `history-rewritten` · IT-005 `approval-edited`
+
+**2. Слияние невозможно без настоящего одобрения.**
+IT-003 `approval-missing` · IT-004 `approval-untrusted` · IT-006 замечания после одобрения отменяют
+его
+
+**3. Слияние невозможно при проблемах CI.**
+IT-007 `ci-sha-mismatch` · IT-008 `required-check-missing` · IT-009 `required-check-incomplete` ·
+IT-010 `required-check-failed` · IT-011 `required-check-untrusted`
+
+**4. В основную ветку попадает только то, что в границах задачи и продолжает её историю.**
+IT-012, IT-013 `not-fast-forward` · IT-014 `out-of-scope` · IT-015 `SCOPE: ACCEPTED` снимает отказ ·
+IT-016 `pr-not-open`, `pr-draft` · IT-017 `wrong-repository`, `wrong-target-branch` · IT-018
+`forge-unavailable`
+
+**5. Владелец действительно видел результат** (для задач `owner-check`).
+IT-024 `owner-acceptance-missing` (нет записи) · IT-025 `owner-acceptance-missing` (другой SHA) ·
+IT-026 новый коммит отменяет приёмку · IT-027 `owner-acceptance-untrusted` · IT-028
+`owner-acceptance-edited` · IT-029 приёмка текущей головы разрешает слияние
+
+**6. Слияние действительно произошло — и ровно то.**
+IT-019 удалённая основная ветка == одобренный SHA · IT-020 `already-merged` · IT-021
+`merged-with-cleanup-warning` · IT-022 `push-rejected` · IT-023 `verify-mismatch`
+
+**7. Ни одна причина отказа не остаётся без проверки.**
+MT-001 каждая причина отказа из кода покрыта тестом · MT-002 каждый тест ссылается на существующую
+причину · MT-003 реестр тестов в коде совпадает с этим разделом (обещания и номера)
 
 Тесты полномочий (исполнитель пушит в default_branch, сливает через API) — в M3 (§7i), в режиме
 `bot`; в режиме `owner` у исполнителя права владельца, и гарантию даёт только gate. Тесты прогона
