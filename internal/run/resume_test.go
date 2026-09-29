@@ -3,6 +3,7 @@ package run
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -291,11 +292,12 @@ func theCall(command string) string {
 // run of every one of them stops for the orchestrator with the refusal said to be what
 // it is (docs/DESIGN.md §7a, §7d).
 func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
-	// The home of the person is one for the whole test, and the places of secrets are
-	// the ones of it: a run reads its closed places against the home it was given, and
-	// a test whose places came from another home would be testing a machine that is
-	// not the one the run is on (docs/DESIGN.md §7d).
-	home := t.TempDir()
+	// The home of the person is one for the whole test, with a link above it, and the
+	// places of secrets are the ones of it: a run reads its closed places against the
+	// home it was given, a test whose places came from another home would be testing a
+	// machine that is not the one the run is on, and a test whose home has no link above
+	// it would never see the two names a machine of macOS gives one folder (§7d).
+	home := homeUnderALink(t)
 	// The three shapes a run is answered by itself on, each of them reaching for the
 	// place of secrets on the way: the temporary folder of the machine, a path that
 	// climbs out of the worktree, and a heredoc that writes a file of the project with
@@ -374,15 +376,18 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 					t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
 				}
 				named := shape.named(place, refused)
-				for _, want := range []string{refused, named, shape.kind, recoveryDisabled} {
+				// The report and the journal name the place as the run wrote it and the
+				// other name of the same folder where the machine gives it one: a person
+				// greps for the path the refusal named and reads the other beside it.
+				wantPlaceNamed(t, result.Rejections[0], home, named)
+				for _, want := range []string{shape.kind, recoveryDisabled} {
 					if !strings.Contains(result.Rejections[0], want) {
 						t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
 					}
 				}
-				// The journal of the attempt holds the same answer where a watch of the
-				// run shows it.
 				journal := read(t, result.Journal)
-				for _, want := range []string{named, shape.kind, recoveryDisabled} {
+				wantPlaceNamed(t, journal, home, named)
+				for _, want := range []string{shape.kind, recoveryDisabled} {
 					if !strings.Contains(journal, want) {
 						t.Errorf("the journal of the attempt holds no %q:\n%s", want, journal)
 					}
@@ -398,7 +403,10 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 // command — is an outcome of a run of its own, the report says the place and the kind of
 // access, and nothing goes on by itself (docs/DESIGN.md §7a.1, §7d).
 func TestRunReachesASecretAndStops(t *testing.T) {
-	home := t.TempDir()
+	// The home of the person is under a link, so that the place of secrets of the case
+	// of the other spelling of the machine is really a second name of the same folder
+	// and not a path of its own (docs/DESIGN.md §7d).
+	home := homeUnderALink(t)
 	// The other spelling of a place of secrets on this machine: on a machine of macOS
 	// /var leads to /private/var, and a run is refused for a path in the spelling it
 	// wrote (docs/DESIGN.md §7d).
@@ -478,7 +486,11 @@ func TestRunReachesASecretAndStops(t *testing.T) {
 			if len(result.Rejections) != 1 {
 				t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
 			}
-			for _, want := range []string{tc.refused, tc.kind, recoveryDisabled} {
+			// The place is named as the run wrote it, and the report and the journal
+			// say the same of it: two names of one folder are one place (§7d).
+			wantPlaceNamed(t, result.Rejections[0], home, tc.refused)
+			wantPlaceNamed(t, read(t, result.Journal), home, tc.refused)
+			for _, want := range []string{tc.kind, recoveryDisabled} {
 				if !strings.Contains(result.Rejections[0], want) {
 					t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
 				}
@@ -572,6 +584,171 @@ func TestRunThatReachedASecretIsBlockedSecretWhateverEndedIt(t *testing.T) {
 			}
 		})
 	}
+}
+
+// homeUnderALink is a home of the person for a test of the places of secrets, with a
+// link above it: on a machine of macOS `/var` leads to `/private/var`, the deny list
+// holds a place in both names, and a test whose home has no link above it sees only one
+// of them — a test of the two names that has never seen two (docs/DESIGN.md §7d).
+func homeUnderALink(t *testing.T) string {
+	t.Helper()
+	link := filepath.Join(t.TempDir(), "home")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatalf("link %s: %v", link, err)
+	}
+	return link
+}
+
+// closedOf is the places that stay closed to the executor on the machine of a test,
+// worked out the way a run works them out — from the access policy of the project and
+// the home of the person — so that a test of a report reads the same list a run does
+// and not a list made up for it (docs/DESIGN.md §7d).
+func closedOf(t *testing.T, home string) closed {
+	t.Helper()
+	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
+	return newClosed(policy, home)
+}
+
+// TestAReportNamesThePlaceAsTheRunWroteIt: on a machine where one folder has two names —
+// `/var/folders/…/.ssh` and `/private/var/folders/…/.ssh` — a report names the one the
+// refusal or the command said, because that is the path a person greps for in a journal,
+// and the other beside it (docs/DESIGN.md §7d).
+func TestAReportNamesThePlaceAsTheRunWroteIt(t *testing.T) {
+	home := homeUnderALink(t)
+	written := filepath.Join(home, ".ssh", "id_ed25519")
+	followed := filepath.Join(onThisMachine(t, home), ".ssh", "id_ed25519")
+	if written == followed {
+		t.Skipf("the machine gives %s one name only, and there is nothing to tell apart", home)
+	}
+	places := closedOf(t, home)
+	cases := []struct {
+		name    string
+		refusal string
+		calls   []profile.Call
+		// note is what the report and the journal say about the refusal.
+		note string
+	}{
+		{
+			name:    "the refusal names the place",
+			refusal: "external_directory " + written,
+			note:    "a secret, closed to the executor whatever the project wrote",
+		},
+		{
+			name:    "a command of the run names the place",
+			refusal: "external_directory /tmp/*",
+			calls:   []profile.Call{{Tool: "bash", Argument: "cat " + followed + " > /tmp/copy"}},
+			note:    "the command refused names a secret",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			answer := places.found([]string{tc.refusal}, tc.calls, filepath.Join(home, "worktree"))
+			if len(answer.reached) != 1 {
+				t.Fatalf("the run reached %+v, want one place", answer.reached)
+			}
+			// The place the run wrote, and the other name of the folder where this
+			// machine has one for it: a path that is already the resolved one has no
+			// other name, and there is nothing to add to it.
+			wrote := written
+			if len(tc.calls) > 0 {
+				wrote = followed
+			}
+			said, other := wrote, other(t, home, wrote)
+			if other != wrote {
+				said += " (also " + other + ")"
+			}
+			if answer.reached[0].said != said {
+				t.Errorf("the report names the place %q, want %q", answer.reached[0].said, said)
+			}
+			if !strings.Contains(answer.marked[0], tc.note) {
+				t.Errorf("the refusal %q says nothing about a secret", answer.marked[0])
+			}
+			line := answer.line()
+			if !strings.Contains(line, wrote) || (other != wrote && !strings.Contains(line, other)) {
+				t.Errorf("the journal holds %q, want the place the run wrote and the other name of it", line)
+			}
+		})
+	}
+}
+
+// other is the name of a place of secrets that is not the one it was written in: the
+// path with the links above it followed, which on a machine of macOS is
+// `/private/var/…` where the run wrote `/var/…` (docs/DESIGN.md §7d).
+func other(t *testing.T, home, place string) string {
+	t.Helper()
+	rest, isUnder := strings.CutPrefix(place, filepath.Clean(home))
+	if !isUnder {
+		return place
+	}
+	return filepath.Join(onThisMachine(t, home), rest)
+}
+
+// wantPlaceNamed checks the place of secrets a report or a journal names: the path as
+// the run wrote it, which may be either of the two names this machine gives the folder,
+// and the other name beside it where the two are not the same. The paths are compared as
+// the machine holds them and not as the letters of them, because two names of one folder
+// are one place (docs/DESIGN.md §7d).
+func wantPlaceNamed(t *testing.T, said, home, want string) {
+	t.Helper()
+	note := noteOn(t, said)
+	named := placeNamed(t, note)
+	if !samePlace(t, home, named, want) {
+		t.Errorf("%q names the place %q, want the place %q", note, named, want)
+	}
+	if other := underHome(t, home, named); other != named && !strings.Contains(note, other) {
+		t.Errorf("%q names the place %q and no other name of it, want %q as well", note, named, other)
+	}
+}
+
+// noteOn is the line of a report or of a journal that tells what the run reached for,
+// which is the line the note of the place is in — a journal holds the whole run and the
+// answer of the run is one line of it.
+func noteOn(t *testing.T, said string) string {
+	t.Helper()
+	for line := range strings.Lines(said) {
+		if strings.Contains(line, recoveryDisabled) {
+			return line
+		}
+	}
+	t.Fatalf("nothing of %q tells what the run reached for", said)
+	return ""
+}
+
+// placeNamed is the place of secrets the note names, and it is what stands between the
+// colon the note ends its words with and the kind of access in it.
+func placeNamed(t *testing.T, note string) string {
+	t.Helper()
+	head, _, hasKind := strings.Cut(note, " (")
+	if !hasKind {
+		t.Fatalf("the line %q names no place of secrets and no kind of access", note)
+	}
+	at := strings.LastIndex(head, ": ")
+	if at < 0 {
+		t.Fatalf("the line %q has no note about a place of secrets", note)
+	}
+	return strings.TrimSpace(head[at+len(": "):])
+}
+
+// samePlace says whether two paths name one folder of the machine: the parts of them
+// under the home of the person, with the home as the machine holds it (docs/DESIGN.md
+// §7d).
+func samePlace(t *testing.T, home, got, want string) bool {
+	t.Helper()
+	return underHome(t, home, got) == underHome(t, home, want)
+}
+
+// underHome is a path of a test as the machine spells it: the part of it under the home
+// as it was given, under the home with the links above it followed. A path that is not
+// under the home is returned as it is — the patterns of the closed places are files of
+// the worktree and have no home above them.
+func underHome(t *testing.T, home, path string) string {
+	t.Helper()
+	clean := filepath.Clean(path)
+	rest, isUnder := strings.CutPrefix(clean, filepath.Clean(home))
+	if !isUnder {
+		return clean
+	}
+	return filepath.Join(onThisMachine(t, home), rest)
 }
 
 // placesOfSecrets is every place the deny list holds for the home given, as a path

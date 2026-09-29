@@ -33,8 +33,9 @@ const recoveryDisabled = "recovery: disabled"
 // as the run wrote it, the kind of access the command refused asked of it, and the note
 // a report and a journal hold about the refusal it came in with.
 type reach struct {
-	// place is the path of the secret, as the run named it.
-	place string
+	// place is the path of the secret, as the run named it, and said is how a report and
+	// a journal name it: the same path with the other name of the folder beside it.
+	place, said string
 	// kind is what the run asked of the place: read, write, cd, named in text, or
 	// unknown where nothing the run wrote says.
 	kind string
@@ -68,10 +69,39 @@ func (f findings) line() string {
 		if i > 0 {
 			fmt.Fprintf(&said, ", ")
 		}
-		fmt.Fprintf(&said, "%s (%s)", one.place, one.kind)
+		fmt.Fprintf(&said, "%s (%s)", one.said, one.kind)
 	}
 	fmt.Fprintf(&said, "; %s\n", recoveryDisabled)
 	return said.String()
+}
+
+// placeOf is a place of secrets as a report and a journal name it: the path as the run
+// wrote it, and the other name of the same folder where this machine gives it one. On a
+// machine of macOS `/var/folders/…/.ssh` and `/private/var/folders/…/.ssh` are one folder
+// in two names, and the name a person greps for in a journal is the one the run wrote,
+// with the other beside it (docs/DESIGN.md §7d).
+func placeOf(place string) string {
+	other := followed(place)
+	if other == "" || other == place {
+		return place
+	}
+	return place + " (also " + other + ")"
+}
+
+// followed is a path as this machine spells it: every link in the part of it that is
+// there followed, and the rest joined as it was written. A place that is not there
+// belongs to the tree the links above it make, and without that the same folder would
+// be in two spellings on one machine (docs/DESIGN.md §7d).
+func followed(path string) string {
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return filepath.Clean(resolved)
+	}
+	parent := filepath.Dir(clean)
+	if parent == clean {
+		return clean
+	}
+	return filepath.Join(followed(parent), filepath.Base(clean))
 }
 
 // closed is the answer of one question a run asks about what it was refused: did it
@@ -123,7 +153,14 @@ func (c closed) found(refusals []string, calls []profile.Call, worktree string) 
 		reached := c.reached(refusedPath(refusal), calls, worktree)
 		if len(reached) > 0 {
 			refusal += reached[0].note
-			answer.reached = append(answer.reached, reached...)
+			for _, one := range reached {
+				// A place the refusal names and a command names as well is one place
+				// the run reached, and a report that says it twice is a report that
+				// says a person has read two things where there was one.
+				if !slices.ContainsFunc(answer.reached, func(seen reach) bool { return seen.place == one.place }) {
+					answer.reached = append(answer.reached, one)
+				}
+			}
 		}
 		answer.marked = append(answer.marked, refusal)
 	}
@@ -166,20 +203,20 @@ func (c closed) reached(path string, calls []profile.Call, worktree string) []re
 }
 
 // reachOf is one place of secrets a run was refused, with the note a report holds about
-// the refusal: the place, the kind of access the run asked of it, and that crewflow does
-// not go on with a run that asked. inRefusal says whether the place is the path of the
-// refusal itself or only named in the command the refusal came in with.
+// the refusal: the place as the run wrote it, the kind of access the run asked of it, and
+// that crewflow does not go on with a run that asked. inRefusal says whether the place is
+// the path of the refusal itself or only named in the command the refusal came in with.
 func (c closed) reachOf(place string, calls []profile.Call, inRefusal bool) reach {
-	one := reach{place: place, kind: c.kindOf(place, calls)}
+	one := reach{place: place, kind: c.kindOf(place, calls), said: placeOf(place)}
 	if inRefusal {
 		one.note = fmt.Sprintf(" — a secret, closed to the executor whatever the project wrote: %s (%s); %s",
-			place, one.kind, recoveryDisabled)
+			one.said, one.kind, recoveryDisabled)
 		return one
 	}
 	// The refusal names something else — the scratch folder of the machine, most often —
 	// and what a person has to see is the place inside the command.
 	one.note = fmt.Sprintf(" — the command refused names a secret: %s (%s); %s",
-		place, one.kind, recoveryDisabled)
+		one.said, one.kind, recoveryDisabled)
 	return one
 }
 
@@ -234,7 +271,12 @@ func (c closed) placesOf(word string) []string {
 				continue
 			}
 			if at := strings.Index(word, name); at >= 0 {
-				places = append(places, pathIn(word[at:]))
+				// The place is named inside the word, and the word holds more of the
+				// path than the name of the place does: a machine of macOS spells
+				// `/private/var/…/.ssh` with a `/var/…/.ssh` in the middle of it, and
+				// the path the run wrote is the whole of the one in the word, not the
+				// part of it that happens to be in the deny list (docs/DESIGN.md §7d).
+				places = append(places, pathIn(word[pathStart(word, at):]))
 			}
 		}
 	}
@@ -264,6 +306,14 @@ func pathIn(text string) string {
 		return text[:end]
 	}
 	return text
+}
+
+// pathStart is where the path of a machine begins in a word of a command: a word is
+// marks of a shell and a path, and the path begins after the last mark before the
+// place of the secret that is in it. A word may hold two of them — `/private/var/…` —
+// and the path is the one the run wrote, from its first letter.
+func pathStart(word string, at int) int {
+	return strings.LastIndexAny(word[:at], shellMarks) + 1
 }
 
 // kindOfCall is what one call of a run asked of the place it names: a shell that changed
