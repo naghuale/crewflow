@@ -128,20 +128,31 @@ func (n resume) line() string {
 //   - one of its refusals is a habit of nobody's: the text of a habit would answer
 //     for another;
 //   - the refusals of the attempt are of more than one habit, for the same reason;
-//   - the attempt before it went on by itself for this very habit: an executor that
+//   - the attempt that ended stopped for a secret: a run that reached for a key is not
+//     one crewflow goes on from, and what a person has to say about it comes before
+//     anything crewflow would do (docs/DESIGN.md §7a.1, §8);
+//   - the attempt that ended went on by itself for this very habit: an executor that
 //     was told where its scratch is and wrote into /tmp again is not to be told a
 //     second time, and the orchestrator decides (docs/DESIGN.md §7a, §7j).
 func (r *runner) goesOnByItself(result Result, state State, calls []profile.Call) resume {
 	if result.Outcome != BlockedPermission {
 		return resume{}
 	}
+	// A task that was stopped for reaching a secret is not continued by crewflow at all,
+	// whatever the next attempt was refused: the attempt before this one is what says
+	// that, and its outcome is what a person reads before the next run (docs/DESIGN.md
+	// §7a.1, §8).
+	if before, was := r.before(state); was && before.Outcome == BlockedSecret {
+		return resume{}
+	}
 	next, known := r.oneHabitOf(result.Rejections, calls)
 	if !known {
 		return resume{}
 	}
-	// The attempt that has just ended is the one before the resume that is being
-	// worked out, and it is the one that says whether crewflow has already answered
-	// this very habit of this very run.
+	// The attempt of the run that has just ended is the one before the resume that is
+	// being worked out, and its own mark says whether crewflow is the one that went on
+	// into it: a habit crewflow has already answered once in this run is a habit it does
+	// not answer twice.
 	if before := r.ended(state); before.AutoResumed == string(next.reason) {
 		return resume{}
 	}
@@ -167,9 +178,9 @@ func (r *runner) oneHabitOf(rejections []string, calls []profile.Call) (resume, 
 	return resume{habit: one}, true
 }
 
-// ended is the attempt of the task that has just ended, which is the one before the
-// resume that is being worked out: an attempt of a run is always there, and a task
-// whose last attempt crewflow answered by itself says so in it.
+// ended is the attempt of the run that has just ended, which is the last one in the
+// state: it is the attempt crewflow is about to go on from, and its own mark says
+// whether this run is the one that answered it.
 func (r *runner) ended(state State) Attempt {
 	if len(state.Attempts) == 0 {
 		return Attempt{}
@@ -177,21 +188,28 @@ func (r *runner) ended(state State) Attempt {
 	return state.Attempts[len(state.Attempts)-1]
 }
 
+// before is the attempt before the one that has just ended, and whether a task has one:
+// a first attempt has nothing before it, and what ended the attempt before it is a fact
+// crewflow kept — the state of a run that is over is what a next run is read from
+// (docs/DESIGN.md §7).
+func (r *runner) before(state State) (Attempt, bool) {
+	if len(state.Attempts) < 2 {
+		return Attempt{}, false
+	}
+	return state.Attempts[len(state.Attempts)-2], true
+}
+
 // habitOf is the habit one refusal of a run is about — the classifier of a refusal,
 // and the whole of what crewflow knows of the ways an executor stops (docs/DESIGN.md
 // §7a). A refusal names the kind of the permission and what it was about, and only
 // the second of the two says whether the run made a mistake crewflow knows of.
 //
-// A refusal that is about a place of secrets is no habit of anybody, whatever the shape
-// of the command it came in: the habits of this file are about where a run keeps its
-// temporary files and how it addresses a folder, and a run that was reading a key has
-// stopped for a reason of its own that a person decides about (docs/DESIGN.md §7d, §7e).
+// A refusal of a place of secrets never reaches this: such a run is `blocked-secret`
+// from the start and goes on by itself nothing (§7a.1, §7d, §8).
 func (r *runner) habitOf(refusal string, calls []profile.Call) reason {
 	path := refusedPath(refusal)
 	switch {
 	case path == "":
-		return reasonOther
-	case r.closed.reaches(path, calls, r.worktree) != "":
 		return reasonOther
 	case temporary(path):
 		return reasonTmp

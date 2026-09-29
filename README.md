@@ -81,8 +81,10 @@ crewflow task list -all    # every run of every project on this machine
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
-A run ends with one outcome: `pr-opened`, `blocked`, `blocked-permission`, `timeout`,
-`no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `task list` says which
+A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-permission`,
+`timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `blocked-secret`
+is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
+report says which path it reached for and how. `task list` says which
 project the tasks are counted on, who ran each of them and whose name it worked under
 (`EXECUTOR`, `opencode · bot`), how its last try came out, how long ago that try began
 (`AGE`), the attempt (`RUN`, `57-2`, and `—` where there was only one) and the change

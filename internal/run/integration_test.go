@@ -63,15 +63,26 @@ func TestRunAgainstRealGit(t *testing.T) {
 			wantFiles: []string{"docs/DESIGN.md", "internal/run/run.go"},
 		},
 		{
-			// The refusal is of a place of the machine that is closed for a reason of
-			// its own: a refusal of a habit crewflow knows would not stop the run here,
-			// and the run would go on by itself (docs/DESIGN.md §7a).
+			// The refusal is of a path of the machine that crewflow opened to nobody
+			// and that is not a habit: a run crewflow could answer goes on by itself,
+			// and this one does not (docs/DESIGN.md §7a).
 			name:    "the run was refused a permission and stopped",
 			program: "opencode",
 			body:    "exit 0\n",
 			stderr: "INFO  service=default starting\n" +
-				"! permission requested: external_directory (~/.ssh/config); auto-rejecting\n",
+				"! permission requested: external_directory (/opt/homebrew/include); auto-rejecting\n",
 			want: BlockedPermission,
+		},
+		{
+			// A place of secrets is an outcome of a run of its own, whatever ended the
+			// attempt: a real run that was refused a key is what the orchestrator reads
+			// first (docs/DESIGN.md §7a.1, §7d).
+			name:    "the run reached for a key and stopped",
+			program: "opencode",
+			body:    "exit 0\n",
+			stderr: "INFO  service=default starting\n" +
+				"! permission requested: external_directory (~/.ssh/id_ed25519); auto-rejecting\n",
+			want: BlockedSecret,
 		},
 		{
 			name:       "an agent crewflow knows nothing about stopped by itself",

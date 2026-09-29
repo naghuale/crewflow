@@ -336,10 +336,10 @@ func painted(text, colour string, screen Screen) string {
 // colourOf is the colour the outcome of a run is read in, and it is one colour for as
 // long as the outcome asks a person for the same thing: a run that is going is blue, a
 // run that opened its change request is green, a run that stopped on a permission or on
-// its own says so in yellow, and a run that died — cut short, out of time, or with its
-// executor gone — is red. Every other outcome is said in the letters of it: nothing of
-// a run that is out of scope or that changed nothing asks for anybody today, and a
-// colour where nothing happened is a colour that cries wolf.
+// its own says so in yellow, and a run that died — cut short, out of time, with its
+// executor gone, or after reaching for a key — is red. Every other outcome is said in
+// the letters of it: nothing of a run that is out of scope or that changed nothing asks
+// for anybody today, and a colour where nothing happened is a colour that cries wolf.
 func colourOf(outcome Kind) string {
 	switch outcome {
 	case Running:
@@ -348,7 +348,7 @@ func colourOf(outcome Kind) string {
 		return green
 	case Blocked, BlockedPermission:
 		return yellow
-	case Interrupted, TimedOut, ExecutorFailed:
+	case BlockedSecret, Interrupted, TimedOut, ExecutorFailed:
 		return red
 	default:
 		return ""

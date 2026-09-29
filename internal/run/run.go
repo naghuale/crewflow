@@ -505,19 +505,27 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// what the executor wrote even when the run ended badly.
 	result.Session = r.profile.SessionID(out.Bytes())
 
-	result, judgeErr := r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended)
-	// What the run is going on with is worked out first and said while the journal of
-	// the attempt is still open: the line belongs to the attempt that ended here, and a
-	// watch of it shows why the next one was given what it was (docs/DESIGN.md §7a).
+	// What the run reached for a secret is worked out of the refusals of the run and
+	// the calls of the executor before anything is judged by it: the outcome of the
+	// run and the line the journal of it holds are one answer read twice
+	// (docs/DESIGN.md §7a.1, §7d, §8).
 	calls := r.profile.Calls(out.Bytes())
+	secrets := r.closed.found(r.profile.Rejections(out.Bytes(), errOut.Bytes()), calls, r.worktree)
+	result, judgeErr := r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended, secrets)
+	// What the run reached for a secret is said while the journal of the attempt is
+	// still open, next to the line of a run that goes on by itself, so that a watch of
+	// the attempt shows the place, the kind of access and that it is not continued
+	// (docs/DESIGN.md §7a.1, §7d).
+	if line := secrets.line(); line != "" {
+		fmt.Fprint(files.Out, line)
+	}
+	// What the run is going on with is worked out and said in the same place: the line
+	// belongs to the attempt that ended here, and a watch of it shows why the next one
+	// was given what it was (docs/DESIGN.md §7a).
 	if next := r.goesOnByItself(result, state, calls); next.reason != reasonNone {
 		fmt.Fprintf(files.Out, "%s\n", next.line())
 		r.resume = next
 	}
-	// The refusals of a run are then said with the places of secrets in them: a report
-	// that shows a refusal of a key among refusals of a scratch folder reads as a
-	// habit, and the orchestrator decides on what it reads (docs/DESIGN.md §7a, §7d).
-	result.Rejections = r.closed.mark(result.Rejections, calls, r.worktree)
 	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
 		return result, closeErr
 	}

@@ -34,12 +34,17 @@ const wholeTask = "## Why\n\nA person builds a long command by hand for every ta
 
 // The refusals a run of a test is stopped by, in the words of the agent that is
 // refused: the temporary folder of the machine, which is a habit crewflow answers by
-// itself, and a place of secrets, which is closed whatever the project wrote
-// (docs/DESIGN.md §7a, §7d).
+// itself, and a place of secrets, which is closed whatever the project wrote and ends
+// the run as an outcome of its own (docs/DESIGN.md §7a.1, §7d).
 const (
 	theRefusalToTmp     = "! permission requested: external_directory (/tmp/*); auto-rejecting\n"
 	theRefusalToASecret = "! permission requested: external_directory (~/.ssh/config); auto-rejecting\n"
 )
+
+// recoveryOff is what the report of a run that reached for a secret says on the way out:
+// no run of it goes on by itself, whatever the habit of the command was (docs/DESIGN.md
+// §7a.1, §7d).
+const recoveryOff = "recovery: disabled"
 
 // TestRunTaskOpenedTheChangeRequest is the case a person waits for: the run opened
 // the change request of its branch, and the report says where it is, what a person
@@ -96,12 +101,16 @@ func TestRunTaskExitCode(t *testing.T) {
 			refusal: theRefusalToTmp,
 		},
 		{
-			name:    "the run was refused a place of secrets",
+			// A place of secrets is an outcome of a run of its own, and the report says
+			// what the run reached for, what for, and that no run of it goes on by
+			// itself (docs/DESIGN.md §7a.1, §7d).
+			name:    "the run reached for a place of secrets",
 			host:    &host{task: taskOf(43)},
-			want:    []string{"blocked-permission", "external_directory ~/.ssh/config", "a secret"},
+			want:    []string{"blocked-secret", "external_directory ~/.ssh/config", "a secret", recoveryOff},
 			notOK:   true,
 			refusal: theRefusalToASecret,
 		},
+
 		{
 			name:  "the run ended without a change request",
 			host:  &host{task: taskOf(43)},

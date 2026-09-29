@@ -20,9 +20,10 @@ import (
 const theRefusalToTmp = "INFO  service=default starting opencode\n" +
 	"! permission requested: external_directory (/tmp/*); auto-rejecting\n"
 
-// theRefusalToSsh is the same kind of refusal about a place of the machine that is
-// closed for a reason of its own, and not a habit of a run.
-const theRefusalToSsh = "! permission requested: external_directory (~/.ssh/config); auto-rejecting\n"
+// theRefusalToASecret is the same kind of refusal about a place of secrets, which is an
+// outcome of a run of its own and not a habit of a run (docs/DESIGN.md §7a.1, §7d).
+const theRefusalToASecret = "INFO  service=default starting opencode\n" +
+	"! permission requested: external_directory (~/.ssh/id_ed25519); auto-rejecting\n"
 
 // TestRunGoesOnByItselfWhenTheExecutorWritesToTmp: the run that stopped on the one
 // habit crewflow knows by heart goes on by itself, in the same worktree and the same
@@ -160,13 +161,13 @@ func TestRunDoesNotGoOnByItself(t *testing.T) {
 		stderr string
 	}{
 		{
-			name:   "a place of the machine that is closed for a reason of its own",
-			stderr: theRefusalToSsh,
+			name:   "a place of the machine that crewflow opens nobody",
+			stderr: "! permission requested: external_directory (/opt/homebrew/include); auto-rejecting\n",
 		},
 		{
 			name: "a habit of the run and a refusal crewflow knows nothing of",
 			stderr: "! permission requested: external_directory (/tmp/*); auto-rejecting\n" +
-				"! permission requested: external_directory (~/.ssh/config); auto-rejecting\n",
+				"! permission requested: external_directory (/etc/hosts); auto-rejecting\n",
 		},
 		{
 			name:   "a refusal that names no path at all",
@@ -303,13 +304,18 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 		name    string
 		refusal func(t *testing.T, worktree, place string) string
 		command func(t *testing.T, worktree, place string) string
-		note    string
+		// named is what the report has to name as the place of secrets: the place
+		// itself where the refusal is of something else, and the refused path where the
+		// refusal is of the place as the run wrote it.
+		named func(place, refused string) string
+		kind  string
 	}{
 		{
 			name:    "a write under /tmp that reads a secret",
 			refusal: func(*testing.T, string, string) string { return "/tmp/*" },
 			command: func(_ *testing.T, _, place string) string { return "cat '" + place + "' > /tmp/copy" },
-			note:    secretCommand,
+			named:   func(place, _ string) string { return place },
+			kind:    accessRead,
 		},
 		{
 			name: "a path that climbs out of the worktree to a secret",
@@ -319,7 +325,8 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 			command: func(t *testing.T, worktree, place string) string {
 				return "cat '" + climbedTo(t, worktree, place) + "' > docs/notes.md"
 			},
-			note: secretPath,
+			named: func(_, refused string) string { return refused },
+			kind:  accessRead,
 		},
 		{
 			name:    "a heredoc that writes a secret into a file of the worktree",
@@ -327,7 +334,8 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 			command: func(_ *testing.T, _, place string) string {
 				return "cat > docs/DESIGN.md <<'EOF'\nthe key is in " + place + "\nEOF"
 			},
-			note: secretPath,
+			named: func(_, refused string) string { return refused },
+			kind:  accessText,
 		},
 	}
 	for _, place := range placesOfSecrets(t, home) {
@@ -349,9 +357,9 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 					t.Fatalf("Run returned an error: %v", err)
 				}
 
-				if result.Outcome != BlockedPermission {
-					t.Errorf("the outcome = %q, want %q: a run that reads a secret stops for the orchestrator",
-						result.Outcome, BlockedPermission)
+				if result.Outcome != BlockedSecret {
+					t.Errorf("the outcome = %q, want %q: a run that reaches a secret stops for the orchestrator",
+						result.Outcome, BlockedSecret)
 				}
 				if result.Attempt != 1 || result.AutoResumed != "" {
 					t.Errorf("the run is the attempt %d (resumed for %q), want the first and no resume",
@@ -365,13 +373,204 @@ func TestRunDoesNotGoOnByItselfAfterASecret(t *testing.T) {
 				if len(result.Rejections) != 1 {
 					t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
 				}
-				for _, want := range []string{refused, shape.note} {
+				named := shape.named(place, refused)
+				for _, want := range []string{refused, named, shape.kind, recoveryDisabled} {
 					if !strings.Contains(result.Rejections[0], want) {
 						t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
 					}
 				}
+				// The journal of the attempt holds the same answer where a watch of the
+				// run shows it.
+				journal := read(t, result.Journal)
+				for _, want := range []string{named, shape.kind, recoveryDisabled} {
+					if !strings.Contains(journal, want) {
+						t.Errorf("the journal of the attempt holds no %q:\n%s", want, journal)
+					}
+				}
 			})
 		}
+	}
+}
+
+// TestRunReachesASecretAndStops is the manual check of §7a.1: each of the ways a run
+// reaches for a place of secrets — reading a key, changing folder into one, searching a
+// token, the other spelling of the path on the machine, and naming one in the text of a
+// command — is an outcome of a run of its own, the report says the place and the kind of
+// access, and nothing goes on by itself (docs/DESIGN.md §7a.1, §7d).
+func TestRunReachesASecretAndStops(t *testing.T) {
+	home := t.TempDir()
+	// The other spelling of a place of secrets on this machine: on a machine of macOS
+	// /var leads to /private/var, and a run is refused for a path in the spelling it
+	// wrote (docs/DESIGN.md §7d).
+	followed, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatalf("follow %s: %v", home, err)
+	}
+	cases := []struct {
+		name    string
+		refused string
+		command string
+		kind    string
+	}{
+		{
+			name:    "reading a key",
+			refused: "~/.ssh/config",
+			command: "cat ~/.ssh/config",
+			kind:    accessRead,
+		},
+		{
+			name:    "changing folder into a place of secrets",
+			refused: "~/.ssh",
+			command: "cd ~/.ssh && ls",
+			kind:    accessCd,
+		},
+		{
+			name:    "searching a token",
+			refused: "~/.netrc",
+			command: "grep x ~/.netrc",
+			kind:    accessRead,
+		},
+		{
+			name:    "a place of secrets in the other spelling of the machine",
+			refused: filepath.Join(followed, ".ssh", "config"),
+			command: "cat " + filepath.Join(followed, ".ssh", "config"),
+			kind:    accessRead,
+		},
+		{
+			name:    "naming a place of secrets in the text of a command",
+			refused: "~/.aws/credentials",
+			command: "cat > docs/DESIGN.md <<'EOF'\nthe credentials are in ~/.aws/credentials\nEOF",
+			kind:    accessText,
+		},
+		{
+			name:    "writing into a place of secrets",
+			refused: "~/.aws/credentials",
+			command: "echo token > ~/.aws/credentials",
+			kind:    accessWrite,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t)
+			m.userHome = home
+			m.answers["opencode"] = answer{
+				stdout: theCall(tc.command) + theRun,
+				stderr: "! permission requested: external_directory (" + tc.refused + "); auto-rejecting\n",
+			}
+			host := &host{task: taskOf(43), opened: true}
+
+			result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+				Request{Number: 43, RepoDir: m.repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			if result.Outcome != BlockedSecret {
+				t.Fatalf("the outcome = %q, want %q for %q", result.Outcome, BlockedSecret, tc.command)
+			}
+			if result.Attempt != 1 || result.AutoResumed != "" {
+				t.Errorf("the run is the attempt %d (resumed for %q), want the first and no resume",
+					result.Attempt, result.AutoResumed)
+			}
+			if got := len(m.commandsOf("opencode")); got != 1 {
+				t.Errorf("the executor was run %d times, want once", got)
+			}
+			if len(result.Rejections) != 1 {
+				t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
+			}
+			for _, want := range []string{tc.refused, tc.kind, recoveryDisabled} {
+				if !strings.Contains(result.Rejections[0], want) {
+					t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
+				}
+			}
+		})
+	}
+}
+
+// TestRunAfterASecretIsNeverResumedByItself: a task that was stopped for reaching a
+// secret is not taken up by crewflow again by itself, whatever the next attempt is
+// refused for — a run that reaches a key is a thing a person decides about, and a habit
+// answered on the way to that decision is crewflow deciding it instead (§7a.1, §8).
+func TestRunAfterASecretIsNeverResumedByItself(t *testing.T) {
+	m := newMachine(t)
+	m.says("opencode",
+		answer{stdout: theRun, stderr: theRefusalToASecret},
+		answer{stdout: theRun, stderr: theRefusalToTmp},
+		answer{stdout: theRun},
+	)
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+
+	stopped, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("the first run returned an error: %v", err)
+	}
+	if stopped.Outcome != BlockedSecret {
+		t.Fatalf("the first run ended as %q, want %q", stopped.Outcome, BlockedSecret)
+	}
+
+	// The orchestrator goes on in the same session, and the run is refused its scratch
+	// folder: a habit crewflow answers by itself everywhere else, and nowhere here.
+	result, err := Run(t.Context(), m.env(), cfg, host.set(),
+		Request{Number: 43, RepoDir: m.repo, Continue: "go on with the task"})
+	if err != nil {
+		t.Fatalf("the second run returned an error: %v", err)
+	}
+
+	if result.Outcome != BlockedPermission {
+		t.Errorf("the second run ended as %q, want %q: nothing follows a run that reached a secret",
+			result.Outcome, BlockedPermission)
+	}
+	if result.Attempt != 2 || result.AutoResumed != "" {
+		t.Errorf("the second run is the attempt %d (resumed for %q), want the second and no resume",
+			result.Attempt, result.AutoResumed)
+	}
+	if got := len(m.commandsOf("opencode")); got != 2 {
+		t.Errorf("the executor was run %d times, want the run that reached a secret and the one after it", got)
+	}
+}
+
+// TestRunThatReachedASecretIsBlockedSecretWhateverEndedIt: an attempt to reach a secret
+// stops the run as `blocked-secret` whatever ended the attempt — a person who stopped it,
+// the time of the project that ran out, the executor that failed — and a habit in the
+// same attempt does not make it a habit (docs/DESIGN.md §7a.1, §8).
+func TestRunThatReachedASecretIsBlockedSecretWhateverEndedIt(t *testing.T) {
+	cases := []struct {
+		name string
+		// hangs is a run that ran out of time, and code is the code an executor that
+		// failed exits with. Neither of them hides the secret.
+		hangs bool
+		code  int
+	}{
+		{name: "a run that ran out of time", hangs: true},
+		{name: "an executor that failed", code: 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t)
+			timeout := ""
+			if tc.hangs {
+				timeout = "20ms"
+			}
+			m.answers["opencode"] = answer{stdout: theRun, stderr: theRefusalToASecret, hangs: tc.hangs, code: tc.code}
+			host := &host{task: taskOf(43), opened: true}
+
+			result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, timeout), host.set(),
+				Request{Number: 43, RepoDir: m.repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			if result.Outcome != BlockedSecret {
+				t.Errorf("the outcome = %q, want %q: the secret is what a person has to see", result.Outcome, BlockedSecret)
+			}
+			if got := len(m.commandsOf("opencode")); got != 1 {
+				t.Errorf("the executor was run %d times, want once", got)
+			}
+			if len(result.Rejections) == 0 || !strings.Contains(result.Rejections[0], recoveryDisabled) {
+				t.Errorf("the result holds the refusals %q, want the one of the run with the place in it", result.Rejections)
+			}
+		})
 	}
 }
 
@@ -406,16 +605,6 @@ func climbedTo(t *testing.T, worktree, place string) string {
 		t.Fatalf("the path of %s from %s: %v", place, worktree, err)
 	}
 	return climbed
-}
-
-// closedOf is the places that stay closed to the executor on the machine of a test,
-// worked out the way a run works them out — from the access policy of the project and
-// the home of the person — so that a test of the classifier reads the same list a run
-// does and not a list made up for it (docs/DESIGN.md §7d).
-func closedOf(t *testing.T, home string) closed {
-	t.Helper()
-	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
-	return newClosed(policy, home)
 }
 
 // TestHabitOf is the classifier of a refusal, which is the whole of what crewflow
@@ -515,49 +704,10 @@ func TestHabitOf(t *testing.T) {
 			worktree: worktree,
 			want:     reasonOther,
 		},
-		// A place of secrets is no habit of anybody, whatever the shape of the command
-		// it came in: these three are the shapes a run is answered by itself on, and
-		// none of them makes a run that was reading a key a run that forgot where its
-		// scratch is (docs/DESIGN.md §7d).
-		{
-			name:    "a place of secrets in the spelling the run wrote it in",
-			refusal: "external_directory ~/.ssh/id_ed25519",
-			want:    reasonOther,
-		},
-		{
-			name:     "a place of secrets in the spelling of the machine",
-			refusal:  "external_directory /home/andrey/.ssh/id_ed25519",
-			worktree: worktree,
-			want:     reasonOther,
-		},
-		{
-			name:    "a place of secrets behind the other name of the machine",
-			refusal: "external_directory /private/tmp/../../../home/andrey/.ssh/config",
-			want:    reasonOther,
-		},
-		{
-			name:     "a place of secrets a command climbed to out of the worktree",
-			refusal:  "external_directory ../../../../.ssh/config",
-			worktree: worktree,
-			want:     reasonOther,
-		},
-		{
-			name:     "a file of a pattern of secrets inside the worktree",
-			refusal:  "external_directory " + filepath.Join(worktree, ".env"),
-			worktree: worktree,
-			want:     reasonOther,
-		},
-		{
-			name:     "a place of secrets named in a command that writes a file of the worktree",
-			refusal:  "external_directory /tmp/*",
-			calls:    []profile.Call{{Tool: "bash", Argument: "cat > /tmp/copy <<'EOF'\n" + home + "/.ssh/id_ed25519\nEOF"}},
-			worktree: worktree,
-			want:     reasonOther,
-		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &runner{worktree: tc.worktree, closed: closedOf(t, home)}
+			r := &runner{worktree: tc.worktree}
 			if got := r.habitOf(tc.refusal, tc.calls); got != tc.want {
 				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
 			}

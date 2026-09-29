@@ -57,6 +57,9 @@ func TestRunOutcomes(t *testing.T) {
 		wantRejects []string
 		wantReason  string
 		wantOutside []string
+		// wantJournal is what the journal of the attempt holds besides what the
+		// executor wrote, and is empty where the run says nothing of its own.
+		wantJournal string
 	}{
 		{
 			name:    "the run opened the change request",
@@ -67,18 +70,37 @@ func TestRunOutcomes(t *testing.T) {
 			wantOK:  true,
 		},
 		{
-			// The refusal here is of a place of secrets, which is closed to the
-			// executor whatever the project wrote and is never a habit crewflow
-			// answers by itself: the run stops and the report says what it was
-			// refused (docs/DESIGN.md §7a, §7d).
-			name:    "the run was refused a permission",
+			// The refusal here is of a place of secrets, which is closed to the executor
+			// whatever the project wrote and is an outcome of a run of its own: the run
+			// stops, nothing goes on by itself, and the report says what it was refused
+			// and what crewflow will not do about it (docs/DESIGN.md §7a.1, §7d).
+			name:    "the run reached for a secret",
 			stdout:  theRun,
 			stderr:  "! permission requested: external_directory (~/.ssh/config); auto-rejecting\n",
 			opened:  true,
 			changed: "internal/run/run.go\n",
+			want:    BlockedSecret,
+			wantRejects: []string{
+				"external_directory ~/.ssh/config — a secret, closed to the executor whatever the project " +
+					"wrote: ~/.ssh/config (" + accessSilent + "); " + recoveryDisabled,
+			},
+			// The journal of the attempt holds the place, the kind of access and that no
+			// run of it goes on by itself: the kind is unknown where the run wrote no
+			// command of its own that crewflow can read.
+			wantJournal: "crewflow: the executor reached for a secret: ~/.ssh/config (" + accessSilent + "); " +
+				recoveryDisabled + "\n",
+		},
+		{
+			// A refusal of anything else is the outcome it was before: a place of
+			// secrets is the only refusal that is an outcome of its own.
+			name:    "the run was refused a permission",
+			stdout:  theRun,
+			stderr:  "! permission requested: external_directory (/opt/homebrew/include); auto-rejecting\n",
+			opened:  true,
+			changed: "internal/run/run.go\n",
 			want:    BlockedPermission,
 			wantRejects: []string{
-				"external_directory ~/.ssh/config" + secretPath,
+				"external_directory /opt/homebrew/include",
 			},
 		},
 		{
@@ -177,8 +199,8 @@ func TestRunOutcomes(t *testing.T) {
 
 			// What the executor wrote is left where a person can read it, and the
 			// state of the task says how the attempt ended.
-			if got := whatWasWritten(t, result.Journal); got != tc.stdout {
-				t.Errorf("the journal holds %q, want what the executor wrote", got)
+			if got, want := whatWasWritten(t, result.Journal), tc.stdout+tc.wantJournal; got != want {
+				t.Errorf("the journal holds %q, want %q", got, want)
 			}
 			if got := read(t, result.ErrorJournal); got != tc.stderr {
 				t.Errorf("the journal of the way out holds %q, want what the executor said", got)

@@ -43,6 +43,12 @@ const (
 	// there. Each refusal is a thing an orchestrator decides about, and the run is
 	// not silently good news (docs/DESIGN.md §7a, §7d).
 	BlockedPermission Kind = "blocked-permission"
+	// BlockedSecret means the executor reached for a place of the machine that stays
+	// closed whatever the project wrote: a key, a token, a `.env`. It is an outcome of
+	// its own and not a refusal among others, because it is the one refusal a run
+	// never goes on from by itself and the one an orchestrator reads before anything
+	// else in it (docs/DESIGN.md §7a.1, §7d, §8).
+	BlockedSecret Kind = "blocked-secret"
 	// Blocked means the executor stopped by itself and said why: it cannot read
 	// the task, or it needs a secret or a package that is not there
 	// (docs/DESIGN.md §7b, §7d).
@@ -65,7 +71,7 @@ const (
 // order a list of runs counts and says them in: what says the most about a run first,
 // and the ones that mean the same thing beside each other.
 var kinds = []Kind{
-	Running, MaybeRunning, Interrupted, TimedOut, BlockedPermission, Blocked,
+	Running, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
 	ExecutorFailed, NoChangeRequest, ChangeRequestOpened, OutOfScope,
 }
 
@@ -74,22 +80,33 @@ var kinds = []Kind{
 // it into: a run that opened a request and went outside the boundaries of the task
 // is told about both, or a person would see an outcome and no work.
 //
+// What the run reached for a secret is asked before anything else, and it is one answer
+// with the refusals: the outcome of a run that reached one and the report of it are the
+// same answer read twice (docs/DESIGN.md §7a.1, §7d, §8).
+//
 // The last question is what the run changed, and it is asked of git in the worktree
 // and of the globs of the task itself (docs/DESIGN.md §7c).
-func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []byte, code int, ended Kind) (Result, error) {
-	rejections := r.profile.Rejections(stdout, stderr)
+func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []byte, code int, ended Kind,
+	secrets findings) (Result, error) {
+	// An attempt to reach a secret stops the run whatever ended the attempt and
+	// whatever the habit of the command looks like: the refusals of such a run are
+	// shown with the place, the kind of access and the fact that no run of it goes on
+	// by itself (docs/DESIGN.md §7a.1, §7d, §8).
+	result.Rejections = secrets.marked
+	if len(secrets.reached) > 0 {
+		return result.spent(BlockedSecret), nil
+	}
 	reason := r.profile.Blocked(stdout)
 	switch {
 	case ended == Interrupted:
 		// What the executor was refused and why it stopped are still facts about the
 		// run, and they are in the result: a person who stopped the run goes on in
 		// its session, and the refusals are what a continuation runs into again.
-		result.Rejections, result.Reason = rejections, reason
+		result.Reason = reason
 		return result.spent(Interrupted), nil
 	case ended == TimedOut:
 		return result.spent(TimedOut), nil
-	case len(rejections) > 0:
-		result.Rejections = rejections
+	case len(secrets.marked) > 0:
 		return result.spent(BlockedPermission), nil
 	case reason != "":
 		result.Reason = reason

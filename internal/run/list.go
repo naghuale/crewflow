@@ -425,12 +425,13 @@ func byRecency(a, b Entry) int {
 }
 
 // wantsAttention is whether the outcome of a run is one a person has to do something
-// about: it is going, it was refused a permission, it stopped by itself, it ran out
-// of time, the executor of it is gone, or nobody knows whether it is going at all.
-// A run that came out of it is not one, however long ago it was.
+// about: it is going, it reached for a secret, it was refused a permission, it stopped by
+// itself, it ran out of time, the executor of it is gone, or nobody knows whether it is
+// going at all. A run that came out of it is not one, however long ago it was.
 func wantsAttention(outcome Kind) bool {
 	switch outcome {
-	case Running, MaybeRunning, Interrupted, TimedOut, BlockedPermission, Blocked, ExecutorFailed:
+	case Running, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
+		ExecutorFailed:
 		return true
 	default:
 		return false
