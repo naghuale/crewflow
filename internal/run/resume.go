@@ -206,17 +206,25 @@ func (r *runner) before(state State) (Attempt, bool) {
 //
 // A refusal of a place of secrets never reaches this: such a run is `blocked-secret`
 // from the start and goes on by itself nothing (§7a.1, §7d, §8).
+//
+// The habits are told apart in the order of what is most about the run and the least
+// about the machine: a folder beside the worktree of the task is the wrong `cd` of a run
+// wherever the worktrees of a project live — on a machine whose worktrees live in the
+// temporary folder, every one of them is under `/tmp`, and a habit that is read as "it
+// wrote to /tmp" is a habit crewflow answers with the wrong words. A path named only in
+// the text of a command is the same case for the same reason. The temporary folder is
+// what is left, and it is the only habit of the three that is about the machine alone.
 func (r *runner) habitOf(refusal string, calls []profile.Call) reason {
 	path := refusedPath(refusal)
 	switch {
 	case path == "":
 		return reasonOther
-	case temporary(path):
-		return reasonTmp
 	case beside(path, r.worktree):
 		return reasonOutside
 	case onlyNamed(path, calls, r.worktree):
 		return reasonMention
+	case temporary(path):
+		return reasonTmp
 	default:
 		return reasonOther
 	}

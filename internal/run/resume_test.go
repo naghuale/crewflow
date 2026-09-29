@@ -204,6 +204,62 @@ func TestRunDoesNotGoOnByItself(t *testing.T) {
 	}
 }
 
+// TestASecretBesideTheWorktreeIsStillASecret: the habits are told apart before the
+// temporary folder, and the check of a place of secrets is ahead of every habit of them
+// — a worktree of a project that a project made under a place of secrets, and a refusal
+// of the folder beside it, is a refusal of that place and not a wrong `cd`. The habits
+// are about where a run keeps its temporary files and how it addresses a folder; a key
+// is a key in whatever folder of the machine it is named in (docs/DESIGN.md §7a.1, §7d,
+// §8).
+func TestASecretBesideTheWorktreeIsStillASecret(t *testing.T) {
+	m := newMachine(t)
+	// The worktrees of the project are made where a place of secrets is, which no
+	// project would name and this test has to: it is the only way the two checks of a
+	// run meet on one refusal.
+	m.worktrees = filepath.Join(m.userHome, ".ssh")
+	beside := filepath.Join(m.worktrees, "naghuale-crewflow", "44")
+	m.answers["opencode"] = answer{
+		stdout: theCall("cd "+beside+" && ls") + theRun,
+		stderr: "! permission requested: external_directory (" + beside + "); auto-rejecting\n",
+	}
+	host := &host{task: taskOf(43), opened: true}
+
+	result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+		Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	if result.Outcome != BlockedSecret {
+		t.Fatalf("the outcome = %q, want %q: a place of secrets is a secret in whatever folder it is in",
+			result.Outcome, BlockedSecret)
+	}
+	if result.Attempt != 1 || result.AutoResumed != "" {
+		t.Errorf("the run is the attempt %d (resumed for %q), want the first and no resume",
+			result.Attempt, result.AutoResumed)
+	}
+	if got := len(m.commandsOf("opencode")); got != 1 {
+		t.Errorf("the executor was run %d times, want once", got)
+	}
+	if len(result.Rejections) == 0 {
+		t.Fatalf("the result holds no refusal, want the one of the run")
+	}
+	for _, want := range []string{beside, recoveryDisabled} {
+		if !strings.Contains(result.Rejections[0], want) {
+			t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
+		}
+	}
+	// The habit of that refusal is the wrong `cd` — a folder beside the worktree — and
+	// the run is stopped before the habits are looked at. Saying so here is what keeps
+	// the two checks in the order they are in: a run that reached a key is a run that
+	// reached a key, whatever the folder of it looks like.
+	refused, _, _ := strings.Cut(result.Rejections[0], " — ")
+	worktree := filepath.Join(m.worktrees, "naghuale-crewflow", "43")
+	if got := (&runner{worktree: worktree}).habitOf(refused, nil); got != reasonOutside {
+		t.Errorf("the habit of %q is %q, want %q beside a worktree", refused, got, reasonOutside)
+	}
+}
+
 // TestRunGoesOnByItselfAfterARefusalBesideTheWorktree: the other worktree of the
 // project is as much a place of the machine as /tmp is, and the run that reached for
 // it goes on by itself with the text of that habit (docs/DESIGN.md §7a, §8).
@@ -826,6 +882,36 @@ func TestHabitOf(t *testing.T) {
 			refusal:  "external_directory ../44/run.go",
 			worktree: worktree,
 			want:     reasonOutside,
+		},
+		{
+			// The worktrees of a project may live in the temporary folder of the machine
+			// — a machine whose TMPDIR says so has every worktree of every project under
+			// `/tmp` — and a folder beside the worktree of a task is the wrong `cd` of a
+			// run there as everywhere else. The habits are told apart before the
+			// temporary folder is looked at, or a run that walked out of its worktree
+			// would be told to keep its scratch (docs/DESIGN.md §7a).
+			name:     "the worktree of another task where the worktrees live in the temporary folder",
+			refusal:  "external_directory /tmp/crewflow-test/worktrees/owner-repo/telemetry",
+			worktree: "/tmp/crewflow-test/worktrees/owner-repo/7",
+			want:     reasonOutside,
+		},
+		{
+			// The same machine and a path named only in the text of a command that writes
+			// a file of the worktree: the other habit that a folder under the temporary
+			// folder used to be read as.
+			name:     "a path named in a command where the worktrees live in the temporary folder",
+			refusal:  "external_directory /var/lib/telemetry",
+			calls:    []profile.Call{{Tool: "bash", Argument: "cat > docs/DESIGN.md <<'EOF'\nthe telemetry is in /var/lib/telemetry\nEOF"}},
+			worktree: "/tmp/crewflow-test/worktrees/owner-repo/7",
+			want:     reasonMention,
+		},
+		{
+			// The same worktree and a path of the temporary folder of the machine that is
+			// not beside it: this one is the temporary folder, wherever the worktrees are.
+			name:     "a file of the temporary folder beside no worktree of a task",
+			refusal:  "external_directory /tmp/scratch/plan_test.go",
+			worktree: "/tmp/crewflow-test/worktrees/owner-repo/7",
+			want:     reasonTmp,
 		},
 		{
 			name:     "a path of the machine named in a command that writes a file of the worktree",
