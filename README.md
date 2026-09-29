@@ -1,7 +1,7 @@
 # crewflow
 
-**A fail-closed coordination protocol for coding agents: one task, one worktree, one reviewed SHA,
-one verified merge.**
+**A fail-closed coordination protocol for coding agents: responsibilities are explicit, approvals
+are bound to a commit SHA, secrets stay out of reach, and a merge is verified before it happens.**
 
 An executor implements one task in its own git worktree. An orchestrator reviews the result and
 decides what gets merged. Issues and pull requests remain the source of truth, approvals are
@@ -145,6 +145,39 @@ crewflow auth app check                          # key, installation, rights —
 
 The private key stays in the macOS keychain and never reaches the executor, a journal or a
 terminal. See §7i of the design.
+
+## Responsibilities
+
+crewflow separates four roles:
+
+- **executor** — writes the code of one task;
+- **orchestrator** — reviews and coordinates;
+- **owner** — approves risky work and accepts what people will see;
+- **crewflow** — enforces the rules between them.
+
+The executor may create changes, the orchestrator may approve them, the owner may accept them —
+and none of them does the others' part. Who may do what, and what holds each rule, is the
+responsibility matrix in §7k of the design.
+
+## Fail-closed access
+
+The executor works in three zones:
+
+- 🟢 its worktree — read-write;
+- 🟡 the dependencies the project names — read-only;
+- 🔴 secrets (`~/.ssh`, the Keychain, cloud and GitHub credentials, `.env` files…) — never,
+  whatever the project says.
+
+A refused path simply stops the run; a refusal on a secret stops it as `blocked-secret`, and
+crewflow never resumes such a run by itself (in progress). A false alarm is cheaper than a leaked
+secret.
+
+## Process health
+
+crewflow measures the process, not the agents (in progress): first-pass success, clean after
+merge, review rounds, time to merge, and the one biggest loss with the control that would reduce
+it. Every number is computed from the facts of the process and never stored as state, and every
+escaped defect has to leave a new test, gate check or acceptance rule behind (§7j, §8).
 
 ## What the executor may read
 
