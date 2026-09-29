@@ -148,23 +148,175 @@ func TestMT002EveryCaseNamesAReasonOrAnOutcomeThatExists(t *testing.T) {
 
 // TestMT003TheRegistryOfThePromisesMatchesTheDesign is the promise the registry exists
 // for: the promises and the numbers of their cases live in the code as well, and the two
-// copies have to name the same cases. It walks every promise the registry holds and fails
-// when one of them names a case the design does not, or a promise the design does not
-// have; a promise of another task is not in the registry and is kept by that task
-// (docs/DESIGN.md §7h).
+// copies have to be the same list, in both directions. A promise of §7h that is in no
+// registry of the code is a promise nobody is keeping; a promise of the code that §7h
+// does not know about is a test nobody agreed to; and a promise whose cases are not
+// written yet is in the list of the promises crewflow waits for a task for, and only
+// there (docs/DESIGN.md §7h).
 func TestMT003TheRegistryOfThePromisesMatchesTheDesign(t *testing.T) {
-	inTheDesign := promisesInTheDesign(t)
+	for _, differs := range comparePromises(promisesInTheDesign(t), registry(), waitingFor()) {
+		t.Error(differs)
+	}
+}
+
+// TestMT003FailsWhenAPromiseLeavesTheRegistry shows the rule of the meta-test and not
+// only that it holds today: a promise that is gone from the registry of the code and is
+// still written in §7h is a promise nobody is keeping, and the test has to say so
+// (docs/DESIGN.md §7h).
+func TestMT003FailsWhenAPromiseLeavesTheRegistry(t *testing.T) {
+	withoutTheChecks := make([]promise, 0, len(registry()))
 	for _, kept := range registry() {
-		named, is := inTheDesign[kept.number]
-		if !is {
-			t.Errorf("promise %d is in the registry of the code and not in §7h", kept.number)
+		if kept.number == promiseOfChecks {
 			continue
 		}
-		if !slices.Equal(named, kept.its) {
-			t.Errorf("promise %d holds the cases %v in §7h and %v in the registry of the code",
-				kept.number, named, kept.its)
+		withoutTheChecks = append(withoutTheChecks, kept)
+	}
+
+	differs := comparePromises(promisesInTheDesign(t), withoutTheChecks, waitingFor())
+
+	if len(differs) == 0 {
+		t.Fatalf("MT-003 holds with the promise %d left out of the registry of the code: "+
+			"§7h writes it and nothing keeps it", promiseOfChecks)
+	}
+	if !names(differs, promiseOfChecks) {
+		t.Errorf("the rule holds %v, want it to name the promise %d it has lost", differs, promiseOfChecks)
+	}
+}
+
+// TestMT003FailsWhenTheDesignHasAPromiseTheRegistryDoesNotHave is the other direction: a
+// promise written into §7h with cases of its own and kept by nobody is the same mistake
+// as the other way round, and a promise whose cases are not written yet is the one case
+// where §7h may be ahead of the code (docs/DESIGN.md §7h).
+func TestMT003FailsWhenTheDesignHasAPromiseTheRegistryDoesNotHave(t *testing.T) {
+	inTheDesign := promisesInTheDesign(t)
+	inTheDesign[promiseAheadOfTheCode] = []string{"IT-030"}
+
+	differs := comparePromises(inTheDesign, registry(), waitingFor())
+
+	if len(differs) == 0 {
+		t.Fatalf("MT-003 holds with the promise %d written in §7h and in no registry of the code",
+			promiseAheadOfTheCode)
+	}
+	if !names(differs, promiseAheadOfTheCode) {
+		t.Errorf("the rule holds %v, want it to name the promise %d the design has and the code does not",
+			differs, promiseAheadOfTheCode)
+	}
+}
+
+// TestMT003FailsWhenAPromiseIsStillWaitedFor is what keeps the list of the promises
+// crewflow waits for a task for from going stale: a promise whose cases are written and
+// registered is kept, and a list that still waits for it says that crewflow is waiting
+// for what it already has (docs/DESIGN.md §7h).
+func TestMT003FailsWhenAPromiseIsStillWaitedFor(t *testing.T) {
+	stale := append(waitingFor(), waitedFor{number: promiseOfMerge, task: taskOfThisTask})
+
+	differs := comparePromises(promisesInTheDesign(t), registry(), stale)
+
+	if len(differs) == 0 {
+		t.Fatalf("MT-003 holds with the promise %d waited for and kept at the same time", promiseOfMerge)
+	}
+	if !names(differs, promiseOfMerge) {
+		t.Errorf("the rule holds %v, want it to name the promise %d the list waits for and the registry keeps",
+			differs, promiseOfMerge)
+	}
+}
+
+// The promises of §7h that the tests above name by their number, so that a test does not
+// carry a number the code may disagree with the design about.
+const (
+	// promiseOfChecks is the promise that a merge is impossible with the CI of the head
+	// red, and promiseOfTheMerge the one that the merge happened and exactly that.
+	promiseOfChecks = 3
+	promiseOfMerge  = 6
+	// promiseOfTheOwner is the acceptance of the owner before a merge and taskOfTheOwner
+	// the task that writes it; taskOfThisTask is the task that keeps the promise of the
+	// merge, and promiseAheadOfTheCode the number a test gives a promise that §7h has and
+	// the code has not, so that no test writes a promise into the design.
+	promiseOfTheOwner     = 5
+	taskOfTheOwner        = 9
+	taskOfThisTask        = 8
+	promiseAheadOfTheCode = 9
+)
+
+// comparePromises is the whole rule of MT-003, and what it does not accept. Every promise
+// of the design is in the registry of the code with the same cases of it, or is a promise
+// crewflow waits for a task to write the cases of — the design states a promise before its
+// cases are written, and the list of what is waited for says which task is writing them.
+// Every promise of the registry is in the design, and a promise the registry keeps is not
+// waited for any more: the task wrote its cases and the list must not go on saying that
+// crewflow waits for what it already has.
+//
+// It takes the promises as they are given and answers what does not match, so that a
+// test can show the rule on a promise that is not there: a rule that cannot be shown
+// failing is a rule nobody has to obey (docs/DESIGN.md §7h).
+func comparePromises(inTheDesign map[int][]string, kept []promise, awaited []waitedFor) []string {
+	registered := make(map[int][]string, len(kept))
+	for _, p := range kept {
+		registered[p.number] = p.its
+	}
+	waitingForTask := make(map[int]int, len(awaited))
+	for _, w := range awaited {
+		waitingForTask[w.number] = w.task
+	}
+
+	var differs []string
+	for _, number := range promiseNumbers(inTheDesign) {
+		named := inTheDesign[number]
+		inRegistry, isRegistered := registered[number]
+		_, isWaitedFor := waitingForTask[number]
+		switch {
+		case isRegistered && !slices.Equal(inRegistry, named):
+			differs = append(differs, fmt.Sprintf("promise %d holds the cases %v in §7h and %v in the registry of the code",
+				number, named, inRegistry))
+		case isRegistered:
+		case isWaitedFor:
+		default:
+			differs = append(differs, fmt.Sprintf("promise %d of §7h is in no registry of the code, and no task is waited on for it",
+				number))
 		}
 	}
+	for _, p := range kept {
+		if _, is := inTheDesign[p.number]; !is {
+			differs = append(differs, fmt.Sprintf("promise %d is in the registry of the code and not in §7h", p.number))
+		}
+	}
+	// A promise the registry keeps is not waited for any more: the task wrote its cases
+	// and they are there, and a list that goes on naming the task would say that
+	// crewflow waits for a promise it already keeps. A promise nobody wrote about is
+	// not waited for either: there is nothing to wait for.
+	for _, w := range awaited {
+		cases, isKept := registered[w.number]
+		switch {
+		case isKept:
+			differs = append(differs, fmt.Sprintf("promise %d is waited for the task #%d and its cases %v are in the registry of the code: it is kept, and nothing is waited for any more",
+				w.number, w.task, cases))
+		default:
+			if _, is := inTheDesign[w.number]; !is {
+				differs = append(differs, fmt.Sprintf("the code waits for the promise %d of the task #%d, and §7h has no such promise",
+					w.number, w.task))
+			}
+		}
+	}
+	return differs
+}
+
+// promiseNumbers are the promises of the design in the order it writes them in: a map of
+// them has no order of its own, and what the rule holds has to read the same twice.
+func promiseNumbers(inTheDesign map[int][]string) []int {
+	numbers := make([]int, 0, len(inTheDesign))
+	for number := range inTheDesign {
+		numbers = append(numbers, number)
+	}
+	slices.Sort(numbers)
+	return numbers
+}
+
+// names is whether what the rule holds says anything of that promise: a rule that fails
+// for another reason than the one a test is about proves nothing about it.
+func names(differs []string, number int) bool {
+	return slices.ContainsFunc(differs, func(differs string) bool {
+		return strings.Contains(differs, fmt.Sprintf("promise %d ", number))
+	})
 }
 
 // promise is one promise of docs/DESIGN.md §7h with the cases that keep it: the number
@@ -178,20 +330,39 @@ type promise struct {
 	its    []string
 }
 
-// registry is the promises of §7h that the merge keeps, with the cases of them. The
-// promise of the owner's acceptance is that of another task and is not here, and the
-// promise of the environment of a run names the tests of it by their own names; a task
-// that adds a promise adds it here with its cases.
+// waitedFor is a promise of §7h whose cases are not written yet and the task that writes
+// them: the promise stands in the design and the code names the task instead of the
+// cases, and nothing else may stand for it (docs/DESIGN.md §7h).
+type waitedFor struct {
+	// number is the promise of §7h and task the number of the task that keeps it.
+	number int
+	task   int
+}
+
+// registry is the promises of §7h that the code keeps, with the cases of each. The
+// promise of the environment of a run names the tests of it by their own names and is
+// not here; a task that keeps a promise adds it with its cases and takes it out of the
+// list of what is waited for.
 func registry() []promise {
 	return []promise{
 		{number: 1, its: []string{"IT-001", "IT-002", "IT-005"}},
 		{number: 2, its: []string{"IT-003", "IT-004", "IT-006"}},
-		{number: 3, its: []string{"IT-007", "IT-008", "IT-009", "IT-010", "IT-011"}},
+		{number: promiseOfChecks, its: []string{"IT-007", "IT-008", "IT-009", "IT-010", "IT-011"}},
 		{number: 4, its: []string{
 			"IT-012", "IT-013", "IT-014", "IT-015", "IT-016", "IT-017", "IT-018",
 		}},
-		{number: 6, its: []string{"IT-019", "IT-020", "IT-021", "IT-022", "IT-023"}},
+		{number: promiseOfMerge, its: []string{"IT-019", "IT-020", "IT-021", "IT-022", "IT-023"}},
 		{number: 7, its: []string{"MT-001", "MT-002", "MT-003"}},
+	}
+}
+
+// waitingFor is the promises of §7h whose cases are not written yet, each with the task
+// that writes them. The list is short and it is not a place to leave a promise nobody is
+// working on: the rule of MT-003 fails while a promise here has its cases in the registry
+// of the code (docs/DESIGN.md §7h).
+func waitingFor() []waitedFor {
+	return []waitedFor{
+		{number: promiseOfTheOwner, task: taskOfTheOwner},
 	}
 }
 
@@ -202,7 +373,7 @@ func registry() []promise {
 // one (docs/DESIGN.md §7h).
 func promisesInTheDesign(t *testing.T) map[int][]string {
 	t.Helper()
-	design, err := os.ReadFile(filepath.Join("..", "..", "docs", "DESIGN.md"))
+	design, err := os.ReadFile(filepath.Join(rootOfTheWorktree(t), "docs", "DESIGN.md"))
 	if err != nil {
 		t.Fatalf("read the design: %v", err)
 	}
@@ -232,6 +403,31 @@ func promisesInTheDesign(t *testing.T) map[int][]string {
 		}
 	}
 	return found
+}
+
+// rootOfTheWorktree is the folder the tests of a package are run under and the folder
+// the project is in: the design is a file of the project and the tests are run in the
+// folder of the package, so it is looked for by walking up until the folder that holds
+// both the design and go.mod is found — no path of the test reaches outside the worktree
+// and none of them is written down (docs/DESIGN.md §7h).
+func rootOfTheWorktree(t *testing.T) string {
+	t.Helper()
+	started, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("the folder the tests are run in: %v", err)
+	}
+	for folder := started; ; {
+		_, design := os.Stat(filepath.Join(folder, "docs", "DESIGN.md"))
+		_, module := os.Stat(filepath.Join(folder, "go.mod"))
+		if design == nil && module == nil {
+			return folder
+		}
+		parent := filepath.Dir(folder)
+		if parent == folder {
+			t.Fatalf("no folder with docs/DESIGN.md and go.mod above %s: the design of the project is where the module is", started)
+		}
+		folder = parent
+	}
 }
 
 // The marks of the section of §7h that holds the promises and the section after it: a
