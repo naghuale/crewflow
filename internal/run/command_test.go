@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/naghuale/crewflow/internal/access"
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 )
@@ -201,14 +202,14 @@ func TestPrompt(t *testing.T) {
 	}
 	task := forge.Task{Number: 43, Title: "crewflow task run", Body: "## Why\n\na person runs a command by hand"}
 
-	prompt, err := Prompt(task, cfg, "crewflow/43-crewflow-task-run", "/w/43")
+	prompt, err := Prompt(task, cfg, "crewflow/43-crewflow-task-run", "/w/43", access.Policy{})
 	if err != nil {
 		t.Fatalf("Prompt returned an error: %v", err)
 	}
 
 	for _, want := range []string{
 		"/w/43", "crewflow/43-crewflow-task-run",
-		".scratch/", "AGENTS.md", "BLOCKED:",
+		".scratch/", "AGENTS.md", "BLOCKED:", "t.TempDir()",
 		"go test -race -count=1 ./...", "golangci-lint run ./...",
 		"Closes #43",
 		task.Title, task.Body,
@@ -231,7 +232,7 @@ func TestPrompt(t *testing.T) {
 // change request, and the prompt says so instead of listing nothing under a
 // heading that promises something.
 func TestPromptWithoutGates(t *testing.T) {
-	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"}, config.Config{}, "crewflow/43-t", "/w/43")
+	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"}, config.Config{}, "crewflow/43-t", "/w/43", access.Policy{})
 	if err != nil {
 		t.Fatalf("Prompt returned an error: %v", err)
 	}
@@ -247,7 +248,7 @@ func TestPromptWithoutGates(t *testing.T) {
 func TestContinuation(t *testing.T) {
 	task := forge.Task{Number: 43, Title: "crewflow task run", Body: "## Why\n\na person runs a command by hand"}
 
-	prompt, err := Continuation("the review asked for tests", task, config.Config{}, "crewflow/43-crewflow-task-run", "/w/43")
+	prompt, err := Continuation("the review asked for tests", task, config.Config{}, "crewflow/43-crewflow-task-run", "/w/43", access.Policy{})
 	if err != nil {
 		t.Fatalf("Continuation returned an error: %v", err)
 	}
@@ -259,6 +260,83 @@ func TestContinuation(t *testing.T) {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("the continuation does not hold %q, want the whole task again:\n%s", want, prompt)
 		}
+	}
+}
+
+// TestPromptShowsTheMapOfTheAccess: an agent that is refused a permission for a path
+// does not go and read a table of them, so the assignment of the run carries the whole
+// of what the executor may read and write before it starts, in the same words the
+// journal of the run and the report of `crewflow doctor` use: the path, the hand that
+// asked for it and the reason. A run told one thing and given another is a run nobody
+// can read afterwards, and a path without its hand says nothing about who wanted it
+// (docs/DESIGN.md §7d).
+func TestPromptShowsTheMapOfTheAccess(t *testing.T) {
+	policy := access.Policy{
+		Read: []access.Grant{
+			{Path: "/Users/someone/go/pkg/mod", Source: access.SourceAccess,
+				Reason: "the project asked for it with `go env GOMODCACHE`"},
+			{Path: "/usr/local/go", Source: access.SourceTask,
+				Reason: "the task reads the source of the toolchain"},
+		},
+		Deny: []string{"/Users/someone/.ssh", "/Users/someone/.netrc"},
+	}
+
+	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"}, config.Config{}, "crewflow/43-t", "/w/43", policy)
+	if err != nil {
+		t.Fatalf("Prompt returned an error: %v", err)
+	}
+
+	for _, want := range []string{
+		// Where to write: the worktree and the scratch, and nothing else.
+		"/w/43 · crewflow · the worktree of this task",
+		"/w/43/.scratch/tmp · crewflow · the scratch of this run",
+		// What to read outside, each with the hand behind it and the reason.
+		"/Users/someone/go/pkg/mod · [access] · the project asked for it with `go env GOMODCACHE`",
+		"/usr/local/go · task · the task reads the source of the toolchain",
+		// What is never readable.
+		"/Users/someone/.ssh",
+		// The rule of paths.
+		"no `..`",
+		"t.TempDir()",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("the prompt of the run does not hold %q:\n%s", want, prompt)
+		}
+	}
+}
+
+// TestPromptOfARunWithNothingToReadOutside: a project that named no folder and a task
+// that asked for none leave the whole of the machine outside the worktree closed, and
+// the map says so rather than showing a heading with nothing under it: an agent that
+// reads a list of nothing under a heading of what is open does not know whether it may
+// go and find out.
+func TestPromptOfARunWithNothingToReadOutside(t *testing.T) {
+	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"}, config.Config{}, "crewflow/43-t", "/w/43", access.Policy{})
+	if err != nil {
+		t.Fatalf("Prompt returned an error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "nothing: the whole machine outside the worktree is closed to you") {
+		t.Errorf("the map of a run with nothing open does not say so:\n%s", prompt)
+	}
+}
+
+// TestContinuationIsGivenTheSameMap: a continuation that was told less than the run
+// it goes on with is a continuation that works by less, and an agent with no session
+// to continue in gets the whole assignment again — map, rules and task.
+func TestContinuationIsGivenTheSameMap(t *testing.T) {
+	policy := access.Policy{Read: []access.Grant{
+		{Path: "/usr/local/go", Source: access.SourceTask, Reason: "the task reads the source"},
+	}}
+
+	prompt, err := Continuation("go on", forge.Task{Number: 43, Title: "t", Body: "b"},
+		config.Config{}, "crewflow/43-t", "/w/43", policy)
+	if err != nil {
+		t.Fatalf("Continuation returned an error: %v", err)
+	}
+
+	if !strings.Contains(prompt, "/usr/local/go · task · the task reads the source") {
+		t.Errorf("the continuation does not carry the map of the access:\n%s", prompt)
 	}
 }
 

@@ -2,6 +2,7 @@ package doctor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/naghuale/crewflow/internal/access"
 )
 
 // baseConfig is what the project of a test has: a repository and an executor
@@ -59,7 +62,7 @@ run = ["golangci-lint", "run", "./..."]
 
 	want := []string{
 		"config", "git", "gh", "gh login", "executor identity", "orchestrator identity", "authority separation", "executor",
-		"access read", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
+		"access read", "executor rights", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {
 		t.Errorf("checks = %v, want %v", got, want)
@@ -711,10 +714,10 @@ func TestRunShowsWhatTheAgentMayRead(t *testing.T) {
 				t.Errorf("check \"access read\" = %q (%s), want ok", read.Status, read.Detail)
 			}
 			switch {
-			case tc.wantsCache && !slices.Equal(report.Access.Read, []string{m.cache}):
+			case tc.wantsCache && !slices.Equal(access.Paths(report.Access.Read), []string{m.cache}):
 				t.Errorf("the report allows reading %v, want the folder of the cache %q", report.Access.Read, m.cache)
-			case tc.wantsCache && read.Detail != m.cache:
-				t.Errorf("check \"access read\" detail = %q, want the folder of the cache %q", read.Detail, m.cache)
+			case tc.wantsCache && read.Detail != m.cache+` · [access] · the project asked for it with `+"`go env GOMODCACHE`":
+				t.Errorf("check \"access read\" detail = %q, want the folder of the cache with the hand behind it", read.Detail)
 			case !tc.wantsCache && len(report.Access.Read) != 0:
 				t.Errorf("the report allows reading %v, want nothing: the project named no folder", report.Access.Read)
 			case !tc.wantsCache && !strings.Contains(read.Detail, "names no folder"):
@@ -764,6 +767,145 @@ func TestRunOfAReportWithoutTheFileOfTheProject(t *testing.T) {
 
 	if report.Access.Read == nil || report.Access.Deny == nil || report.Access.Rejected == nil {
 		t.Errorf("the report of a run without a file holds %+v, want three empty lists", report.Access)
+	}
+}
+
+// TestRunNamesTheHandBehindEveryFolder: a report is read by a person who decides about
+// the next run of a project, and a path on its own does not say whether the project
+// needs the folder on every machine of it or one task of it asked for it once. Every
+// folder of the policy comes out of the report with the hand it came from and the
+// reason, in the line a person reads and in `-json` (docs/DESIGN.md §7d).
+func TestRunNamesTheHandBehindEveryFolder(t *testing.T) {
+	m := newMachine().has("git", "gh", "agent").
+		prints("git --version", "git version 2.47.1\n").
+		prints("gh --version", "gh version 2.62.0\n").
+		prints("gh auth status", "  ✓ Logged in to github.com account octocat\n")
+	m.run = m.answering("go", func(context.Context) ([]byte, []byte, int, error) {
+		return []byte(m.cache + "\n"), nil, 0, nil
+	})
+	config := writeConfig(t, baseConfig+"\n[access]\nread_from = [[\"go\", \"env\", \"GOMODCACHE\"]]\n")
+	env := m.env(t, config)
+	m.cache = filepath.Join(env.Home, "go", "pkg", "mod")
+	if err := os.MkdirAll(m.cache, 0o700); err != nil {
+		t.Fatalf("make %s: %v", m.cache, err)
+	}
+	m.cache = onThisMachine(t, m.cache)
+
+	report := Run(t.Context(), env)
+
+	want := access.Grant{
+		Path:   m.cache,
+		Source: access.SourceAccess,
+		Reason: "the project asked for it with `go env GOMODCACHE`",
+	}
+	if !slices.Equal(report.Access.Read, []access.Grant{want}) {
+		t.Errorf("the report allows reading %+v, want %+v", report.Access.Read, want)
+	}
+	detail := checkOf(t, report, "access read").Detail
+	for _, part := range []string{m.cache, "[access]", "`go env GOMODCACHE`"} {
+		if !strings.Contains(detail, part) {
+			t.Errorf("the line of the report = %q, want it to hold %q", detail, part)
+		}
+	}
+	// The same three are in the JSON, because a report a program reads has to say the
+	// same as the one a person reads.
+	raw, err := json.Marshal(report.Access)
+	if err != nil {
+		t.Fatalf("marshal the access of the report: %v", err)
+	}
+	var asJSON struct {
+		Read []struct {
+			Path   string `json:"path"`
+			Source string `json:"source"`
+			Reason string `json:"reason"`
+		} `json:"read"`
+	}
+	if err := json.Unmarshal(raw, &asJSON); err != nil {
+		t.Fatalf("read the access of the report: %v", err)
+	}
+	if len(asJSON.Read) != 1 || asJSON.Read[0].Path != m.cache ||
+		asJSON.Read[0].Source != string(access.SourceAccess) ||
+		asJSON.Read[0].Reason != want.Reason {
+		t.Errorf("the access of the report as JSON = %+v, want the path, the hand and the reason of the folder", asJSON.Read)
+	}
+}
+
+// TestRunWarnsAboutRightsOfThePerson: an agent that merges a config of the person into
+// the settings of a run has rights that crewflow never wrote, and `crewflow task run`
+// refuses such a run. The report says so before a task is run and not in the middle of
+// it, and it names the file and the tables in it, because what a person has to change
+// is a file (docs/DESIGN.md §7d).
+func TestRunWarnsAboutRightsOfThePerson(t *testing.T) {
+	cases := map[string]struct {
+		settings string
+		holds    string
+	}{
+		"a table of rights":   {settings: `{"permission":{"edit":{"**":"allow"}}}`, holds: "edit"},
+		"a config of nothing": {settings: `{"model":"someone/model"}`},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := newMachine().has("git", "gh", "opencode").
+				prints("git --version", "git version 2.47.1\n").
+				prints("gh --version", "gh version 2.62.0\n").
+				prints("gh auth status", "  ✓ Logged in to github.com account octocat\n")
+			config := writeConfig(t, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["opencode", "run", "{worktree}", "{prompt}"]
+`)
+			env := m.env(t, config)
+			// The home of the test is the home of the person of the report, and the
+			// config of the person is in it: a report of crewflow opens nothing of a
+			// person, and the only file here is one the test itself wrote.
+			folder := filepath.Join(env.Home, ".config", "opencode")
+			if err := os.MkdirAll(folder, 0o700); err != nil {
+				t.Fatalf("make %s: %v", folder, err)
+			}
+			path := filepath.Join(folder, "opencode.json")
+			if err := os.WriteFile(path, []byte(tc.settings), 0o600); err != nil {
+				t.Fatalf("write %s: %v", path, err)
+			}
+
+			report := Run(t.Context(), env)
+
+			rights := checkOf(t, report, "executor rights")
+			switch {
+			case tc.holds != "" && rights.Status != Warn:
+				t.Errorf("check \"executor rights\" = %q (%s), want %q", rights.Status, rights.Detail, Warn)
+			case tc.holds != "" && !strings.Contains(rights.Detail, path):
+				t.Errorf("check \"executor rights\" detail = %q, want it to name the file %q", rights.Detail, path)
+			case tc.holds != "" && !strings.Contains(rights.Detail, tc.holds):
+				t.Errorf("check \"executor rights\" detail = %q, want it to name the table %q", rights.Detail, tc.holds)
+			case tc.holds != "" && !strings.Contains(rights.Hint, "crewflow task run refuses"):
+				t.Errorf("check \"executor rights\" hint = %q, want it to say that a run is refused", rights.Hint)
+			case tc.holds == "" && rights.Status != OK:
+				t.Errorf("check \"executor rights\" = %q (%s), want ok: a config with no rights in it is not a second source", rights.Status, rights.Detail)
+			}
+		})
+	}
+}
+
+// TestRunOfAProjectWhoseAgentIsNotOpencode: crewflow does not guess where an agent it
+// has not run takes its rights from, and a report of such a project says the rights
+// are the policy crewflow hands over rather than naming a file it does not know
+// (docs/DESIGN.md §7b, §7d).
+func TestRunOfAProjectWhoseAgentIsNotOpencode(t *testing.T) {
+	m := newMachine().has("git", "gh", "agent").
+		prints("git --version", "git version 2.47.1\n").
+		prints("gh --version", "gh version 2.62.0\n").
+		prints("gh auth status", "  ✓ Logged in to github.com account octocat\n")
+
+	report := runOn(t, m, writeConfig(t, baseConfig))
+
+	rights := checkOf(t, report, "executor rights")
+	if rights.Status != OK {
+		t.Errorf("check \"executor rights\" = %q (%s), want ok", rights.Status, rights.Detail)
+	}
+	if !strings.Contains(rights.Detail, "generic") {
+		t.Errorf("check \"executor rights\" detail = %q, want it to name the agent of the project", rights.Detail)
 	}
 }
 

@@ -108,10 +108,10 @@ func TestResolve(t *testing.T) {
 			}}
 
 			policy, problems := Resolve(t.Context(), Env{Home: home, Run: m.run, Timeout: time.Second},
-				config.Access{ReadFrom: tc.readFrom, Read: tc.read})
+				config.Access{ReadFrom: tc.readFrom, Read: tc.read}, nil)
 
-			if !slices.Equal(policy.Read, tc.want) {
-				t.Errorf("the policy allows reading %v, want %v", policy.Read, tc.want)
+			if !slices.Equal(Paths(policy.Read), tc.want) {
+				t.Errorf("the policy allows reading %v, want %v", Paths(policy.Read), tc.want)
 			}
 			switch {
 			case tc.why == "" && len(problems) != 0:
@@ -127,6 +127,88 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+// TestResolveNamesTheHandBehindEveryFolder is the reason every folder of the policy
+// comes out with a source and a reason: the rights of the agent are written from the
+// paths, and a report and an assignment of a run are written from all of it. A path
+// alone does not say whether the project needs the folder on every machine of it or
+// one task of it needs it once, and a person deciding about a run cannot tell those
+// two apart (docs/DESIGN.md §7d, §7f).
+func TestResolveNamesTheHandBehindEveryFolder(t *testing.T) {
+	home := real(t.TempDir())
+	library := folder(t, filepath.Join(home, "go", "pkg", "mod"))
+	toolchain := folder(t, filepath.Join(home, "sdk"))
+	other := folder(t, filepath.Join(home, "cache"))
+	m := machine{prints: map[string]string{"go env GOMODCACHE": library + "\n"}}
+
+	policy, problems := Resolve(t.Context(), Env{Home: home, Run: m.run},
+		config.Access{
+			ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}},
+			Read:     []string{filepath.Join(home, "sdk")},
+		}, []Asked{
+			{Path: filepath.Join(home, "cache"), Reason: "the task checks the cache of the toolchain"},
+		})
+
+	if len(problems) != 0 {
+		t.Fatalf("the problems = %+v, want none", problems)
+	}
+	want := []Grant{
+		{Path: toolchain, Source: SourceAccess, Reason: namedInFile},
+		{Path: library, Source: SourceAccess, Reason: "the project asked for it with `go env GOMODCACHE`"},
+		{Path: other, Source: SourceTask, Reason: "the task checks the cache of the toolchain"},
+	}
+	if !slices.Equal(policy.Read, want) {
+		t.Errorf("the policy allows reading %+v, want %+v", policy.Read, want)
+	}
+}
+
+// TestResolveAnswersTheProjectBeforeTheTask: a folder both the file of the project and
+// a task named is opened once and the project is the one behind it. The project is
+// what every run of it is held to and the task is what this one is, and a run that
+// showed a folder of the project as a folder of a task would make every run of it look
+// like a one-off grant (docs/DESIGN.md §7d, §7f).
+func TestResolveAnswersTheProjectBeforeTheTask(t *testing.T) {
+	home := real(t.TempDir())
+	library := folder(t, filepath.Join(home, "go", "pkg", "mod"))
+
+	policy, problems := Resolve(t.Context(), Env{Home: home, Run: machine{}.run},
+		config.Access{Read: []string{library}},
+		[]Asked{{Path: library, Reason: "this task happened to need the same folder"}})
+
+	if len(problems) != 0 {
+		t.Fatalf("the problems = %+v, want none", problems)
+	}
+	if len(policy.Read) != 1 || policy.Read[0].Source != SourceAccess {
+		t.Errorf("the policy allows reading %+v, want the folder once and named as the project", policy.Read)
+	}
+}
+
+// TestResolveRefusesThePathOfATaskInAPlaceOfSecrets: the ban of a place of secrets is
+// stronger than the ask of the file of the project and stronger than the ask of the
+// task, and the problem says which hand asked for it — a caller has to tell a folder
+// the project could not have from a folder the task cannot do without, and the second
+// one stops the run before it starts (§7d, §7f).
+func TestResolveRefusesThePathOfATaskInAPlaceOfSecrets(t *testing.T) {
+	home := real(t.TempDir())
+	keys := folder(t, filepath.Join(home, ".ssh"))
+
+	policy, problems := Resolve(t.Context(), Env{Home: home, Run: machine{}.run}, config.Access{}, []Asked{
+		{Path: keys, Reason: "the task wants to look at the keys"},
+	})
+
+	if len(policy.Read) != 0 {
+		t.Errorf("the policy allows reading %v, want nothing: the place of secrets is closed", Paths(policy.Read))
+	}
+	if len(problems) != 1 {
+		t.Fatalf("the problems = %+v, want one", problems)
+	}
+	if problems[0].Source != SourceTask {
+		t.Errorf("the problem names the source %q, want %q", problems[0].Source, SourceTask)
+	}
+	if !strings.Contains(problems[0].Reason, "which is where secrets are") {
+		t.Errorf("the reason = %q, want it to say that the place holds secrets", problems[0].Reason)
+	}
+}
+
 // TestResolveClosesThePlacesOfSecrets: what is closed does not depend on the file of
 // the project. The keys of the person are closed to the executor of every project on
 // this machine, and the patterns of `.env` are the same on every one of them.
@@ -134,7 +216,7 @@ func TestResolveClosesThePlacesOfSecrets(t *testing.T) {
 	home := real(t.TempDir())
 	folder(t, filepath.Join(home, ".ssh"))
 
-	policy, problems := Resolve(t.Context(), Env{Home: home, Run: machine{}.run}, config.Access{})
+	policy, problems := Resolve(t.Context(), Env{Home: home, Run: machine{}.run}, config.Access{}, nil)
 
 	// The list is written out here and not taken from the package: a secret that is
 	// added to the package and not to this list is a secret crewflow has and a test
@@ -157,7 +239,7 @@ func TestResolveClosesThePlacesOfSecrets(t *testing.T) {
 	}
 	if len(policy.Read) != 0 || len(problems) != 0 {
 		t.Errorf("a project that named nothing got %v and %+v, want no folder to read and no problems",
-			policy.Read, problems)
+			Paths(policy.Read), problems)
 	}
 }
 
@@ -189,14 +271,14 @@ func TestResolveNamesEveryPlaceInBothSpellings(t *testing.T) {
 	}}
 
 	policy, problems := Resolve(t.Context(), Env{Home: home, Run: m.run, Timeout: time.Second},
-		config.Access{ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}}})
+		config.Access{ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}}}, nil)
 
 	if len(problems) != 0 {
 		t.Errorf("the problems = %+v, want none: a folder under a link is still a folder", problems)
 	}
 	want := []string{filepath.Join(home, "go", "pkg", "mod"), library}
-	if !slices.Equal(policy.Read, want) {
-		t.Errorf("the policy allows reading %v, want the folder in both spellings %v", policy.Read, want)
+	if !slices.Equal(Paths(policy.Read), want) {
+		t.Errorf("the policy allows reading %v, want the folder in both spellings %v", Paths(policy.Read), want)
 	}
 	// The place of secrets that is not there is closed in both spellings all the same:
 	// nothing is read because a rule is in another spelling than the agent's, and a
@@ -208,9 +290,9 @@ func TestResolveNamesEveryPlaceInBothSpellings(t *testing.T) {
 	}
 	// The home of the person is one folder in two names, and neither of them opens.
 	for _, spelling := range []string{home, held} {
-		refused, reason := Resolve(t.Context(), Env{Home: home, Run: m.run}, config.Access{Read: []string{spelling}})
+		refused, reason := Resolve(t.Context(), Env{Home: home, Run: m.run}, config.Access{Read: []string{spelling}}, nil)
 		if len(refused.Read) != 0 || len(reason) == 0 {
-			t.Errorf("the home of the person named as %q was opened (%v, %+v), want it refused", spelling, refused.Read, reason)
+			t.Errorf("the home of the person named as %q was opened (%v, %+v), want it refused", spelling, Paths(refused.Read), reason)
 		}
 	}
 }
@@ -261,10 +343,10 @@ func TestResolveAsksTheCommands(t *testing.T) {
 			}}
 
 			policy, problems := Resolve(t.Context(), Env{Home: home, Run: m.run, Timeout: 20 * time.Millisecond},
-				config.Access{ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}}})
+				config.Access{ReadFrom: [][]string{{"go", "env", "GOMODCACHE"}}}, nil)
 
-			if !slices.Equal(policy.Read, tc.want) {
-				t.Errorf("the policy allows reading %v, want %v", policy.Read, tc.want)
+			if !slices.Equal(Paths(policy.Read), tc.want) {
+				t.Errorf("the policy allows reading %v, want %v", Paths(policy.Read), tc.want)
 			}
 			switch {
 			case tc.why == "" && len(problems) != 0:
@@ -300,10 +382,10 @@ func TestResolveAsksEveryCommandTheProjectNamed(t *testing.T) {
 		config.Access{ReadFrom: [][]string{
 			{"go", "env", "GOMODCACHE"},
 			{"xcrun", "--show-sdk-path"},
-		}})
+		}}, nil)
 
-	if want := []string{first, second}; !slices.Equal(policy.Read, want) {
-		t.Errorf("the policy allows reading %v, want %v", policy.Read, want)
+	if want := []string{first, second}; !slices.Equal(Paths(policy.Read), want) {
+		t.Errorf("the policy allows reading %v, want %v", Paths(policy.Read), want)
 	}
 	if len(problems) != 0 {
 		t.Errorf("the problems = %+v, want none", problems)
@@ -314,10 +396,10 @@ func TestResolveAsksEveryCommandTheProjectNamed(t *testing.T) {
 // machine that cannot say where it is has no folder to resolve it to. The paths that
 // stand for it are refused with that said out loud, not read as they are.
 func TestResolveOfAMachineWithoutAHome(t *testing.T) {
-	policy, problems := Resolve(t.Context(), Env{Run: machine{}.run}, config.Access{Read: []string{"~/go"}})
+	policy, problems := Resolve(t.Context(), Env{Run: machine{}.run}, config.Access{Read: []string{"~/go"}}, nil)
 
 	if len(policy.Read) != 0 {
-		t.Errorf("the policy allows reading %v, want nothing", policy.Read)
+		t.Errorf("the policy allows reading %v, want nothing", Paths(policy.Read))
 	}
 	if len(problems) != 1 || !strings.Contains(problems[0].Reason, "it has none") {
 		t.Errorf("the problems = %+v, want one that says that the machine has no home", problems)

@@ -68,9 +68,9 @@ func (opencode) AccessEnv(policy access.Policy, environ []string) ([]string, err
 	}
 
 	external, read, edit := map[string]string{}, map[string]string{}, map[string]string{}
-	for _, path := range policy.Read {
-		external[under(path)] = "allow"
-		edit[under(path)] = "deny"
+	for _, grant := range policy.Read {
+		external[under(grant.Path)] = "allow"
+		edit[under(grant.Path)] = "deny"
 	}
 	// The places that are closed are written last, so that a place that is in both
 	// lists is closed: the secrets of the machine are stronger than what a project
@@ -105,7 +105,7 @@ func (opencode) AccessEnv(policy access.Policy, environ []string) ([]string, err
 func (generic) AccessEnv(policy access.Policy, _ []string) ([]string, error) {
 	separator := string(os.PathListSeparator)
 	return []string{
-		readVar + "=" + strings.Join(policy.Read, separator),
+		readVar + "=" + strings.Join(access.Paths(policy.Read), separator),
 		denyVar + "=" + strings.Join(policy.Deny, separator),
 	}, nil
 }

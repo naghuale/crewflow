@@ -38,6 +38,13 @@ var technical = map[string]map[string]string{
 	"en": {"criteria": "Acceptance criteria", "boundaries": "Boundaries"},
 }
 
+// reading are the words of the field of the technical part that says what the task may
+// read outside its work folder: the heading and the word every line of it starts with.
+var reading = map[string]struct{ heading, marker string }{
+	"ru": {heading: "Что читать вне рабочей папки и зачем", marker: "читать:"},
+	"en": {heading: "What to read outside the work folder and why", marker: "read:"},
+}
+
 // texts stands in for the words of a person under every section: enough of them
 // for a section to be filled, whatever the language it is written in.
 var texts = map[string]string{
@@ -53,7 +60,8 @@ var texts = map[string]string{
 // folded away for the executor. A name may say what to leave out of a section
 // instead of the section itself: "empty:check" leaves the section there with
 // nothing under it but a comment, which is how a task that was not filled in
-// looks.
+// looks. A name of "field" leaves out the field that says what the task may read
+// outside its work folder, which is how a task written before that field looked.
 func body(language string, without ...string) string {
 	gone := make(map[string]bool, len(without))
 	for _, name := range without {
@@ -89,6 +97,9 @@ func body(language string, without ...string) string {
 			out.WriteString("cmd/crewflow/**\ninternal/task/**\n")
 		}
 		out.WriteString("```\n\n")
+	}
+	if !gone["field"] {
+		fmt.Fprintf(&out, "### %s\n\n%s\n\n", reading[language].heading, nothing[language][0])
 	}
 	out.WriteString("</details>\n")
 	return out.String()
@@ -335,7 +346,9 @@ func TestReadTechnicalPartIsSeparate(t *testing.T) {
 		t.Error("the acceptance criteria were not found in a body that has them")
 	}
 	for _, section := range spec.sections {
-		belongsToExecutor := section.name == "Acceptance criteria" || section.name == "Boundaries"
+		belongsToExecutor := section.name == "Acceptance criteria" ||
+			section.name == "Boundaries" ||
+			section.name == reading["en"].heading
 		if section.technical != belongsToExecutor {
 			t.Errorf("the section %q is technical = %t, want %t", section.name, section.technical, belongsToExecutor)
 		}

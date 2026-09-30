@@ -17,7 +17,10 @@ import (
 // written out whole, because what a profile builds out of them is what a person reads
 // in the settings of a run, and a machine of a test is not there.
 var thePolicy = access.Policy{
-	Read: []string{"/Users/someone/go/pkg/mod", "/usr/local/go"},
+	Read: []access.Grant{
+		{Path: "/Users/someone/go/pkg/mod", Source: access.SourceAccess, Reason: "the project asked for it with `go env GOMODCACHE`"},
+		{Path: "/usr/local/go", Source: access.SourceTask, Reason: "the task reads the source of the toolchain"},
+	},
 	Deny: []string{
 		"/Users/someone/.ssh", "/Users/someone/.netrc", "**/.env", "**/.env.*",
 	},

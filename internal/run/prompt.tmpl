@@ -16,6 +16,12 @@ The rules of this run:
 - Work only inside the worktree. Scratch files and probes go into `.scratch/` in
   it, and nothing else. Reaching outside the worktree is a refused permission, and
   a refused permission ends the run at once, with the work uncommitted.
+- Name every path from the root of the worktree, and only from there: no `..`, no
+  `cd` out of the worktree, no absolute path typed by hand. A path of a folder that
+  is not in the map below is a path the run is not given.
+- Check the behaviour of git and of the filesystem in a test of your own with a
+  temporary folder (`t.TempDir()` in Go), and not in a shell: a command of a shell is
+  refused whole, and a run that was refused one has done nothing.
 - Do not merge anything and do not approve anything. The orchestrator reviews the
   change request and merges it.
 - If the root of the worktree holds an AGENTS.md, follow it.
@@ -25,6 +31,29 @@ The rules of this run:
 - If anything in the task is unclear, do not guess: finish with a message that
   begins with `BLOCKED: <what is unclear>` and say nothing after it.
 - Write the messages of the commits in the style of this project: {{.CommitStyle}}.
+
+## The map of the access of this run
+
+crewflow worked this out before you were started, and it is the whole of what you
+have. Every line is `path · where the ask came from · why`.
+
+Where you may write — nothing else of the machine is open to writing:
+{{range .Write}}
+- {{.Path}} · {{.Source}} · {{.Reason}}
+{{- end}}
+
+Where you may read outside the worktree, and only to read:
+{{if .Read}}{{range .Read}}
+- {{.Path}} · {{.Source}} · {{.Reason}}
+{{- end}}{{else}}
+- nothing: the whole machine outside the worktree is closed to you{{end}}
+
+What is never readable, whatever the project file and whatever the task say:
+{{range .Deny}}
+- {{.}}
+{{- end}}
+A path of the list of secrets is refused a permission even when a tool asks for it,
+and a run that reached for one is not continued by crewflow by itself.
 
 {{.Gates}}
 

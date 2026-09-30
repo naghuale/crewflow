@@ -418,8 +418,24 @@ func TestRunGivesTheExecutorTheRightsToReadTheDependenciesOfTheProject(t *testin
 	if want := "crewflow: executor: owner — "; !strings.HasPrefix(journal, want) {
 		t.Errorf("the journal starts with %q, want the mode of the run in it", firstLineOf(journal))
 	}
-	if !strings.Contains(journal, "crewflow: the executor may read outside the worktree: "+through+", "+modules) {
-		t.Errorf("the journal holds %q, want the rights of the run in it", firstLineOf(journal))
+	// Every folder that is open is named with the hand that asked for it and the
+	// reason: a path in a journal says nothing about who wanted it, and a person
+	// looking at a run afterwards has to see that the folder came from the file of the
+	// project and not from somewhere else (docs/DESIGN.md §7d).
+	opened := "crewflow: the executor may read outside the worktree: " + through +
+		" · [access] · the project asked for it with `"
+	if want := opened + "sh -c"; !strings.Contains(journal, want) {
+		t.Errorf("the journal holds %q, want the first folder of the run with the hand behind it", firstLineOf(journal))
+	}
+	if want := modules + " · [access] · the project asked for it with `"; !strings.Contains(journal, want) {
+		t.Errorf("the journal holds %q, want the same folder in the spelling of the machine with the hand behind it", firstLineOf(journal))
+	}
+	// Where a run may write is said in the journal beside what it may read, because
+	// both are the access of the run and one of them without the other leaves a person
+	// guessing where the work was to be done.
+	if want := "crewflow: the executor may write: " + result.Worktree + " · crewflow · the worktree of this task, " +
+		Scratch(result.Worktree) + " · crewflow · the scratch of this run: TMPDIR, TMP and TEMP point at it"; !strings.Contains(journal, want) {
+		t.Errorf("the journal holds %q, want where the run may write in it", firstLineOf(journal))
 	}
 	// A run that named what it may read and got it has nothing to say on the way out.
 	if said := read(t, result.ErrorJournal); said != "" {

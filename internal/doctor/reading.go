@@ -7,6 +7,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/access"
 	"github.com/naghuale/crewflow/internal/config"
+	"github.com/naghuale/crewflow/internal/run/profile"
 )
 
 // The reading policy of a project is a part of the report and not a check of a
@@ -16,18 +17,21 @@ import (
 const (
 	readName     = "access read"
 	rejectedName = "access rejected"
+	rightsName   = "executor rights"
 )
 
 // reading works out what the executor of the project may read outside the worktree of
-// a task on this machine, and says it: the folders the commands of [access] named, and
-// every path crewflow would not open with the reason why. A person sees here exactly
-// what an agent of a run is about to be given, which is what a refusal of the next run
-// is about.
+// a task on this machine, and says it: every folder with the ask behind it — the hand
+// it came from and the reason it was made — and every path crewflow would not open with
+// the reason why. A person sees here exactly what an agent of a run is about to be
+// given, which is what a refusal of the next run is about, and where each folder of it
+// came from, which is what a run that was given more than the project asked for is
+// about (docs/DESIGN.md §7d).
 func (c *checker) reading(ctx context.Context, cfg config.Config) {
-	policy, problems := access.Resolve(ctx, c.readingEnv(), cfg.Access)
+	policy, problems := access.Resolve(ctx, c.readingEnv(), cfg.Access, nil)
 	// The lists of the report are written as they are, and an empty one is an empty
 	// list and not a missing field: an orchestrator reads them and does not guess.
-	c.access = Access{Read: orEmpty(policy.Read), Deny: orEmpty(policy.Deny)}
+	c.access = Access{Read: orEmpty(policy.Read), Deny: orEmptyPaths(policy.Deny)}
 	if problems != nil {
 		c.access.Rejected = problems
 	} else {
@@ -36,9 +40,10 @@ func (c *checker) reading(ctx context.Context, cfg config.Config) {
 
 	detail := "the project names no folder to read outside its worktree"
 	if len(policy.Read) > 0 {
-		detail = strings.Join(policy.Read, ", ")
+		detail = strings.Join(described(policy.Read), ", ")
 	}
 	c.add(Check{Name: readName, Status: OK, Detail: detail})
+	c.ownRights(cfg)
 	if len(problems) == 0 {
 		return
 	}
@@ -57,9 +62,58 @@ func (c *checker) reading(ctx context.Context, cfg config.Config) {
 	})
 }
 
+// ownRights is that the rights of a run come from crewflow and from nothing else. An
+// agent that merges a file of the person into the settings of a run has rights that
+// were never written by crewflow, in a file that is not in the repository and not in
+// the review of a task, and `crewflow task run` refuses such a run before it starts
+// (docs/DESIGN.md §7d). The report says so where a person will see it before a task
+// is run and not in the middle of it.
+func (c *checker) ownRights(cfg config.Config) {
+	agent := profile.For(cfg.Executor.ExecutorSpec.Command)
+	name := fmt.Sprintf("the executor %q takes its rights from the files of the person only", agent.Name())
+	var held []string
+	for _, rights := range agent.ForeignRights(c.env.Home, c.env.Environ) {
+		if !rights.HoldsRights() {
+			continue
+		}
+		held = append(held, fmt.Sprintf("%s (%s)", rights.Path, rights.Says()))
+	}
+	if len(held) == 0 {
+		c.add(Check{Name: rightsName, Status: OK, Detail: name})
+		return
+	}
+	c.add(Check{
+		Name:   rightsName,
+		Status: Warn,
+		Detail: name + ": " + strings.Join(held, ", "),
+		Hint: "take the table `permission` out of that file, or out of the folder it is in: " +
+			"crewflow writes the rights of a run itself, and crewflow task run refuses to start one while they are there",
+	})
+}
+
+// described is every folder of the access of a run as one line of a report reads it:
+// the path, the hand that asked for it and the reason, because a path in a report
+// says nothing about who wanted it and a person deciding about a run has to tell a
+// folder the project needs from a folder one task asked for.
+func described(grants []access.Grant) []string {
+	lines := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		lines = append(lines, grant.Line())
+	}
+	return lines
+}
+
 // orEmpty is a list of the report that is there and holds nothing, which is what a
 // reader of `-json` needs to tell from a field that is not there at all.
-func orEmpty(paths []string) []string {
+func orEmpty(grants []access.Grant) []access.Grant {
+	if grants == nil {
+		return []access.Grant{}
+	}
+	return grants
+}
+
+// orEmptyPaths is a list of places of the report that is there and holds nothing.
+func orEmptyPaths(paths []string) []string {
 	if paths == nil {
 		return []string{}
 	}

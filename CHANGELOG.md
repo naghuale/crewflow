@@ -63,6 +63,21 @@
   исполнитель, `owner == orchestrator` (YES/NO), пересечение списков — и держит долг доверия
   (`trust_debt`: `owner-orchestrator-overlap`, `owners-reviewers-overlap`) и в `-json`.
   ([#89](https://github.com/naghuale/crewflow/pull/89), задача [#31](https://github.com/naghuale/crewflow/issues/31))
+- Карта доступа в подсказке прогона: где писать, что читать вне рабочей папки (с тем, кто попросил, и
+  почему), что запрещено — и правило путей рядом с ними. Раньше исполнитель узнавал о своих правах
+  только из отказа и останавливался на нём.
+  ([#96](https://github.com/naghuale/crewflow/pull/96), задача [#41](https://github.com/naghuale/crewflow/issues/41))
+- Поле «что читать вне рабочей папки и зачем» в задаче: одна папка сверх `[access]`, только на этот
+  прогон и только на чтение, с причиной, которую видно в ревью. `crewflow task check` отказывает
+  задаче, где у пути нет причины.
+  ([#96](https://github.com/naghuale/crewflow/pull/96), задача [#41](https://github.com/naghuale/crewflow/issues/41))
+- Один источник прав: `crewflow doctor` говорит, если в глобальном конфиге OpenCode есть таблица
+  `permission`, а `crewflow task run` отказывается начинать прогон, пока она там есть. Раньше эти
+  права попадали в прогон молча, мимо всего, что crewflow написал.
+  ([#96](https://github.com/naghuale/crewflow/pull/96), задача [#41](https://github.com/naghuale/crewflow/issues/41))
+- `crewflow doctor` показывает у каждой открытой папки, кто попросил её открыть и зачем — в строке
+  отчёта и в `-json`.
+  ([#96](https://github.com/naghuale/crewflow/pull/96), задача [#41](https://github.com/naghuale/crewflow/issues/41))
 
 ### Изменено
 

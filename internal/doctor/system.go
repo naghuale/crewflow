@@ -32,6 +32,7 @@ func System(configPath, tempDir string, probe bool, out io.Writer) Env {
 		Run:        Command,
 		ConfigPath: configPath,
 		Home:       home,
+		Environ:    os.Environ(),
 		TempDir:    tempDir,
 		Probe:      probe,
 		// A project whose executor works as an app of its own is checked through the

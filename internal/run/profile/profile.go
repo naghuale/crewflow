@@ -64,6 +64,12 @@ type Profile interface {
 	// crewflow itself is passed in, because a person may have put settings of their
 	// own in it and a run of the policy of the project holds over them.
 	AccessEnv(policy access.Policy, environ []string) ([]string, error)
+	// ForeignRights returns the files of the machine in which this agent takes rights
+	// of its own, which the rights of a run are merged with. A run whose agent has a
+	// file with rights in it is a run whose rights are not crewflow's alone, and
+	// crewflow says so before the executor is started rather than after (docs/DESIGN.md
+	// §7d).
+	ForeignRights(home string, environ []string) []Rights
 }
 
 // Call is one tool the agent called, with the one argument of it that names the call.

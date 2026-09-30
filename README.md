@@ -443,15 +443,37 @@ escaped defect has to leave a new test, gate check or acceptance rule behind (§
 
 ## What the executor may read
 
-Only its worktree, plus the folders the project names **by commands**, read-only:
+Only its worktree — read-write — plus the folders the project names **by commands**,
+read-only:
 
 ```toml
 [access]
 read_from = [["go", "env", "GOMODCACHE"], ["go", "env", "GOROOT"]]
 ```
 
+A task may ask for one folder more, in its own field, with the reason a person writes
+next to it — for that run of that task and no other:
+
+```markdown
+### What to read outside the work folder and why
+
+read: /opt/homebrew/include — the task builds the example against the C headers
+```
+
+Before the executor starts, the run is given a **map of its access**: where it may
+write, what it may read outside the worktree with the hand that asked for it and the
+reason, and what is never readable. The same map is the first thing `crewflow doctor`
+prints and the first lines of the journal of the run, and a path without a reason is
+refused by `crewflow task check` before anything starts.
+
+The rights of a run come from crewflow alone. If the global OpenCode config of the
+person holds a `permission` table, `doctor` says so and `crewflow task run` refuses to
+start: OpenCode merges that file with the settings of the run, so those rights would
+never have been written by crewflow.
+
 Places of secrets (`~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`, `~/.aws`,
-`~/.netrc`, `.env` files…) stay closed whatever a project says. See §7d of the design.
+`~/.netrc`, `.env` files…) stay closed whatever a project or a task says. See §7d of the
+design.
 
 ## License
 

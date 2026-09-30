@@ -81,6 +81,12 @@ func CheckReady(t forge.Task, cfg config.Config) error {
 		}
 	}
 	missing = append(missing, technicalGaps(spec, language)...)
+	// The field that says what the task may read outside its worktree is a field of
+	// the technical part, and a line of it crewflow cannot read is a run that would be
+	// refused a permission for a path nobody asked for: the task is not ready until
+	// every line of it is a path and a reason (§7f).
+	_, complaints := spec.Readings()
+	missing = append(missing, complaints...)
 
 	if needsApproval(cfg.Tasks.OwnerApproval, t.Labels) && !slices.Contains(t.Labels, approvedLabel) {
 		missing = append(missing, "the owner approved it: the label `approved`")

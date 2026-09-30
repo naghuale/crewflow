@@ -168,13 +168,16 @@ type Identity struct {
 
 // Access is the reading policy of a run as this machine works it out: the folders the
 // commands of the project named, the places that are closed whatever the project
-// wrote, and every path that was refused with the reason why.
+// asked for, and every path that was refused with the reason why.
 type Access struct {
-	// Read are the folders the executor of a run may read outside its worktree.
-	Read []string `json:"read"`
+	// Read are the folders the executor of a run may read outside its worktree, each
+	// with the ask behind it: the hand it came from and why it was made. A path alone
+	// does not say it, and a person deciding about a run has to tell a folder the
+	// project needs from a folder one task asked for (docs/DESIGN.md §7d).
+	Read []access.Grant `json:"read"`
 	// Deny are the places crewflow keeps closed to it, whatever the project asked for.
 	Deny []string `json:"deny"`
-	// Rejected are the paths of the project that crewflow would not open, and why.
+	// Rejected are the paths that were asked for and were not opened, and why.
 	Rejected []access.Problem `json:"rejected"`
 }
 
@@ -201,6 +204,12 @@ type Env struct {
 	// is given and not read from the process, so that a test of doctor resolves no
 	// path against the home of the person who runs the tests.
 	Home string
+	// Environ is the environment crewflow itself was started with, which is where a
+	// person may have put settings of their own for the agent. A report looks in it
+	// for those: the files an agent takes its rights from are named by variables of
+	// it, and a report that looked in one place only would miss a file in another
+	// (docs/DESIGN.md §7d).
+	Environ []string
 	// TempDir is the empty folder the probe runs the executor in, so that a
 	// probe touches nothing of the project.
 	TempDir string
@@ -312,7 +321,7 @@ func (c *checker) add(check Check) {
 // in a script.
 func (c *checker) report() Report {
 	if c.access.Read == nil {
-		c.access = Access{Read: []string{}, Deny: []string{}, Rejected: []access.Problem{}}
+		c.access = Access{Read: []access.Grant{}, Deny: []string{}, Rejected: []access.Problem{}}
 	}
 	if c.specified == nil {
 		c.specified = []config.Asked{}

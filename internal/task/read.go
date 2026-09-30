@@ -56,6 +56,11 @@ func Read(body, language string) Spec {
 			if folded > 0 {
 				folded--
 			}
+			// The technical part ends with the tag that folds it away, and the tag is
+			// not text of the last section in it: a person reads the field at the end
+			// of the technical part and crewflow reads its lines, and neither of them
+			// wrote `</details>` as a line of a field.
+			current = -1
 		}
 		if name, isHeading := heading(line); isHeading {
 			spec.sections = append(spec.sections, section{name: name, technical: folded > 0})

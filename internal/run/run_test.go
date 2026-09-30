@@ -25,7 +25,9 @@ const wholeTask = "## Why\n\nA person builds a long command by hand for every ta
 	"## Risks and decisions\n\nA run makes a branch; main is not touched.\n\n" +
 	"<details>\n<summary>Technical part for the executor</summary>\n\n" +
 	"### Acceptance criteria\n\n- [ ] the run opens a change request\n\n" +
-	"### Boundaries\n\n```\ninternal/run/**\n```\n\n</details>\n"
+	"### Boundaries\n\n```\ninternal/run/**\n```\n\n" +
+	"### What to read outside the work folder and why\n\nnothing\n\n" +
+	"</details>\n"
 
 // theRun is the answer of an executor that did the work of a task: events of a
 // session, and nothing on the way out.

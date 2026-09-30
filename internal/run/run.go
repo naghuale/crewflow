@@ -275,6 +275,17 @@ type runner struct {
 	// out before it was started and read back when it was refused something: a refusal
 	// of a secret is one crewflow never answers by itself (docs/DESIGN.md §7d).
 	closed closed
+	// policy is the access of the run — the folders that are open with the ask behind
+	// each of them, and the places of secrets that are closed — worked out before the
+	// worktree of the task was made. It is written into the rights of the agent and
+	// shown to the agent in the map of the same run, and the two come out of this one
+	// calculation: a run told one thing and given another is a run nobody can read
+	// afterwards (docs/DESIGN.md §7d).
+	policy access.Policy
+	// problems are the paths that were asked for and were not opened. A path of the
+	// project among them is a line of the journal of the run; a path of the task stops
+	// the run before it starts, and there is none of it left to write.
+	problems []access.Problem
 	// auto is the habit of the attempt that is going on, when crewflow is the one
 	// that goes on with it: an attempt the orchestrator continued has none, and a
 	// habit crewflow knows is the one thing a run answers by itself (docs/DESIGN.md
@@ -314,7 +325,79 @@ func (r *runner) readTask(ctx context.Context) error {
 	}
 	r.profile = profile.For(r.cfg.Executor.ExecutorSpec.Command)
 	r.journals = newJournals(r.env.Home, r.cfg.RepoName())
+	// The access of the run is worked out here, before the worktree of the task is
+	// made: a run that may not be given what the task asks for must leave nothing
+	// behind, and neither must a run whose agent takes rights of its own somewhere
+	// crewflow does not write (docs/DESIGN.md §7d, §7f).
+	return r.readings(ctx)
+}
+
+// readings is the policy of the run: the folders the file of the project named, the
+// folders the task asked to read beside them with the reason a person wrote, and the
+// places of secrets that are closed whatever either of them said. It is worked out
+// with the commands of the project and not with what a previous run worked out on a
+// machine that may have changed since.
+//
+// A path of the project that crewflow will not open is not a run that failed: the run
+// goes on without it and says so in its journal, because a person who looks at a run
+// that was refused a permission for a folder of a dependency has to see that the
+// folder was named and was not opened. A path of the task is a different thing: the
+// task is what the run was given to do, and a run that cannot read what its task
+// needs is a run that would be refused a permission in the middle of the work, so it
+// does not start at all (docs/DESIGN.md §7d, §7f).
+func (r *runner) readings(ctx context.Context) error {
+	if err := r.ownRights(); err != nil {
+		return err
+	}
+	// A field of the task crewflow could not read has already stopped the run in
+	// `task.CheckReady`, and a check that could not be made is not a check that
+	// passed: the asks of a task are the lines that were read, and nothing else.
+	read, _ := task.Read(r.task.Body, r.cfg.Project.Language).Readings()
+	policy, problems := access.Resolve(ctx, r.access(), r.cfg.Access, asks(read))
+	r.policy, r.problems = policy, problems
+	for _, problem := range problems {
+		if problem.Source == access.SourceTask {
+			return fmt.Errorf("the task asks to read %s, and crewflow will not open it: %s: "+
+				"take the path out of the task, or ask a person what the executor may read",
+				problem.Path, problem.Reason)
+		}
+	}
 	return nil
+}
+
+// asks is what the task asked to read in the words the policy of a run is worked out
+// in. The two are one entry and not two — a path of a task without a reason is not an
+// ask — and the translation is here, where the two packages meet, and not in either of
+// them (docs/DESIGN.md §7d, §7f).
+func asks(read []task.Reading) []access.Asked {
+	asked := make([]access.Asked, 0, len(read))
+	for _, one := range read {
+		asked = append(asked, access.Asked{Path: one.Path, Reason: one.Reason})
+	}
+	return asked
+}
+
+// ownRights is that the rights of a run come from crewflow and from nothing else. An
+// agent that merges a file of the person into the settings of a run has rights that
+// were never written here, in a file that is not in the repository and not in the
+// review of the task, and no run of crewflow may be started on them (docs/DESIGN.md
+// §7d). The check is made before the worktree of the task: a refused run leaves
+// nothing behind.
+func (r *runner) ownRights() error {
+	var held []string
+	for _, rights := range r.profile.ForeignRights(r.env.UserHome, r.env.Environ) {
+		if !rights.HoldsRights() {
+			continue
+		}
+		held = append(held, fmt.Sprintf("%s (%s)", rights.Path, rights.Says()))
+	}
+	if len(held) == 0 {
+		return nil
+	}
+	return fmt.Errorf("the rights of the executor come from somewhere crewflow does not write: %s: "+
+		"take the table `permission` out of that file, or out of the folder it is in, "+
+		"and run the task again — the rights of a run are written by crewflow alone",
+		strings.Join(held, ", "))
 }
 
 // prepare makes the worktree of the task, or finds the one a continuation goes on
@@ -617,7 +700,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// started and is said in the journal right after that: a run that was given the
 	// right to read a folder of the machine has to say which, and a person who reads
 	// the journal of the run afterwards sees it there (docs/DESIGN.md §7d).
-	rights, err := r.rights(ctx, files)
+	rights, err := r.rights(files)
 	if err != nil {
 		stopWatch()
 		_ = files.Close()
@@ -705,24 +788,23 @@ func (r *runner) stopBeforeStart(state State, err error) (Result, error) {
 	return Result{}, err
 }
 
-// rights is the environment of the executor with the reading policy of the project in
-// it: the folders the commands of [access] named are opened to the executor, the
-// places of secrets are closed, and nothing of either may be written. It is worked
-// out with the commands of the project and not with what a previous run worked out on
-// a machine that may have changed since (docs/DESIGN.md §7d).
+// rights is the environment of the executor with the access of the run in it: the
+// folders that are open are opened to the executor for reading, the places of secrets
+// are closed, and nothing of either may be written. The policy is the one worked out
+// before the worktree of the task was made, and the first line of the journal says
+// every folder of it with the ask behind it: a run that was given the right to read a
+// folder of the machine has to say which, which hand asked for it and why, and a
+// person who reads the journal of the run afterwards sees it there (docs/DESIGN.md
+// §7d).
 //
-// A path crewflow will not open is not a run that failed: the run goes on without it
-// and says so on the way out, because a person who looks at a run that was refused a
-// permission for a folder of a dependency has to see that the folder was named and
-// was not opened. A policy that cannot be named to the agent at all stops the run
-// before the executor is started: an agent that was told nothing is an agent whose
-// rights crewflow does not know.
-func (r *runner) rights(ctx context.Context, files *AttemptFiles) ([]string, error) {
-	policy, problems := access.Resolve(ctx, r.access(), r.cfg.Access)
-	for _, problem := range problems {
+// A policy that cannot be named to the agent at all stops the run before the executor
+// is started: an agent that was told nothing is an agent whose rights crewflow does
+// not know.
+func (r *runner) rights(files *AttemptFiles) ([]string, error) {
+	for _, problem := range r.problems {
 		r.note(files.ErrorJournal, fmt.Errorf("access: %s: %s", problem.Path, problem.Reason))
 	}
-	env, err := r.profile.AccessEnv(policy, r.env.Environ)
+	env, err := r.profile.AccessEnv(r.policy, r.env.Environ)
 	if err != nil {
 		return nil, err
 	}
@@ -730,9 +812,10 @@ func (r *runner) rights(ctx context.Context, files *AttemptFiles) ([]string, err
 	// refusal against: a run of a machine that was refused a key is a run that stopped
 	// for a reason of its own, whatever the command around it looked like, and the
 	// orchestrator is the one who decides about that (docs/DESIGN.md §7a, §7d).
-	r.closed = newClosed(policy, r.env.UserHome)
-	fmt.Fprintf(files.Out, "crewflow: the executor may read outside the worktree: %s; it may never read: %s\n",
-		listed(policy.Read), listed(policy.Deny))
+	r.closed = newClosed(r.policy, r.env.UserHome)
+	fmt.Fprintf(files.Out, "crewflow: the executor may write: %s\n", listed(writable(r.worktree, Scratch(r.worktree))))
+	fmt.Fprintf(files.Out, "crewflow: the executor may read outside the worktree: %s\n", listed(r.policy.Read))
+	fmt.Fprintf(files.Out, "crewflow: it may never read: %s\n", listedPaths(r.policy.Deny))
 	return env, nil
 }
 
@@ -748,9 +831,25 @@ func (r *runner) access() access.Env {
 	}
 }
 
-// listed is a list of paths as one line of a journal reads: a person reads the line
-// and not a list of them, and an empty policy is said so rather than left blank.
-func listed(paths []string) string {
+// listed is a list of the access of a run as one line of a journal reads it: a person
+// reads the line and not a list of them, and an empty policy is said so rather than
+// left blank. A folder that is open is named with the ask behind it, because a path in
+// a journal says nothing about who wanted it and why it was allowed.
+func listed(grants []access.Grant) string {
+	if len(grants) == 0 {
+		return "nothing"
+	}
+	parts := make([]string, 0, len(grants))
+	for _, grant := range grants {
+		parts = append(parts, grant.Line())
+	}
+	return strings.Join(parts, ", ")
+}
+
+// listedPaths is a list of places as one line of a journal reads it: the places that
+// are closed are the same wherever they stand, and a line that repeated the same
+// sentence after every one of them would say nothing.
+func listedPaths(paths []string) string {
 	if len(paths) == 0 {
 		return "nothing"
 	}
@@ -848,10 +947,10 @@ func (r *runner) command() ([]string, error) {
 // the session holds the task and the context of the last try.
 func (r *runner) prompt() (string, error) {
 	if r.req.Continue == "" {
-		return Prompt(r.task, r.cfg, r.branch, r.worktree)
+		return Prompt(r.task, r.cfg, r.branch, r.worktree, r.policy)
 	}
 	if r.session != "" {
 		return r.req.Continue, nil
 	}
-	return Continuation(r.req.Continue, r.task, r.cfg, r.branch, r.worktree)
+	return Continuation(r.req.Continue, r.task, r.cfg, r.branch, r.worktree, r.policy)
 }

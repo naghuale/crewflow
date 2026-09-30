@@ -661,7 +661,7 @@ func homeUnderALink(t *testing.T) string {
 // and not a list made up for it (docs/DESIGN.md §7d).
 func closedOf(t *testing.T, home string) closed {
 	t.Helper()
-	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
+	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{}, nil)
 	return newClosed(policy, home)
 }
 
@@ -813,7 +813,7 @@ func underHome(t *testing.T, home, path string) string {
 // on every machine (docs/DESIGN.md §7d).
 func placesOfSecrets(t *testing.T, home string) []string {
 	t.Helper()
-	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{})
+	policy, _ := access.Resolve(t.Context(), access.Env{Home: home}, config.Access{}, nil)
 	if len(policy.Deny) == 0 {
 		t.Fatal("the policy of a machine has no closed place, so there is nothing to test")
 	}

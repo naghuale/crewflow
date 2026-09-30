@@ -156,7 +156,8 @@ func TestRunDoctorJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
 	}
-	want := []string{"config", "git", "gh", "gh login", "executor identity", "orchestrator identity", "authority separation", "executor", "access read"}
+	want := []string{"config", "git", "gh", "gh login", "executor identity", "orchestrator identity",
+		"authority separation", "executor", "access read", "executor rights"}
 	got := make([]string, 0, len(report.Checks))
 	for _, check := range report.Checks {
 		got = append(got, check.Name)
