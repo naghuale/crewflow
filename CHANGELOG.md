@@ -119,7 +119,7 @@
 - Проверка `secrets` больше не красит изменение из-за заглушек чужой ветки: на pull request
   сканируются только коммиты самого изменения, на `main` — история `main`, а заглушка узнаётся по
   своему значению или по пометке `placeholder` на своей строке, а не по отпечатку коммита.
-  ([#91](https://github.com/naghuale/crewflow/pull/91), задача [#91](https://github.com/naghuale/crewflow/issues/91))
+  ([#92](https://github.com/naghuale/crewflow/pull/92), задача [#91](https://github.com/naghuale/crewflow/issues/91))
 
 ### Безопасность
 
