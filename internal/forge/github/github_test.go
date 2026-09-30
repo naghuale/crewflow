@@ -94,6 +94,49 @@ func TestCloseTaskThatFailed(t *testing.T) {
 	}
 }
 
+// standingOfARun is the record a run that stands leaves under its task: how long it
+// has shown nothing, what it was doing when it last showed a sign of life, and the one
+// thing about it that a person has to decide (docs/DESIGN.md §6).
+const standingOfARun = "crewflow: the run of the task 43 (43-1) has shown nothing for 11m, " +
+	"the last step: go test ./.... It needs attention, and crewflow does not stop a run: " +
+	"a person or an orchestrator decides what happens to it (docs/DESIGN.md §6)."
+
+// TestCommentTask leaves a line under the task of a run that stands and leaves the task
+// open: the run goes on, and the task is the place where a person and an orchestrator
+// both learn that it is going nowhere (docs/DESIGN.md §6).
+func TestCommentTask(t *testing.T) {
+	m := newMachine().prints("issue comment", "")
+	a := New(repo, "", m.env(t))
+
+	if err := a.CommentTask(t.Context(), 43, standingOfARun); err != nil {
+		t.Fatalf("CommentTask(43) returned an error: %v", err)
+	}
+
+	wantCommand := "issue comment 43 -R " + repo + " --body " + standingOfARun
+	if got := m.commandLine(0); got != wantCommand {
+		t.Errorf("the adapter ran %q, want %q", got, wantCommand)
+	}
+}
+
+// TestCommentTaskThatFailed says what the host answered where a record could not be
+// left: a run that stands of a task whose record could not be written is a run a person
+// has to be told about by another way, and crewflow does not swallow the reason.
+func TestCommentTaskThatFailed(t *testing.T) {
+	m := newMachine().fails("issue comment", "issue #43 is not in the repository naghuale/crewflow\n")
+	a := New(repo, "", m.env(t))
+
+	err := a.CommentTask(t.Context(), 43, standingOfARun)
+	if err == nil {
+		t.Fatal("CommentTask said nothing about a record it could not leave")
+	}
+	if !strings.Contains(err.Error(), "not in the repository") {
+		t.Errorf("the error %q does not say what the host answered", err)
+	}
+	if strings.Contains(err.Error(), standingOfARun) {
+		t.Errorf("the error %q holds the record, want the command that failed", err)
+	}
+}
+
 // TestFindChangeRequest reads the answer of "gh pr list" of a branch with a
 // request and checks that it is found by the branch, with the head the review
 // and the merge are about.

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1109,6 +1110,228 @@ func TestRunTaskListOfAStateItCannotRead(t *testing.T) {
 	}
 }
 
+// TestRunTaskCheckStalledSaysWhatStandsAndWritesItUnderTheTask is the command of the
+// schedule of an orchestrator: a run that has shown nothing for longer than
+// `[executor] stall_after` is answered with how long it has been standing, what it was
+// doing, and one record under the task — and the next turn of the schedule, a minute
+// later, says the same thing and writes nothing more (docs/DESIGN.md §6).
+func TestRunTaskCheckStalledSaysWhatStandsAndWritesItUnderTheTask(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	standing := putRunThatStands(t, host)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "check-stalled", "-config", project}, &stdout, &stderr)
+
+	// A run that stands is a thing a person has to do something about, and the code of
+	// the command says so whatever it managed to write under the task.
+	if code != exitFailure {
+		t.Fatalf("crewflow task check-stalled = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	for _, want := range []string{"task 43 (43-1)", "standing for 11m", "the executor of the run", "left under the task"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task check-stalled wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task check-stalled wrote %q to stderr, want nothing", stderr.String())
+	}
+	if len(host.records) != 1 {
+		t.Fatalf("the host was asked %d times to write under the task, want once: %q", len(host.records), host.records)
+	}
+	for _, want := range []string{"43", "has shown nothing for 11m", "the executor of the run"} {
+		if !strings.Contains(host.records[0], want) {
+			t.Errorf("the record under the task is %q, want it to hold %q", host.records[0], want)
+		}
+	}
+
+	// The next turn of the schedule: the same answer and no second record. A person who
+	// reads a task is not to find a line under it every minute (§6).
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "check-stalled", "-config", project}, &stdout, &stderr); code != exitFailure {
+		t.Fatalf("the second crewflow task check-stalled = %d, want %d", code, exitFailure)
+	}
+	if !strings.Contains(stdout.String(), "standing for 11m") || strings.Contains(stdout.String(), "left under the task") {
+		t.Errorf("the second turn wrote %q, want the same run standing and no record left", stdout.String())
+	}
+	if len(host.records) != 1 {
+		t.Errorf("the host was asked %d times to write under the task, want once: %q", len(host.records), host.records)
+	}
+
+	// The executor writes again, the silence is over, and the task is told so once: the
+	// end of an episode of silence is a fact about the task as much as its beginning.
+	taskClock = func() time.Time { return standing.Add(13 * time.Minute) }
+	putJournalAt(t, filepath.Join(host.home, "runs", "naghuale-crewflow", "43-1.jsonl"),
+		`{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","text":"I did the work."}}`+"\n",
+		standing.Add(13*time.Minute))
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "check-stalled", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task check-stalled after the run wrote again = %d, want %d (stderr: %q)",
+			code, exitOK, stderr.String())
+	}
+	for _, want := range []string{"no longer standing", "left under the task"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task check-stalled wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	if len(host.records) != 2 || !strings.Contains(host.records[1], "is working again") {
+		t.Errorf("the records under the task are %q, want a second one about the run working again", host.records)
+	}
+}
+
+// TestRunTaskCheckStalledJSON is the same answer for the schedule of a program: the
+// length of the silence in seconds, the step of the run and whether the record under the
+// task was left this time (docs/DESIGN.md §6).
+func TestRunTaskCheckStalledJSON(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	putRunThatStands(t, host)
+	var stdout, stderr bytes.Buffer
+
+	run([]string{"task", "check-stalled", "-config", project, "-json"}, &stdout, &stderr)
+
+	var answer []struct {
+		Task       int     `json:"task"`
+		Run        string  `json:"run"`
+		Stalled    bool    `json:"stalled"`
+		StalledFor float64 `json:"stalled_for"`
+		LastStep   string  `json:"last_step"`
+		Said       bool    `json:"said"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("crewflow task check-stalled -json wrote %q, which is not an answer: %v", stdout.String(), err)
+	}
+	if len(answer) != 1 {
+		t.Fatalf("the answer holds %+v, want the one run that stands", answer)
+	}
+	one := answer[0]
+	if one.Task != 43 || one.Run != "43-1" || !one.Stalled || !one.Said {
+		t.Errorf("the answer is %+v, want the run 43-1 standing with the record left", one)
+	}
+	if one.StalledFor != 660 || one.LastStep != "the executor of the run" {
+		t.Errorf("the answer is %+v, want 660 seconds of silence and the step of the run", one)
+	}
+}
+
+// TestRunTaskCheckStalledOfAProjectWhereNothingStands: a schedule that runs every minute
+// has to be able to say that there is nothing to do, and its code says so (§6).
+func TestRunTaskCheckStalledOfAProjectWhereNothingStands(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	code := run([]string{"task", "check-stalled", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task check-stalled = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("crewflow task check-stalled wrote %q, want nothing at all: no run of this project stands", stdout.String())
+	}
+	if len(host.records) != 0 {
+		t.Errorf("the host was asked %q, want nothing: there is nothing to write under a task", host.records)
+	}
+	// And `-json` of nothing is an empty list and not nothing at all: a program that
+	// reads the answer has to be able to read it without asking whether it is there.
+	stdout.Reset()
+	if code := run([]string{"task", "check-stalled", "-config", project, "-json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task check-stalled -json = %d, want %d", code, exitOK)
+	}
+	if want := "[]\n"; stdout.String() != want {
+		t.Errorf("crewflow task check-stalled -json wrote %q, want %q", stdout.String(), want)
+	}
+}
+
+// TestRunTaskListSaysARunThatStands is the list a person looks at when nobody has
+// noticed anything: a run that has shown nothing for longer than the silence of the
+// project is on top with the length of the silence in the column of the outcome, and
+// `-json` holds the step of the run beside it (docs/DESIGN.md §6).
+func TestRunTaskListSaysARunThatStands(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	putRunThatStands(t, host)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "list", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task list = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	for _, want := range []string{"43", "stalled 11m"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task list wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+	stdout.Reset()
+	run([]string{"task", "list", "-config", project, "-json"}, &stdout, &stderr)
+	for _, want := range []string{`"outcome": "stalled"`, `"stalled_for": 660`, `"last_step": "the executor of the run"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task list -json wrote %q, want it to hold %q", stdout.String(), want)
+		}
+	}
+}
+
+// putRunThatStands is the state of a task whose run is going and has shown nothing for
+// eleven minutes, with the clock of the machine eleven minutes on: what a list of runs
+// and a check of the runs that stand are asked about when a run is standing (docs/DESIGN
+// .md §6).
+func putRunThatStands(t *testing.T, h *host) time.Time {
+	t.Helper()
+	started := time.Now().Add(-11 * time.Minute)
+	taskClock = func() time.Time { return started.Add(11 * time.Minute) }
+	taskMachine = proc.Env{Ask: func(_ string, args []string) (string, error) {
+		// The machine says that the process of the run of the test is still there: a
+		// list of runs asks about the process of a run and not about the file of it
+		// (docs/DESIGN.md §7).
+		if !slices.Contains(args, "-p") {
+			return "", errors.New("ps: no such file or directory")
+		}
+		return started.Format("Mon Jan _2 15:04:05 2006"), nil
+	}}
+	journals := taskrun.JournalsOf(h.home, "naghuale-crewflow")
+	state := taskrun.State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Profile: "opencode"}
+	state = state.NextAttempt(taskrun.StartOf{
+		Started:      started,
+		Step:         "the executor of the run",
+		Journal:      journals.JournalPath(43, 1),
+		ErrorJournal: filepath.Join(h.home, "runs", "naghuale-crewflow", "43-1.err"),
+		Executor:     "opencode",
+		Process:      proc.Process{Pid: 4242, StartedAt: started},
+		Identity:     taskrun.Identity{Mode: "owner", Description: "owner — the login gh naghuale (shared rights)"},
+	})
+	if err := taskrun.SaveState(journals.StatePath(43), state); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	return started
+}
+
+// putJournalAt is what an executor wrote into the journal of an attempt and the moment it
+// wrote it: the sign of life of a run is the time of the last line of its journal
+// (docs/DESIGN.md §6).
+func putJournalAt(t *testing.T, path, text string, written time.Time) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("make the folder of the journal: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatalf("write the journal of the attempt: %v", err)
+	}
+	if err := os.Chtimes(path, written, written); err != nil {
+		t.Fatalf("set the moment the journal was written: %v", err)
+	}
+}
+
 // TestRunTaskCalledWrong walks what a script gets when crewflow is called wrong:
 // the code of a wrong call, the usage, and no work.
 func TestRunTaskCalledWrong(t *testing.T) {
@@ -1259,6 +1482,10 @@ type host struct {
 	home      string
 	worktrees string
 	git       string
+	// records are the lines crewflow left under the tasks of the project, in order: a
+	// run that stands is written about under its task, and what a person reads there is
+	// what a schedule of an orchestrator is for (docs/DESIGN.md §6).
+	records []string
 }
 
 // use makes the task command run on this host, and puts the machine back when the
@@ -1406,6 +1633,14 @@ func (h *host) FindChangeRequest(_ context.Context, branch string) (forge.Change
 		BaseBranch: "main",
 		State:      "open",
 	}, true, nil
+}
+
+// CommentTask leaves a line under a task, and keeps what was left: a run that stands is
+// written about under its task, and a person who reads the task afterwards reads what
+// the schedule of the orchestrator said there (docs/DESIGN.md §6).
+func (h *host) CommentTask(_ context.Context, number int, body string) error {
+	h.records = append(h.records, fmt.Sprintf("#%d: %s", number, body))
+	return nil
 }
 
 // ChangeRequest returns a request by its number, which a run of a task never asks

@@ -692,8 +692,9 @@ func projectOf(t *testing.T, worktrees, timeout string) config.Config {
 		// it, whatever the project wrote in it (docs/DESIGN.md §5).
 		Worktrees: config.Worktrees{Root: filepath.Join(worktrees, "{repo}")},
 		Executor: config.Executor{ExecutorSpec: config.ExecutorSpec{
-			Command: []string{"opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"},
-			Timeout: timeout,
+			Command:    []string{"opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"},
+			Timeout:    timeout,
+			StallAfter: "10m",
 		}},
 		Tasks: config.Tasks{OwnerApproval: "risky"},
 	}

@@ -54,6 +54,13 @@ type Env struct {
 	// while the run goes on, and nothing of a run is only in the memory of the
 	// process that ran it (§7).
 	Stream func(ctx context.Context, name string, args []string, dir string, env []string, stdout, stderr io.Writer) (exitCode int, err error)
+	// Tick calls onTick every `every` until the context of the run is over, on a
+	// goroutine of its own, and answers the function that stops the tick and waits for
+	// it: a run of a task has to know that nobody writes to the files of its attempt
+	// before it closes them. A run whose machine cannot look at itself has it at nil and
+	// looks at nothing, and the silence of a run is then worked out of the state of the
+	// task wherever it is read (docs/DESIGN.md §6).
+	Tick func(ctx context.Context, every time.Duration, onTick func()) (stop func())
 	// Now is the clock of a run, so that a report says when a thing happened and a
 	// test does not have to wait for it to happen.
 	Now func() time.Time
@@ -96,12 +103,40 @@ func System(home string) Env {
 		Environ:  os.Environ(),
 		Command:  Start,
 		Stream:   Stream,
+		Tick:     Tick,
 		Now:      time.Now,
 		Process:  machine.Self,
 		// The key of the App of the project is in the store of the machine, and a
 		// run in the mode of the bot signs a token with it; a run in the mode of the
 		// owner never touches the store (docs/DESIGN.md §7i).
 		Secrets: secret.System(),
+	}
+}
+
+// Tick calls onTick every `every` until the context is over, and answers the function
+// that stops the tick and waits for it. A run of a task looks at its own silence on it
+// while its executor works, and the mark of a standing run is written to the files of
+// the attempt while they are open — so a run has to be able to make the tick stop before
+// it closes them (docs/DESIGN.md §6, §7a).
+func Tick(ctx context.Context, every time.Duration, onTick func()) func() {
+	watch, cancel := context.WithCancel(ctx)
+	over := make(chan struct{})
+	go func() {
+		defer close(over)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-watch.Done():
+				return
+			case <-ticker.C:
+				onTick()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-over
 	}
 }
 
@@ -249,6 +284,11 @@ type runner struct {
 	// unless the run goes on by itself: it is worked out while the journal of the
 	// attempt is still open, so that the journal holds the line about it.
 	resume resume
+	// alive is the sign of life of the run: when it last showed one, what it was and
+	// what it stands at. The state of the task is written from it at every step of
+	// crewflow, and the watch of the run reads it while the executor works
+	// (docs/DESIGN.md §6, §7a).
+	alive *alive
 }
 
 // readTask takes the task from the tracker and checks that it may be run at all.
@@ -360,16 +400,19 @@ func (r *runner) output(ctx context.Context, dir string, args ...string) (string
 	return string(stdout), nil
 }
 
-// stateOf is what crewflow keeps of the task with one attempt more in it: a first
-// run of a task starts a state of its own, and every run after it is the next
-// attempt of the same task. The attempt is told which process the run is happening
-// in, before the executor is started, because that is all that is left of a run that
-// crewflow is killed in the middle of (docs/DESIGN.md §7).
-func (r *runner) stateOf(started time.Time) State {
-	state, err := LoadState(r.journals.StatePath(r.task.Number))
-	if err != nil {
-		state = State{}
-	}
+// stateOf is what crewflow keeps of the task with one attempt more in it, out of the
+// state the task was in before this run began: a first run of a task starts a state of
+// its own, and every run after it is the next attempt of the same task. The attempt is
+// told which process the run is happening in, before the executor is started, because
+// that is all that is left of a run that crewflow is killed in the middle of
+// (docs/DESIGN.md §7).
+//
+// The sign of life of the run is what it is at this moment: crewflow is either beginning
+// the run of the task or standing in front of the window of the keychain of the machine,
+// and a run that is waiting for a person says so where a list of runs and a schedule of
+// an orchestrator read it (§6, §7a, §7i).
+func (r *runner) stateOf(before State, started time.Time, step, reason string) State {
+	state := before
 	attempt := len(state.Attempts) + 1
 	state.Number, state.Title = r.task.Number, r.task.Title
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
@@ -382,6 +425,8 @@ func (r *runner) stateOf(started time.Time) State {
 	// when the run is over (§7h).
 	return state.NextAttempt(StartOf{
 		Started:      started,
+		Step:         step,
+		Reason:       reason,
 		Journal:      r.journals.JournalPath(r.task.Number, attempt),
 		ErrorJournal: r.journals.errorJournalPath(r.task.Number, attempt),
 		Executor:     r.profile.Name(),
@@ -389,8 +434,57 @@ func (r *runner) stateOf(started time.Time) State {
 		Continued:    r.req.Continue != "",
 		AutoResumed:  r.auto,
 		Process:      process,
-		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
+		Identity:     Identity{Mode: r.cfg.Identity.Mode, Description: r.identity.Description},
 	})
+}
+
+// stateBefore is what the state of the task was before this run wrote its attempt into
+// it, and whether there was a state at all. A run that turns out never to have started
+// puts it back as it was: the state of the task is written before crewflow asks the
+// machine for the key of an App, so that a run that stands in front of the window of
+// the keychain is visible while it stands there, and a run that was refused that key
+// leaves no attempt behind either way (F-039, F-048, docs/DESIGN.md §7i).
+func (r *runner) stateBefore() (State, bool) {
+	state, err := LoadState(r.journals.StatePath(r.task.Number))
+	if err != nil {
+		return State{}, false
+	}
+	return state, true
+}
+
+// putStateBack is the state of the task as it was before a run that was not a run wrote
+// itself into it, and nothing at all where there was no state: an attempt that never
+// was may not be left in the state of a task, and a state file that did not exist may
+// not be left behind empty (docs/DESIGN.md §7i).
+func (r *runner) putStateBack(before State, was bool) error {
+	path := r.journals.StatePath(r.task.Number)
+	if !was {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("take the state of the task away: %w", err)
+		}
+		return nil
+	}
+	return SaveState(path, before)
+}
+
+// aliveStep is a sign of life of the run at a step of crewflow: the state of the task is
+// written from it, because that file is what a list of runs, a record under a task and
+// the schedule of an orchestrator are worked out of, and a run whose step is not written
+// down is a run whose step is a guess (docs/DESIGN.md §6).
+//
+// A state that cannot be written is said on the way out of the run and the run goes on:
+// the first state of a run that cannot be written stops the run before its executor is
+// started, and by this point the run is going with the state of it already on disk. A
+// run that stopped because it could not write a sign of life is a run nobody is
+// watching, which is the failure the sign of life is here for.
+func (r *runner) aliveStep(state State, step, reason string) State {
+	now := r.env.Now()
+	r.alive.show(now, step, reason)
+	state = state.Alive(now, step, reason)
+	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+		r.note(state.Attempts[len(state.Attempts)-1].ErrorJournal, err)
+	}
+	return state
 }
 
 // process is the process of crewflow this run is happening in, and whether the machine
@@ -408,23 +502,30 @@ func (r *runner) process() (proc.Process, bool) {
 // time limit of the run is the one of the project: a hang is an outcome of a run and
 // not a reason to wait for ever (docs/DESIGN.md §7a).
 //
-// The state of the task is written before the executor is started and again when it
-// is done: a run that crewflow is killed in the middle of has to leave behind the
-// attempt, the worktree and the journal of what it was doing (§7).
+// The state of the task is written before crewflow goes to the machine for anything, and
+// again when the run is done: a run that crewflow is killed in the middle of has to
+// leave behind the attempt, the worktree and the journal of what it was doing, and a run
+// that stands in front of the window of the keychain has to be in the state of the task
+// while it stands there — four runs of the mode of the bot stood for an hour and a half
+// with not a line written down, and nobody could see them (F-039, F-041, §7, §7i).
 func (r *runner) start(ctx context.Context) (Result, error) {
 	timeout, err := time.ParseDuration(r.cfg.Executor.Timeout)
 	if err != nil {
 		return Result{}, fmt.Errorf("executor.timeout: %w", err)
 	}
+	stallAfter, err := time.ParseDuration(r.cfg.Executor.StallAfter)
+	if err != nil {
+		return Result{}, fmt.Errorf("executor.stall_after: %w", err)
+	}
 	command, err := r.command()
 	if err != nil {
 		return Result{}, err
 	}
-	// The journal of the attempt is opened before crewflow goes to the machine for the
-	// key of the App, and the state of the task is written after it. That call can make
-	// macOS ask the owner in a window of the system, and a run that stands in front of
-	// that window has to say what it waits for where the run of the task is written and
-	// not only in the terminal of the person who started it (§7i).
+	// The journal of the attempt is opened before the state of the task is written, and
+	// the state is written before crewflow goes to the machine for the key of the App.
+	// That call can make macOS ask the owner in a window of the system, and a run that
+	// stands in front of that window has to say what it waits for where the run of the
+	// task is written and not only in the terminal of the person who started it (§7i).
 	number, err := r.nextAttempt()
 	if err != nil {
 		return Result{}, err
@@ -436,27 +537,74 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	listening := r.env.Notices.Listening(files.Out)
 	defer listening()
 
-	// Whose name the executor of this run works under is worked out before the state
-	// of the task is written, because the state says it: a run in the mode of the bot
-	// that cannot be given a token of its own is a run that is not started at all, and
-	// a state of a task with an attempt that never was is a state that lies (§7i).
+	// The state of the task is written before the identity of the run is worked out,
+	// because the run is already a run at that moment and the identity is the one thing
+	// about it that can make macOS ask the owner in a window of the system. What the run
+	// stands at is written with it: a run in the mode of the bot goes to the keychain of
+	// the machine, and a run that is not answered there is a run that needs a person and
+	// not a run that is quiet (F-039, §7i).
+	//
+	// The mode of the run is what the file of the project says, and the state of the
+	// task holds the mode and not the rest of the identity, so the state is complete
+	// before crewflow has asked anybody for anything (§7h, §7i).
+	r.alive = &alive{}
+	started := r.env.Now()
+	step, reason := stepBegan, ""
+	if r.cfg.Identity.Mode == forge.ModeBot {
+		step, reason = stepIdentity, reasonApproval
+	}
+	r.alive.show(started, step, reason)
+	// Whatever the state of the task was before this run began is kept, so that a run
+	// that turns out never to have started can put it back as it was (§7i).
+	before, kept := r.stateBefore()
+	state := r.stateOf(before, started, step, reason)
+	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+		_ = files.takeAway()
+		return Result{}, err
+	}
+	// The watch of the silence of the run is started here and not when the executor is:
+	// everything from here to the executor is crewflow waiting for something, and that is
+	// exactly what a run that nobody is watching is (§6, §7a).
+	stopWatch := r.watch(ctx, state.Attempts[len(state.Attempts)-1], files, stallAfter)
+	defer stopWatch()
+
+	// Whose name the executor of this run works under is worked out before the executor
+	// is started, because a run in the mode of the bot that cannot be given a token of
+	// its own is a run that is not started at all (§7i).
+	r.identity = forge.Identity{Mode: r.cfg.Identity.Mode}
 	if r.identity, err = r.identityOf(ctx); err != nil {
 		if errors.Is(err, secret.ErrApproval) {
+			// The wait is over and nobody answered the window: the attempt ends here,
+			// and the state of the task keeps the attempt with it — it is the one
+			// attempt of §7 that is written down without an executor having run
+			// (§7i).
+			stopWatch()
 			return r.blockedOnApproval(files, err)
 		}
 		// A run that never started its executor leaves nothing behind: neither the
 		// journal of an attempt that was not made, nor the worktree and the branch it
 		// made, which nothing written down points at and the next run of the task cannot
-		// come back to (docs/DESIGN.md §7i).
-		return Result{}, errors.Join(err, files.takeAway(), r.takeRunAway(ctx))
+		// come back to (docs/DESIGN.md §7i). The state of the task goes back to what it
+		// was before this run wrote its attempt into it: a run that was not a run may
+		// not leave an attempt behind (F-039 put the state there first, and F-048 keeps
+		// the truth of it).
+		stopWatch()
+		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(before, kept), r.takeRunAway(ctx))
 	}
-	state := r.stateOf(r.env.Now())
-	attempt := state.Attempts[len(state.Attempts)-1]
-	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
-		_ = files.takeAway()
-		return Result{}, err
-	}
+	// The run is going to get the task ready for its executor, and that is the sign of
+	// life the state of the task holds from here on: whatever the run stood at before
+	// this — the window of the keychain, the time of the machine to answer — is behind it.
+	//
+	// Whose name the executor works under goes into the state with it, because the state
+	// says it: the mode of the file of the project is what the state holds while crewflow
+	// is still working it out, and the mode the host answered with is what it holds from
+	// here on (§7i).
+	last := len(state.Attempts) - 1
+	state.Attempts[last].Identity = Identity{Mode: r.identity.Mode, Description: r.identity.Description}
+	state = r.aliveStep(state, stepPreparing, "")
+	attempt := state.Attempts[last]
 	if err := r.scratch(ctx); err != nil {
+		stopWatch()
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
@@ -471,6 +619,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// the journal of the run afterwards sees it there (docs/DESIGN.md §7d).
 	rights, err := r.rights(ctx, files)
 	if err != nil {
+		stopWatch()
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
@@ -478,9 +627,11 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// started: the helper git takes a fresh token from, and the hook that refuses a
 	// push anywhere but the branch of the task (§7i).
 	if err := r.bot(ctx); err != nil {
+		stopWatch()
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
+	state = r.aliveStep(state, stepExecutor, "")
 
 	// The time limit of the run is on the context, and a program that is still
 	// going when it is out is asked to stop with it: the run has an end whatever the

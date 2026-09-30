@@ -218,7 +218,7 @@ func (r Runs) rowOf(entry Entry, at time.Time, oneOwner bool) row {
 			strconv.Itoa(entry.Task),
 			line(entry.Title),
 			executor(entry),
-			string(entry.Outcome),
+			outcomeCell(entry),
 			age(at, entry.StartedAt),
 			attempt(entry),
 			change(entry),
@@ -337,17 +337,19 @@ func painted(text, colour string, screen Screen) string {
 // long as the outcome asks a person for the same thing: a run that is going is blue, a
 // run that opened its change request is green, a run that stopped on a permission or on
 // its own says so in yellow, and a run that died — cut short, out of time, with its
-// executor gone, or after reaching for a key — is red. Every other outcome is said in
-// the letters of it: nothing of a run that is out of scope or that changed nothing asks
-// for anybody today, and a colour where nothing happened is a colour that cries wolf.
+// executor gone, or after reaching for a key — is red. A run that stands is yellow: it
+// is not over and nothing is broken, and it is the one mark of a list that asks for
+// somebody to look at it today. Every other outcome is said in the letters of it:
+// nothing of a run that is out of scope or that changed nothing asks for anybody today,
+// and a colour where nothing happened is a colour that cries wolf.
 func colourOf(outcome Kind) string {
 	switch outcome {
 	case Running:
 		return cyan
+	case Stalled, Blocked, BlockedPermission:
+		return yellow
 	case ChangeRequestOpened:
 		return green
-	case Blocked, BlockedPermission:
-		return yellow
 	case BlockedSecret, Interrupted, TimedOut, ExecutorFailed:
 		return red
 	default:
@@ -485,6 +487,18 @@ func identity(entry Entry) string {
 		return "owner"
 	}
 	return entry.Identity.Mode
+}
+
+// outcomeCell is the column of how the last try of a task came out. A run that is standing
+// is the one kind that carries a number with it — how long it has shown nothing — because
+// that number is what a person decides about, and the step it was doing is in the answer
+// of `-json` and in the record under the task rather than in a column of its own: a table
+// of runs a person reads down the middle of (docs/DESIGN.md §6).
+func outcomeCell(entry Entry) string {
+	if entry.Stalled == nil {
+		return string(entry.Outcome)
+	}
+	return string(Stalled) + " " + Idle(entry.Stalled.For)
 }
 
 // attempt is the column of the run: "57-2" where the task was tried more than once,

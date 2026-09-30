@@ -29,8 +29,17 @@ const MaybeRunning Kind = "maybe-running"
 // The seven outcomes of a run, in the order crewflow works them out, which is the
 // order of what says the most: a run that ran out of time tells nothing about what
 // it was refused in its last second, and a run that was refused tells nothing about
-// what it would have opened.
+// what it would have opened. A run that stands is not among them: it has not ended.
 const (
+	// Stalled means a run that is going has shown nothing for longer than the silence
+	// the project agreed to put up with, and is standing: a window of the keychain
+	// nobody answered, an executor that hangs, a machine with no network. It is not an
+	// outcome of a run and it does not change one — the state of the task holds
+	// `running` all the same, the process goes on working and the attempt ends the way
+	// it would have ended. It is worked out every time a list of runs is read, because
+	// a flag in a file that says nothing about the time outlives the silence it was
+	// written for (docs/DESIGN.md §6, §7a, §7h).
+	Stalled Kind = "stalled"
 	// Interrupted means a person stopped the run: crewflow was stopped with SIGINT
 	// or SIGTERM, and it stopped the executor with it rather than leaving it to work
 	// on without anyone (docs/DESIGN.md §7a). What the executor had done until then is
@@ -69,9 +78,11 @@ const (
 
 // kinds is every outcome there is, in the order crewflow works them out, which is the
 // order a list of runs counts and says them in: what says the most about a run first,
-// and the ones that mean the same thing beside each other.
+// and the ones that mean the same thing beside each other. A run that stands is a run
+// that has not ended, and it is counted among the runs a machine is busy with all the
+// same: a list of another project says "1 stalled" about a run that is going nowhere.
 var kinds = []Kind{
-	Running, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
+	Running, Stalled, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
 	ExecutorFailed, NoChangeRequest, ChangeRequestOpened, OutOfScope,
 }
 

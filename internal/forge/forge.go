@@ -64,6 +64,20 @@ type TaskCloser interface {
 	CloseTask(ctx context.Context, number int, comment string) error
 }
 
+// TaskCommenter is the tracker of a project a line can be left under a task of it
+// without closing the task. It is what crewflow writes under a task about a run that
+// stands: the run goes on and a person has to learn that it is going nowhere, and the
+// task is the one place an orchestrator and a person both look at (docs/DESIGN.md §6).
+//
+// It is not [TaskCloser] and it is not [CommentWriter]: closing a task is the end of a
+// cycle, and a record of a review is a record of a decision, while this is a line about
+// the state of a run that is still going.
+type TaskCommenter interface {
+	// CommentTask leaves the body under the task with the number, and the task stays
+	// open: a task nobody is working on yet is not a task that is done.
+	CommentTask(ctx context.Context, number int, body string) error
+}
+
 // ChangeRequest is a request to change the code of a project: what it wants,
 // what it stands on and where it stands. A pull request on one host and a merge
 // request on another are the same thing here (docs/DESIGN.md §4).

@@ -20,6 +20,8 @@ func TestLoadRejects(t *testing.T) {
 		{"model_flag_without_model.toml", []string{"executor.model_flag", "{model}"}},
 		{"executor_timeout_invalid.toml", []string{"executor.timeout", "soon"}},
 		{"executor_timeout_zero.toml", []string{"executor.timeout", "0s"}},
+		{"executor_stall_after_invalid.toml", []string{"executor.stall_after", "ten minutes"}},
+		{"executor_stall_after_zero.toml", []string{"executor.stall_after", "0s"}},
 		{"ci_timeout_invalid.toml", []string{"ci.timeout", "30"}},
 		{"gate_name_empty.toml", []string{"gates[0].name"}},
 		{"gate_name_duplicate.toml", []string{"gates[1].name", "test"}},

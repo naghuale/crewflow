@@ -25,8 +25,9 @@ const ListLimit = 20
 type Liveness func(process proc.Process) bool
 
 // ListEnv is what a list of runs needs from the machine: the clock, to say how long a
-// run that is going has been going; the question whether it is going at all; and the
-// time limit of a run of the project, which is what says that a run crewflow kept no
+// run that is going has been going; the question whether it is going at all; the silence
+// the project puts up with before a run that is going is called standing; and the time
+// limit of a run of the project, which is what says that a run crewflow kept no
 // process of is over.
 type ListEnv struct {
 	// Now is the clock of the machine.
@@ -38,6 +39,11 @@ type ListEnv struct {
 	// of no project says nothing about the time limit of the runs beside it. What a
 	// list does not know, it does not end a run with.
 	Timeout time.Duration
+	// StallAfter is how long a run of the project may show nothing before a list calls
+	// it standing, and zero where nothing says — the silence of a project comes from
+	// the file of the project, and a list asked from a folder of no project does not
+	// guess one (docs/DESIGN.md §6).
+	StallAfter time.Duration
 }
 
 // Runs is what crewflow knows of the runs of one project: one entry per task that was
@@ -90,7 +96,10 @@ type Entry struct {
 	Attempt  int `json:"-"`
 	// Outcome is how the last attempt came out. It is running while the process of
 	// the run is still there, interrupted once it is not, and the outcome of the run
-	// itself otherwise (docs/DESIGN.md §7).
+	// itself otherwise (docs/DESIGN.md §7). A run that is going and has shown nothing
+	// for longer than the silence of the project is Stalled, and that is worked out
+	// here and not read from the state: the state of a run that is going says
+	// `running` whatever the process is doing (docs/DESIGN.md §6, §7a).
 	Outcome Kind `json:"outcome"`
 	// StartedAt is when the last attempt was started, and EndedAt is when it stopped,
 	// which there is none of while it is going.
@@ -113,6 +122,11 @@ type Entry struct {
 	// not have to open a state file to learn that a run was in the mode of the owner
 	// (docs/DESIGN.md §7i).
 	Identity Identity `json:"identity"`
+	// Stalled is the silence of a run that is going and has shown nothing for longer
+	// than the silence the project put up with, and it is nothing at all for every
+	// other run: a run that is working, a run that is over and a run of a project
+	// that names no silence (docs/DESIGN.md §6).
+	Stalled *Stall `json:"stalled,omitempty"`
 }
 
 // Project is what a project of the machine is doing: its runs by what the last try of
@@ -135,9 +149,10 @@ func (e Entry) Run() string {
 
 // Length is how long the last attempt of the task took, and whether that is known at
 // all. A run whose process is gone was not seen to stop: crewflow was not there to see
-// it end, and how long it went on afterwards is in nothing it kept.
+// it end, and how long it went on afterwards is in nothing it kept. A run that stands
+// is a run that is going, and its end has not come.
 func (e Entry) Length() (time.Duration, bool) {
-	if e.Outcome != Running && e.EndedAt == nil {
+	if e.Outcome != Running && e.Outcome != Stalled && e.EndedAt == nil {
 		return 0, false
 	}
 	return e.Duration, true
@@ -145,13 +160,23 @@ func (e Entry) Length() (time.Duration, bool) {
 
 // MarshalJSON is the shape the orchestrator reads a list in. The length of a run is in
 // seconds, because a program counts seconds and does not read "1h 05m", and it is
-// nothing at all when nothing kept it.
+// nothing at all when nothing kept it. The silence of a run that stands is in the same
+// seconds, and the step and the reason of it stand beside it: a run that is standing is
+// a run somebody has to look at, and a program that is to look at it has to know how
+// long it has been standing and what it was doing when it last said anything
+// (docs/DESIGN.md §6).
 func (e Entry) MarshalJSON() ([]byte, error) {
 	length, known := e.Length()
 	var seconds *float64
 	if known {
 		whole := math.Round(length.Seconds())
 		seconds = &whole
+	}
+	var stalledFor *float64
+	var lastStep, reason string
+	if e.Stalled != nil {
+		whole := math.Round(e.Stalled.For.Seconds())
+		stalledFor, lastStep, reason = &whole, e.Stalled.LastStep, e.Stalled.Reason
 	}
 	answer := struct {
 		Repo            string     `json:"repo"`
@@ -163,6 +188,9 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		StartedAt       time.Time  `json:"started_at"`
 		EndedAt         *time.Time `json:"ended_at,omitempty"`
 		DurationSeconds *float64   `json:"duration_seconds"`
+		StalledFor      *float64   `json:"stalled_for,omitempty"`
+		LastStep        string     `json:"last_step,omitempty"`
+		Reason          string     `json:"reason,omitempty"`
 		Executor        string     `json:"executor"`
 		Change          *Change    `json:"change,omitempty"`
 		Identity        Identity   `json:"identity"`
@@ -176,6 +204,9 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		StartedAt:       e.StartedAt,
 		EndedAt:         e.EndedAt,
 		DurationSeconds: seconds,
+		StalledFor:      stalledFor,
+		LastStep:        lastStep,
+		Reason:          reason,
 		Executor:        e.Executor,
 		Change:          e.Change,
 		Identity:        e.Identity,
@@ -369,12 +400,24 @@ func (e ListEnv) entryOf(state State, repo string) (Entry, bool) {
 		entry.EndedAt = &ended
 	}
 	switch {
-	case entry.Outcome == Running:
+	case entry.Outcome == Running, entry.Outcome == Stalled:
 		// A run that is going is as long as it has been going so far, and its end is
-		// a moment that has not come yet.
+		// a moment that has not come yet — and a run that stands is a run that is
+		// going, whatever it is not doing.
 		entry.Duration = e.Now().Sub(last.StartedAt)
 	case !last.EndedAt.IsZero():
 		entry.Duration = last.EndedAt.Sub(last.StartedAt)
+	}
+	// Whether the run is standing is worked out here, at the moment the list is read:
+	// a run whose executor has written nothing for longer than the silence of the
+	// project is the one thing a list of runs is for and not there for, and a mark
+	// stored in the state would outlive the silence it was written for
+	// (docs/DESIGN.md §6, §7a).
+	if entry.Outcome == Running {
+		silence := silenceOf(last, state.Profile, e.Now())
+		if silence.standing(e.StallAfter) {
+			entry.Outcome, entry.Stalled = Stalled, &silence
+		}
 	}
 	return entry, true
 }
@@ -425,12 +468,13 @@ func byRecency(a, b Entry) int {
 }
 
 // wantsAttention is whether the outcome of a run is one a person has to do something
-// about: it is going, it reached for a secret, it was refused a permission, it stopped by
-// itself, it ran out of time, the executor of it is gone, or nobody knows whether it is
-// going at all. A run that came out of it is not one, however long ago it was.
+// about: it is going, it is standing, it reached for a secret, it was refused a
+// permission, it stopped by itself, it ran out of time, the executor of it is gone, or
+// nobody knows whether it is going at all. A run that came out of it is not one,
+// however long ago it was.
 func wantsAttention(outcome Kind) bool {
 	switch outcome {
-	case Running, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
+	case Running, Stalled, MaybeRunning, Interrupted, TimedOut, BlockedSecret, BlockedPermission, Blocked,
 		ExecutorFailed:
 		return true
 	default:

@@ -7,8 +7,6 @@ import (
 	"os"
 	"strings"
 	"time"
-
-	"github.com/naghuale/crewflow/internal/forge"
 )
 
 // reasonApproval is what a run that stood in front of the window of the keychain of
@@ -47,15 +45,27 @@ func (r *runner) nextAttempt() (int, error) {
 // the run stood in front of a window of the owner of the machine for two whole minutes
 // and a list of runs that said nothing about that is a list of runs that hides why a
 // task has not started.
+//
+// The attempt is the one the run wrote into the state of the task before it went to the
+// keychain, because a run that stands in front of that window is a run that has to be
+// visible while it stands there (F-039, §6). What it stood at — the key of the App of
+// the host — is what the state of the task says it was standing at, and it is what a
+// list of runs shows as the reason of the silence.
 func (r *runner) blockedOnApproval(files *AttemptFiles, err error) (Result, error) {
-	// Whose name the run was going to work under is what the state of the task says
-	// even where the run never got there: a project in the mode of the bot that was
-	// refused its key is a run of the mode of the bot (§7i).
-	r.identity = forge.Identity{Mode: r.cfg.Identity.Mode}
 	ended := r.env.Now()
-	state := r.stateOf(ended)
-	attempt := state.Attempts[len(state.Attempts)-1]
-	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state.Ended(ended, Blocked)); keepErr != nil {
+	state, loadErr := LoadState(r.journals.StatePath(r.task.Number))
+	if loadErr != nil {
+		_ = files.takeAway()
+		return Result{}, loadErr
+	}
+	last := len(state.Attempts) - 1
+	// The name of the run is the mode of the file of the project: a run that was
+	// refused the key of the App is a run of the mode of the bot, and the state says
+	// so wherever the wait ended (§7i).
+	state.Attempts[last].Identity = Identity{Mode: r.cfg.Identity.Mode}
+	state = state.Ended(ended, Blocked)
+	attempt := state.Attempts[last]
+	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state); keepErr != nil {
 		_ = files.takeAway()
 		return Result{}, keepErr
 	}

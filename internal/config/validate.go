@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -72,7 +73,7 @@ func (c Config) Validate() error {
 	if err := validateAccess(c.Access); err != nil {
 		return err
 	}
-	if err := validateTimeout("ci.timeout", c.CI.Timeout); err != nil {
+	if err := validateDuration("ci.timeout", c.CI.Timeout); err != nil {
 		return err
 	}
 	if err := oneOf("merge.by", c.Merge.By, mergeBys); err != nil {
@@ -212,7 +213,10 @@ func validateExecutor(key string, executor ExecutorSpec) error {
 		return fmt.Errorf("%s.model_flag: must contain the %s placeholder, the flag is added only for the model that is asked for",
 			key, modelPlaceholder)
 	}
-	return validateTimeout(key+".timeout", executor.Timeout)
+	return errors.Join(
+		validateDuration(key+".timeout", executor.Timeout),
+		validateDuration(key+".stall_after", executor.StallAfter),
+	)
 }
 
 // validateGates checks that every gate can be named in a report and can fail.
@@ -251,9 +255,11 @@ func validateAccess(access Access) error {
 	return nil
 }
 
-// validateTimeout checks that a timeout is a duration a person can wait out, and
-// not a number without a unit or a run that is killed at once.
-func validateTimeout(key, value string) error {
+// validateDuration checks that a key holds a duration a person can wait out, and not a
+// number without a unit or a wait that is over at once. The time limit of a run, the
+// limit of the checks of a commit and the silence after which a run is marked as
+// standing are all the same kind of value: a length of time the project agreed on.
+func validateDuration(key, value string) error {
 	if value == "" {
 		return fmt.Errorf("%s: must not be empty", key)
 	}

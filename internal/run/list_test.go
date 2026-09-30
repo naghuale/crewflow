@@ -901,6 +901,12 @@ type try struct {
 	// started at is what a state without it holds.
 	processStartedAt time.Time
 	mode             string
+	// lastAt and lastStep are the sign of life the state of the task holds of the run
+	// of the attempt, and reason what the run stands at where crewflow knows it
+	// (docs/DESIGN.md §6).
+	lastAt   time.Time
+	lastStep string
+	reason   string
 }
 
 // machineOfTest fills the home of a test with a machine of two projects: the runs of
@@ -982,6 +988,9 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 		})
 		if attempt.outcome != Running {
 			state = state.Ended(attempt.endedAt, attempt.outcome)
+		}
+		if !attempt.lastAt.IsZero() || attempt.lastStep != "" || attempt.reason != "" {
+			state = state.Alive(attempt.lastAt, attempt.lastStep, attempt.reason)
 		}
 	}
 	if err := SaveState(journals.StatePath(number), state); err != nil {

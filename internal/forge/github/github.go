@@ -78,10 +78,11 @@ type Adapter struct {
 // the machine: without a compile error here, a GitHub that cannot be read would
 // pass for a host.
 var (
-	_ forge.Tracker    = (*Adapter)(nil)
-	_ forge.Forge      = (*Adapter)(nil)
-	_ forge.CI         = (*Adapter)(nil)
-	_ forge.TaskCloser = (*Adapter)(nil)
+	_ forge.Tracker       = (*Adapter)(nil)
+	_ forge.Forge         = (*Adapter)(nil)
+	_ forge.CI            = (*Adapter)(nil)
+	_ forge.TaskCloser    = (*Adapter)(nil)
+	_ forge.TaskCommenter = (*Adapter)(nil)
 )
 
 // New returns the adapter of the repository, which is all it needs to know: the
@@ -111,6 +112,23 @@ func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 // the machine that closed it (docs/DESIGN.md §7h).
 func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) error {
 	arguments := []string{"issue", "close", strconv.Itoa(number), "-R", a.repo, "--comment", comment}
+	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
+	switch {
+	case err != nil:
+		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+	case code != 0:
+		return fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+	}
+	return nil
+}
+
+// CommentTask leaves a line under the issue of the task and the issue stays open: what
+// crewflow has to say about a run that stands is said where a person and an
+// orchestrator look at the task, and a task whose run is standing is not a task that is
+// done (docs/DESIGN.md §6).
+func (a *Adapter) CommentTask(ctx context.Context, number int, body string) error {
+	arguments := []string{"issue", "comment", strconv.Itoa(number), "-R", a.repo, "--body", body}
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
 	switch {
 	case err != nil:

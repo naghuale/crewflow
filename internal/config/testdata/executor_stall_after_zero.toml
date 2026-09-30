@@ -1,0 +1,9 @@
+# executor.stall_after is zero: every run of this project would be marked as
+# standing the moment it starts.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+stall_after = "0s"

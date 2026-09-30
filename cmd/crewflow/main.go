@@ -76,10 +76,10 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 
 // usage lists the subcommands: a check of the machine, a run of a task, what a check
 // of a task is missing before it is run, a watch of a run that is going on, a list of
-// the runs of the project, a review of a change, the merge of a change the gate allows
-// and the check of a merge that went through, the key of the app a run works as, and
-// the version. The rest of the cycle arrives with the next steps of
-// docs/DESIGN.md §11.
+// the runs of the project, a check of the runs that stand, a review of a change, the
+// merge of a change the gate allows and the check of a merge that went through, the key
+// of the app a run works as, and the version. The rest of the cycle arrives with the
+// next steps of docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
 merges, and an executor that writes the code of one task at a time.
@@ -93,6 +93,7 @@ Subcommands:
   task check <N> Say whether a task may be run, and what it is missing when it may not
   task watch <N> Show what the executor of a task is doing, as it is doing it
   task list      List the runs of the project, and of the whole machine with -all
+  task check-stalled  The runs that stand, and one record under each task (§6)
   review <PR>    Say whether a change may be merged, and why it may not (§7h)
   merge <PR>     Merge a change the gate allows: fast-forward of the approved commit (§7h)
   verify <PR>    Check a merge: the branch of the host, the task and the CI of it (§7h)
@@ -104,6 +105,7 @@ Subcommands:
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
   crewflow task list [-all] [-json] [-config path] [-repo path]
+  crewflow task check-stalled [-json] [-config path]
   crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
   crewflow merge <PR> [-config path] [-repo path] [-json]
   crewflow verify <PR> [-config path] [-repo path] [-json]

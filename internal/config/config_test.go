@@ -49,6 +49,10 @@ func TestLoadExample(t *testing.T) {
 		{"executor.model", cfg.Executor.Model, ""},
 		{"executor.model_flag", cfg.Executor.ModelFlag, []string{"--model", "{model}"}},
 		{"executor.timeout", cfg.Executor.Timeout, "90m"},
+		// A run of a project that says nothing about standing still is marked after
+		// ten minutes of silence: an executor that works says something every few
+		// minutes, and an hour of nothing is a run nobody is watching (docs/DESIGN.md §7a).
+		{"executor.stall_after", cfg.Executor.StallAfter, "15m"},
 		{"len(executor.fallback)", len(cfg.Executor.Fallback), 0},
 		{
 			"access.read_from",
@@ -119,6 +123,7 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"project.default_branch", cfg.Project.DefaultBranch, "main"},
 		{"project.language", cfg.Project.Language, "en"},
 		{"executor.timeout", cfg.Executor.Timeout, "90m"},
+		{"executor.stall_after", cfg.Executor.StallAfter, "10m"},
 		// A project that says nothing about [access] gets no folder to read: the
 		// executor of it works in its worktree and nowhere else, and a run does not
 		// hand out a permission nobody asked for (docs/DESIGN.md §7d).
@@ -255,6 +260,19 @@ func TestLoadFallbackAppliesDefaultTimeout(t *testing.T) {
 	}
 	if got, want := cfg.Executor.Fallback[0].Timeout, cfg.Executor.Timeout; got != want {
 		t.Errorf("executor.fallback[0].timeout = %q, want %q", got, want)
+	}
+}
+
+// TestLoadFallbackAppliesDefaultStallAfter: the silence a run is marked at is a
+// limit of the run and not of the agent in it, so a fallback says nothing about it
+// and gets the one of the executor it stands in for.
+func TestLoadFallbackAppliesDefaultStallAfter(t *testing.T) {
+	cfg, err := loadFile(t, "stall_after_defaults.toml")
+	if err != nil {
+		t.Fatalf("Load(stall_after_defaults.toml) returned an error: %v", err)
+	}
+	if got, want := cfg.Executor.Fallback[0].StallAfter, cfg.Executor.StallAfter; got != want {
+		t.Errorf("executor.fallback[0].stall_after = %q, want %q", got, want)
 	}
 }
 

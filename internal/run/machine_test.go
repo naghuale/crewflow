@@ -81,6 +81,17 @@ type machine struct {
 	// it, so that a report says when a thing happened and a test does not wait for
 	// it to happen.
 	clock time.Time
+	// looked is where a test asks the run of a task to look at its own silence: a run
+	// that is quiet for a while is a run a test says so about with its own clock, and
+	// not with a wait (docs/DESIGN.md §6).
+	looked chan looking
+}
+
+// looking is one request of a test to look at the silence of a run, and the channel the
+// run closes when it has looked: a test that asks a run what it would say about its
+// silence has to see the line of it before it reads the file it is in.
+type looking struct {
+	done chan struct{}
 }
 
 // answer is what a command of the machine does when it runs.
@@ -96,6 +107,11 @@ type answer struct {
 	// going needs the program to still be there while it looks.
 	wrote chan struct{}
 	wait  <-chan struct{}
+	// more is what an executor of a test says after it has started, as an agent that
+	// works says: the journal of the run grows while it goes on, and every line of it
+	// is a sign of life of the run (docs/DESIGN.md §6). The run ends when the test
+	// closes the channel.
+	more chan string
 	// env is the extra environment the machine hands to a program, which is where
 	// the temporary folder of the executor is found.
 	env []string
@@ -124,8 +140,9 @@ func newMachine(t *testing.T) *machine {
 			"git worktree add":     {},
 			"git diff --name-only": {},
 		},
-		then:  map[string][]answer{},
-		clock: time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC),
+		then:   map[string][]answer{},
+		clock:  time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC),
+		looked: make(chan looking),
 	}
 	// Git is asked where the repository of the project is, because the scratch of a
 	// run is kept out of it, and the answer is a folder of the test.
@@ -182,6 +199,7 @@ func (m *machine) env() Env {
 		Environ:  []string{"HOME=" + m.userHome, "PATH=/usr/bin"},
 		Command:  m.exec,
 		Stream:   m.stream,
+		Tick:     m.stall,
 		Now:      m.now,
 		Process:  m.process,
 	}
@@ -191,14 +209,82 @@ func (m *machine) env() Env {
 // started, both of the machine of the test, so that no test of a run asks the machine
 // it happens to run on.
 func (m *machine) process() (proc.Process, bool) {
-	return proc.Process{Pid: 4242, StartedAt: m.clock}, true
+	return proc.Process{Pid: 4242, StartedAt: m.at()}, true
 }
 
 // now is the clock of the machine. Every question moves it a minute on, so that the
 // start and the end of a run are two moments and not one.
 func (m *machine) now() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.clock = m.clock.Add(time.Minute)
 	return m.clock
+}
+
+// at is the time of the machine as a test says it: a test that wants a run to have been
+// quiet for a quarter of an hour moves the clock of the machine and asks the run to look
+// at its silence, and a run that looks at itself asks the same question (docs/DESIGN.md
+// §6).
+func (m *machine) at() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.clock
+}
+
+// quiet is the machine at a moment `since` after the one it is at, which is how a test
+// says that a run has shown nothing for a while.
+func (m *machine) quiet(since time.Duration) *machine {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clock = m.clock.Add(since)
+	return m
+}
+
+// begins is the machine at a moment of its own choosing: a test that wants the sign of
+// life of a run to be the moment its executor wrote, and that moment is in a file the
+// machine wrote for real, puts the clock of the machine there (§6).
+func (m *machine) begins(at time.Time) *machine {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.clock = at
+	return m
+}
+
+// stall is the tick of a machine of a test: the run of a task looks at its own silence
+// when the test says so and not before, so that a test of the mark of a standing run
+// never waits for a clock of its own.
+func (m *machine) stall(ctx context.Context, _ time.Duration, onTick func()) func() {
+	watch, cancel := context.WithCancel(ctx)
+	over := make(chan struct{})
+	go func() {
+		defer close(over)
+		for {
+			select {
+			case <-watch.Done():
+				return
+			case ask := <-m.looked:
+				onTick()
+				close(ask.done)
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-over
+	}
+}
+
+// look is the moment a test makes the run of the task look at its own silence, and waits
+// until it has looked: what the run says about it is in the files of the attempt, and a
+// test that reads them has to know that the line is already in them.
+func (m *machine) look() {
+	ask := looking{done: make(chan struct{})}
+	select {
+	case m.looked <- ask:
+		<-ask.done
+	case <-time.After(30 * time.Second):
+		panic("the run of the test does not look at its own silence")
+	}
 }
 
 // exec runs a command the way the machine answers it, and leaves behind what the
@@ -245,6 +331,12 @@ func (m *machine) stream(ctx context.Context, name string, args []string, dir st
 		close(answer.wrote)
 	}
 	switch {
+	case answer.more != nil:
+		for text := range answer.more {
+			if _, err := io.WriteString(stdout, text); err != nil {
+				return 0, err
+			}
+		}
 	case answer.wait != nil:
 		select {
 		case <-answer.wait:

@@ -121,6 +121,12 @@ type ExecutorSpec struct {
 	ModelFlag []string `toml:"model_flag"`
 	// Timeout is how long a run may take, as a duration such as "90m".
 	Timeout string `toml:"timeout"`
+	// StallAfter is how long a run may go without a sign of life before it is marked
+	// as standing: the last line the executor wrote, or the last step of crewflow
+	// itself. A run that has shown nothing for that long is a run a person has to
+	// look at, and the mark says so much as the length of the silence
+	// (docs/DESIGN.md §6, §7a).
+	StallAfter string `toml:"stall_after"`
 }
 
 // Access is what the executor of a project may read outside the worktree of a task,

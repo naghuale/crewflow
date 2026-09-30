@@ -1,0 +1,12 @@
+# A fallback without a stall_after gets the same silence as the primary one: both are
+# the limits of the run and not of the agent in it.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+stall_after = "3m"
+fallback = [
+  { command = ["other-agent", "run", "{prompt}"] },
+]

@@ -128,6 +128,27 @@ type Attempt struct {
 	// which is what says how long a run took.
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
+	// LastAt and LastStep are the sign of life of the run, as the last step of crewflow
+	// left it: when crewflow last did something of its own for this run, and what that
+	// was. Together with the journal of the attempt — where the last line the executor
+	// wrote stands — they are what says whether a run that is going is working or
+	// standing, and a state of before crewflow kept either names neither, so that a run
+	// of before is a run that has shown nothing since it began (docs/DESIGN.md §6, §7a).
+	LastAt   time.Time `json:"last_at,omitempty"`
+	LastStep string    `json:"last_step,omitempty"`
+	// Reason is what the run stands at where crewflow knows it before it stands there:
+	// a run in the mode of the bot goes to the keychain of the machine for the key of
+	// the App of the host, and a run that is not answered in the window of the system
+	// is a run that needs a person (docs/DESIGN.md §7i). It is read where a run has
+	// been quiet for longer than the silence of the project, and it is a name and not a
+	// sentence, because that is what a report of it shows.
+	Reason string `json:"reason,omitempty"`
+	// ReportedAt is when a record of the standing of this attempt was last left under
+	// the task on the host by `crewflow task check-stalled`. It is a fact of what has
+	// been said and not a verdict about the run: whether the run is standing is worked
+	// out at every read, and this is what keeps one record to an episode of silence
+	// rather than one a minute (docs/DESIGN.md §6, §7h).
+	ReportedAt *time.Time `json:"reported_at,omitempty"`
 	// Journal and ErrorJournal are the files of what the executor wrote and of
 	// what it said on the way out.
 	Journal      string `json:"journal"`
@@ -199,10 +220,17 @@ type StartOf struct {
 	// AutoResumed is the habit crewflow went on by itself for, when nobody asked it
 	// to: an attempt the orchestrator continued is not one, and says nothing here.
 	AutoResumed string
+	// Step is what the run of the task was doing when the attempt began, and Reason
+	// what it stands at where crewflow knows it before it stands there. They are the
+	// sign of life the attempt starts with, and a run that is cut off between this and
+	// the executor writing anything is a run a list of runs has to be able to call
+	// standing (docs/DESIGN.md §6, §7a, §7i).
+	Step   string
+	Reason string
 	// Process is the process the run of crewflow is happening in, which is what a
 	// later list asks the machine about, and the identity is whose name the
-	// executor of the run is about to work under, so that the state says it from
-	// the moment the run starts and not only when it is over (docs/DESIGN.md §7, §7i).
+	// executor of the run is about to work under, so that the state says it from the
+	// moment the run starts and not only when it is over (docs/DESIGN.md §7, §7i).
 	Process  proc.Process
 	Identity Identity
 }
@@ -216,6 +244,9 @@ func (s State) NextAttempt(start StartOf) State {
 	attempt := Attempt{
 		Number:       next,
 		StartedAt:    start.Started,
+		LastAt:       start.Started,
+		LastStep:     start.Step,
+		Reason:       start.Reason,
 		Journal:      start.Journal,
 		ErrorJournal: start.ErrorJournal,
 		Executor:     start.Executor,
@@ -241,6 +272,43 @@ func (s State) Ended(ended time.Time, outcome Kind) State {
 	last := len(s.Attempts) - 1
 	s.Attempts[last].EndedAt = ended
 	s.Attempts[last].Outcome = outcome
+	return s
+}
+
+// Alive is a sign of life of the attempt that is going: when crewflow last did
+// something of its own for the run, what that was, and what the run stands at where
+// crewflow knows it. A run whose executor writes is alive whatever crewflow writes into
+// the state, and the sign of life of such a run is the last line of its journal
+// (docs/DESIGN.md §6, §7a).
+func (s State) Alive(at time.Time, step, reason string) State {
+	if len(s.Attempts) == 0 {
+		return s
+	}
+	last := len(s.Attempts) - 1
+	s.Attempts[last].LastAt, s.Attempts[last].LastStep, s.Attempts[last].Reason = at, step, reason
+	return s
+}
+
+// Reported is the moment crewflow said under the task that the attempt that is going
+// stands, and it is the sign of one episode of silence: a run that is not reported any
+// more is a run whose silence is over — it is working again, or it is over — and the
+// next silence of it is a new one to write about (docs/DESIGN.md §6).
+func (s State) Reported(at time.Time) State {
+	if len(s.Attempts) == 0 {
+		return s
+	}
+	reported := at
+	s.Attempts[len(s.Attempts)-1].ReportedAt = &reported
+	return s
+}
+
+// NoLongerReported is an attempt nobody is holding as standing any more: the record of
+// its silence has been closed, and a run that stands again is a new episode of it.
+func (s State) NoLongerReported() State {
+	if len(s.Attempts) == 0 {
+		return s
+	}
+	s.Attempts[len(s.Attempts)-1].ReportedAt = nil
 	return s
 }
 

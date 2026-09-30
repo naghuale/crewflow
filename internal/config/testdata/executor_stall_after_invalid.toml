@@ -1,0 +1,10 @@
+# executor.stall_after is not a duration: a run that stands still cannot be marked
+# in "ten minutes" without a unit, and one that cannot be marked at all is a run
+# nobody watches.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+stall_after = "ten minutes"

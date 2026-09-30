@@ -66,6 +66,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return runTaskWatch(args[1:], stdout, stderr)
 	case "list":
 		return runTaskList(args[1:], stdout, stderr)
+	case "check-stalled":
+		return runTaskCheckStalled(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return exitOK
@@ -300,6 +302,141 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// runTaskCheckStalled is `crewflow task check-stalled`: the runs of the project that
+// stand — that is, that are going and have shown no sign of life for longer than
+// `[executor] stall_after` — with how long each of them has been standing, what it was
+// doing when it last showed anything, and what it stands at where crewflow knows that.
+// It also answers the runs that stood and are no longer standing, once each: the end of
+// an episode of silence is a thing a person has to learn from the task as well.
+//
+// The command is made for the schedule of an orchestrator, and it says what it wrote
+// under the tasks: one line for the beginning of a silence and one for its end, whatever
+// the number of turns in between, because a person who reads a task is not to find two
+// hundred lines about one run there. It reads the state of the tasks and writes nothing
+// else, and it reaches the host only when there is a record to leave under a task
+// (docs/DESIGN.md §6).
+func runTaskCheckStalled(args []string, stdout, stderr io.Writer) int {
+	flags := taskFlags("check-stalled", stderr)
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "crewflow task check-stalled: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	env, err := stallEnv(cfg)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := whereCrewflowKeeps()
+	if err != nil {
+		return failed(stderr, err)
+	}
+	repo := cfg.RepoName()
+	// The state of the tasks is read first, and the host is asked about the roles of the
+	// project only where there is something to leave under a task: a project whose host
+	// is not there, or a run that is working, is answered without a network at all
+	// (docs/DESIGN.md §6).
+	standings, err := taskrun.CheckStalled(context.Background(), home, repo, env, recordUnderTheTask(cfg, *configPath))
+	if err != nil {
+		return failed(stderr, err)
+	}
+	if *asJSON {
+		answer := standings
+		if answer == nil {
+			answer = []taskrun.Standing{}
+		}
+		if err := printJSON(stdout, answer); err != nil {
+			return failed(stderr, err)
+		}
+	} else {
+		printStandings(stdout, standings)
+	}
+	// A run that stands is a thing a person has to do something about, and the code of
+	// the command says so, whatever it managed to write under the task.
+	for _, one := range standings {
+		if one.Stalled {
+			return exitFailure
+		}
+	}
+	return exitOK
+}
+
+// stallEnv is the machine the runs of the project are asked about: the clock, the
+// question whether a run is still going, the silence the project puts up with, and the
+// time limit of a run of it.
+func stallEnv(cfg config.Config) (taskrun.ListEnv, error) {
+	env := taskrun.ListEnv{Now: taskClock, Running: taskMachine.Alive}
+	silence, err := stallSilence(cfg)
+	if err != nil {
+		return env, err
+	}
+	env.StallAfter = silence
+	if env.Timeout, err = runLimit(cfg); err != nil {
+		return env, err
+	}
+	return env, nil
+}
+
+// recordUnderTheTask is what leaves the record of a run under its task on the host of
+// the project, and what a project of no host answers: a run that stands is reported to
+// the person who asked and written about in no tracker, and the answer says so rather
+// than letting a schedule believe that a record is there (docs/DESIGN.md §6, §7g).
+//
+// The roles of the project are built the first time there is something to leave under a
+// task, and not before: a project whose host is not reachable, or a run that is working,
+// is answered without a network at all.
+func recordUnderTheTask(cfg config.Config, configPath string) taskrun.Say {
+	var roles *forge.Set
+	return func(ctx context.Context, one taskrun.Standing) (bool, string) {
+		if roles == nil {
+			set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+			if err != nil {
+				return false, err.Error()
+			}
+			roles = &set
+		}
+		commenter, is := roles.Tracker.(forge.TaskCommenter)
+		if !is {
+			return false, taskrun.NoRecord
+		}
+		if err := commenter.CommentTask(ctx, one.Task, taskrun.Record(one)); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
+}
+
+// printStandings is the answer of a watch for a person: what stands, for how long, what
+// it was doing when it last said something, and whether the record under the task was
+// left this time — and where nothing could be written, what the host said.
+func printStandings(w io.Writer, standings []taskrun.Standing) {
+	for _, one := range standings {
+		if one.Stalled {
+			fmt.Fprintf(w, "task %d (%s): standing for %s, the last step: %s\n",
+				one.Task, one.Run, taskrun.Idle(one.Silence()), one.LastStep)
+		} else {
+			fmt.Fprintf(w, "task %d (%s): no longer standing, the run is %s\n", one.Task, one.Run, one.Outcome)
+		}
+		if one.Reason != "" {
+			fmt.Fprintf(w, "  standing at: %s\n", one.Reason)
+		}
+		switch {
+		case one.Said:
+			fmt.Fprintf(w, "  left under the task\n")
+		case one.Problem != "":
+			fmt.Fprintf(w, "  not left under the task: %s\n", one.Problem)
+		}
+	}
+}
+
 // listOfRuns is the list the call asked for: the runs of the project of the folder, or
 // the runs of every project on the machine.
 //
@@ -318,6 +455,9 @@ func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun
 		if env.Timeout, err = runLimit(cfg); err != nil {
 			return taskrun.Runs{}, err
 		}
+		if env.StallAfter, err = stallSilence(cfg); err != nil {
+			return taskrun.Runs{}, err
+		}
 		runs, err := taskrun.List(home, cfg.RepoName(), env)
 		if err != nil {
 			return taskrun.Runs{}, err
@@ -329,13 +469,17 @@ func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun
 		runs.Branch = cfg.Project.DefaultBranch
 		return runs, nil
 	}
-	// The file of the project of the folder, where there is one, is read for one thing
-	// only — how long a run of it may go on — and a folder of no project says nothing
-	// about that. A list of the whole machine is therefore given no limit at all, and
-	// says a run it cannot put an end to for what it is: a run that may be going
-	// (docs/DESIGN.md §7).
+	// The file of the project of the folder, where there is one, is read for two things
+	// only — how long a run of it may go on and how long it may stand still — and a
+	// folder of no project says nothing about either. A list of the whole machine is
+	// therefore given no limit at all, and says a run it cannot put an end to for what it
+	// is: a run that may be going, and a run of a project that named no silence is never
+	// marked as standing whatever it does (docs/DESIGN.md §6, §7).
 	if cfg, err := config.Load(projectFile(configPath, "")); err == nil {
 		if env.Timeout, err = runLimit(cfg); err != nil {
+			return taskrun.Runs{}, err
+		}
+		if env.StallAfter, err = stallSilence(cfg); err != nil {
 			return taskrun.Runs{}, err
 		}
 	}
@@ -350,6 +494,17 @@ func runLimit(cfg config.Config) (time.Duration, error) {
 		return 0, fmt.Errorf("executor.timeout: %w", err)
 	}
 	return limit, nil
+}
+
+// stallSilence is how long a run of this project may show nothing before a list of runs
+// calls it standing: the silence the project agreed to put up with, and the file of the
+// project is where it is written (docs/DESIGN.md §6).
+func stallSilence(cfg config.Config) (time.Duration, error) {
+	silence, err := time.ParseDuration(cfg.Executor.StallAfter)
+	if err != nil {
+		return 0, fmt.Errorf("executor.stall_after: %w", err)
+	}
+	return silence, nil
 }
 
 // whereCrewflowKeeps is the root of what crewflow keeps of its own on this machine: the

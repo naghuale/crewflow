@@ -46,6 +46,8 @@ Works today:
 - ✅ tasks as readable specs, with boundaries and owner approval for risky ones
 - ✅ the executor reads the dependencies the project names and never a secret
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
+- ✅ a run that stands is visible: `stalled` with the length of the silence in `task list`,
+  an event in the journal of the attempt and one record under the task per episode
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
   one of the reasons of §7h says why it may not
 - ✅ the owner's acceptance: a task marked `owner-check` is not merged until the owner writes
@@ -119,11 +121,14 @@ crewflow verify 14        # main is the merged commit, the issue is closed, CI i
 crewflow task watch 12     # follow a run live
 crewflow task list         # runs of this project, the ones that want you on top, and what else runs here
 crewflow task list -all    # every run of every project on this machine
+crewflow task check-stalled   # the runs that stand — for the orchestrator's schedule
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-permission`,
-`timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `blocked` is
+`timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted` — and
+`stalled` is not one of them, because such a run has not ended: see
+[A run that stands](#a-run-that-stands). `blocked` is
 the one a run that stopped by itself ends with, and it carries the reason — `keychain-approval`
 when nobody answered the window of the keychain, the words of the executor otherwise.
 `blocked-secret` is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
@@ -133,6 +138,39 @@ project the tasks are counted on, who ran each of them and whose name it worked 
 (`AGE`), the attempt (`RUN`, `57-2`, and `—` where there was only one) and the change
 request (`CHANGE`). It reads nothing but the local state, and nothing it prints changes what
 the next run does: `-json` is the same answer it has always been.
+
+## A run that stands
+
+A run goes on working and gets quiet — a window of the keychain nobody answered, an executor
+that hangs, a machine with no network. After `[executor] stall_after` (10 minutes by default)
+crewflow calls it `stalled`, and the mark changes nothing: the process goes on, and the attempt
+ends the way it would have ended.
+
+```
+43  feat(run): the list of runs      opencode · bot  stalled 11m  43-1  #45
+```
+
+`task list` shows the kind and the length of the silence, and `-json` holds `stalled_for` (in
+seconds), `last_step` (the last line of the executor, read through its profile, or the last step
+of crewflow) and `reason` (what the run is standing at, where crewflow knows it — for a run in
+the mode of the `bot`, `keychain-approval` while the keychain window waits for a person). The
+state of the task says `running` all the same: whether a run stands is worked out every time a
+list is read, like an approval in §7h, and not stored as a flag that outlives the silence.
+
+The journal of the attempt holds one line for the beginning of a silence and one for its end —
+`crewflow: stalled — no activity for 11m, the last step: bash: go test ./...` — and never one
+line a minute.
+
+`crewflow task check-stalled` is made for a schedule: it says what stands, leaves **one record
+under the task per episode** and one when the run is working again or is over, and exits
+non-zero while anything stands. It reads the local state and touches the host only when there is
+a record to write; a project whose host cannot write under a task is answered anyway, and the
+answer says that no record was left.
+
+The state of a run is written *before* crewflow asks the machine for anything, so a run standing
+in front of the keychain window is in `~/.crewflow/state` while it stands there; a run refused
+for another reason puts the state back as it was and leaves no attempt behind. See §7a of the
+design.
 
 ## The gate
 
@@ -232,6 +270,8 @@ first:
 ```toml
 [executor]
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
+timeout = "90m"           # how long a run may take: a hang is an outcome, not a wait
+stall_after = "10m"       # how long it may be quiet before it is marked as standing (§7a)
 ```
 
 ## Whose name the executor works under

@@ -10,6 +10,7 @@ const (
 	defaultLanguage        = "en"
 	defaultWorktreesRoot   = "~/.crewflow/worktrees/{repo}"
 	defaultExecutorTimeout = "90m"
+	defaultStallAfter      = "10m"
 	defaultForgeKind       = "github"
 	defaultTrackerKind     = "forge"
 	defaultIdentityMode    = "owner"
@@ -57,11 +58,22 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	if c.Executor.Timeout == "" {
 		c.Executor.Timeout = defaultExecutorTimeout
 	}
-	// A fallback executor that says nothing about the time limit gets the one of
-	// the executor it stands in for.
+	// A run of a project that says nothing about standing still is marked after ten
+	// minutes of silence: an executor that works for a quarter of an hour says
+	// something every few minutes, and ten minutes of nothing is a run nobody is
+	// watching (docs/DESIGN.md §6, §7a).
+	if c.Executor.StallAfter == "" {
+		c.Executor.StallAfter = defaultStallAfter
+	}
+	// A fallback executor that says nothing about the time limit or about standing
+	// still gets the ones of the executor it stands in for: both are the limits of the
+	// run and not of the agent in it.
 	for i := range c.Executor.Fallback {
 		if c.Executor.Fallback[i].Timeout == "" {
 			c.Executor.Fallback[i].Timeout = c.Executor.Timeout
+		}
+		if c.Executor.Fallback[i].StallAfter == "" {
+			c.Executor.Fallback[i].StallAfter = c.Executor.StallAfter
 		}
 	}
 	if c.Worktrees.Root == "" {
