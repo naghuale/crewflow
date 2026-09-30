@@ -294,6 +294,14 @@ A refused path simply stops the run; a refusal on a secret stops it as `blocked-
 crewflow never resumes such a run by itself (in progress). A false alarm is cheaper than a leaked
 secret.
 
+## A secret in a commit
+
+A secret that reached a commit is not gone with the file it was in. `gitleaks` walks the history,
+the gate `secrets` of `crewflow.toml` and the CI check of the same name stop the merge, and a person
+decides what a finding is: a known placeholder goes into [`.gitleaksignore`](.gitleaksignore) with
+the fingerprint gitleaks printed and a word about where the placeholder came from; anything else is
+a real secret — it is not merged, it is revoked first and taken out of the history afterwards.
+
 ## Process health
 
 crewflow measures the process, not the agents (in progress): first-pass success, clean after

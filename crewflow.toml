@@ -48,6 +48,15 @@ run = ["golangci-lint", "run", "--timeout", "5m", "./..."]
 name = "tidy"
 run = ["go", "mod", "tidy", "-diff"]
 
+[[gates]]
+# A secret in a commit of the branch, found by gitleaks. Only the commits of the
+# branch are scanned: origin/main is the base a worktree of a task starts from, and
+# the known placeholders of the tests stand in .gitleaksignore. --redact keeps the
+# value out of the output of a finding: a check that prints a secret of a person has
+# told one person too many.
+name = "secrets"
+run = ["sh", "-c", "gitleaks git --redact --log-opts=origin/main..HEAD"]
+
 [ci]
 required = true
 timeout = "30m"
@@ -77,6 +86,10 @@ owner_approval = "risky"
 tools = [
   { name = "go", check = ["go", "version"], min = "1.27" },
   { name = "golangci-lint", check = ["golangci-lint", "version"], min = "2.14" },
+  # The gate secrets is a script of sh, and doctor checks the shell alone: the
+  # program the script calls is named here, so that a machine without gitleaks is
+  # told so before a task of it is run.
+  { name = "gitleaks", check = ["gitleaks", "version"], min = "8.30" },
 ]
 
 [isolation]

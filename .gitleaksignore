@@ -1,0 +1,56 @@
+# Findings of gitleaks that are not secrets, one fingerprint per finding, written the way
+# gitleaks printed it (F-069, #37, 01.10). gitleaks reads this file from the root of the
+# repository, and the check `secrets` stays green only while every finding of the history
+# stands here.
+#
+# Two values are behind the twelve findings, and neither of them is a secret:
+#
+#   ghs_16…B4a — the token of the example answer of the documentation of GitHub. The hash
+#     of it was compared with the example on docs.github.com on 01.10 (F-069). A test of
+#     the source of a token hands it to the program under test as the answer of the API,
+#     a test of the identity of a run counts it among the secrets of that run, and a test
+#     of the redactor takes it out of a text.
+#   temp_clone_token — a field of that same example answer, kept as it comes in
+#     internal/forge/github/app/testdata/access-token.json.
+#
+# A fingerprint names the finding and not the value: a placeholder moved or changed by a
+# later commit is a new fingerprint, and the check asks about it again. What to do with a
+# finding is in README.md.
+
+# The token in the answer a test gives the source of a token.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/forge/github/app/app_test.go:github-app-token:29
+
+# The token of the answer, in the rights and the value the test reads out of it.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/forge/github/app/app_test.go:github-app-token:65
+
+# The token of the answer of the API, in the comparison of the value of it.
+c2e1a7402fc97fe2239db38ae930edb9b0b1bcd4:internal/forge/github/app/app_test.go:github-app-token:268
+
+# The token of the answer of the API, in the test of the body of the request and the
+# answer that went with it.
+3efed0a35b84209512ccd39c5b8e66304502956a:internal/forge/github/app/app_test.go:github-app-token:342
+
+# The token of the example as the line GH_TOKEN=… of the environment of a run that the
+# test expects.
+c2e1a7402fc97fe2239db38ae930edb9b0b1bcd4:internal/forge/github/app/app_test.go:github-app-token:512
+
+# The token among the secrets of a run that a journal must not print.
+c2e1a7402fc97fe2239db38ae930edb9b0b1bcd4:internal/forge/github/app/app_test.go:github-app-token:529
+
+# The field token of the example answer of the API, as the answer comes in.
+c2e1a7402fc97fe2239db38ae930edb9b0b1bcd4:internal/forge/github/app/testdata/access-token.json:github-app-token:2
+
+# The field temp_clone_token of that same example answer.
+c2e1a7402fc97fe2239db38ae930edb9b0b1bcd4:internal/forge/github/app/testdata/access-token.json:generic-api-key:116
+
+# The token in the environment of a run of a test in the mode of the bot.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/run/identity_test.go:github-app-token:19
+
+# The value a redactor takes out of a text.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/secret/secret_test.go:github-app-token:14
+
+# The value a redactor holds back, so that a half of it is not written into a journal.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/secret/secret_test.go:github-app-token:61
+
+# The value a redactor writes out when the text is over.
+1599ca1123bc17c9a81b033689c54d0c3d34c9f1:internal/secret/secret_test.go:github-app-token:89
