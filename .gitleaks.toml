@@ -1,0 +1,58 @@
+# The rules of gitleaks, and what this project knows to be not a secret (F-072, #37,
+# 01.10, #91).
+#
+# The default rules are extended and not replaced: a value that has the shape of a
+# secret is a finding until something here says, by its value or by a mark, that it is
+# a placeholder of a test. `.gitleaksignore` used to hold the findings that were not
+# secrets, one fingerprint per finding, and a fingerprint names a finding and not a
+# value: the same placeholder moved by a later commit, or a new stub of another task,
+# was a new question for a person, and the check of every change of the repository
+# went red over the stubs of a branch that had nothing to do with it. A value is the
+# same value wherever it stands.
+
+title = "crewflow"
+
+[extend]
+useDefault = true
+
+# The values of this project that are not secrets of anybody, told as they are. Each
+# one is public, and each one is here because a check of this project asked about it.
+[[allowlists]]
+description = "The placeholders of the project, by value."
+regexes = [
+    # The token of the example answer of the documentation of GitHub. Its hash was
+    # compared with the example on docs.github.com on 01.10 (F-069). A test of the
+    # source of a token hands it to the program under test as the answer of the API, a
+    # test of the identity of a run counts it among the secrets of that run, and a test
+    # of the redactor takes it out of a text.
+    '''^ghs_16C7e42F292c6912E7710c838347Ae178B4a$''',
+    # The field temp_clone_token of that same example answer, as it comes in
+    # internal/forge/github/app/testdata/access-token.json.
+    '''^ABTLWHOULUVAXGTRYU7OC2876QJ2O$''',
+    # A commit a test asks about and has never heard of, in internal/gate/git_test.go.
+    '''^0123456789abcdef0123456789abcdef01234567$''',
+    # The token of the tests of the orchestrator (task #31, commit b19eb72). An
+    # executor wrote it for a test of its own; it is the token of nothing, and no run
+    # of this project has ever been given it. The stub is longer than the thirty-six
+    # characters a rule reads a token in, and two rules of gitleaks read it
+    # differently: one of them sees the beginning of the value, the other the whole of
+    # it. Both stand here, whole.
+    '''^ghs_9C4f2b71d0e64a3a8b5c0d7e6f1a2b3c4d5e$''',
+    '''^ghs_9C4f2b71d0e64a3a8b5c0d7e6f1a2b3c4d5e6f$''',
+]
+
+# A value of a test is a placeholder when the line it stands on says so: the test data
+# of a package or a file of a test, and the word `placeholder` on that same line. Both
+# conditions are needed. The path alone would let a real secret of a test through, and
+# the mark alone would let one through anywhere in the repository.
+[[allowlists]]
+description = "A value of the test data, marked as a placeholder where it stands."
+condition = "and"
+paths = [
+    '''(^|/)testdata/''',
+    '''_test\.go$''',
+]
+regexTarget = "line"
+regexes = [
+    '''(?i)placeholder''',
+]

@@ -296,11 +296,31 @@ secret.
 
 ## A secret in a commit
 
-A secret that reached a commit is not gone with the file it was in. `gitleaks` walks the history,
-the gate `secrets` of `crewflow.toml` and the CI check of the same name stop the merge, and a person
-decides what a finding is: a known placeholder goes into [`.gitleaksignore`](.gitleaksignore) with
-the fingerprint gitleaks printed and a word about where the placeholder came from; anything else is
-a real secret — it is not merged, it is revoked first and taken out of the history afterwards.
+A secret that reached a commit is not gone with the file it was in. The gate `secrets` of
+`crewflow.toml` and the CI check of the same name stop the merge, and a person decides what a finding
+is. `gitleaks` walks the commits of the change (`base..head`) on a pull request and the whole history
+on `main`, and not every branch of the repository: a stub of a test in a branch that is not merged is
+not a secret of this change. A finding that is not one of the placeholders below is a real secret: it
+is not merged, it is revoked first and taken out of the history afterwards.
+
+A placeholder of the project passes the check in one of two ways, both named in
+[`.gitleaks.toml`](.gitleaks.toml):
+
+- **by value** — the value itself stands in `regexes` of the first allowlist, with a word above it
+  about where the value came from. This is the token of the example answer of the documentation of
+  GitHub, the field `temp_clone_token` of that answer, and a commit a test asks for and does not
+  find. A value is a value: the same placeholder in another file, in another branch or in another
+  commit is still the same placeholder.
+- **by a mark** — a value in the `testdata` of a package or in a `*_test.go` file, with the word
+  `placeholder` on that same line. A test that needs a value of the shape of a secret says what it
+  is, and the check reads the mark. Both conditions are needed: the path alone would let a real
+  secret of a test through, and the mark alone would let one through anywhere.
+
+A value in a test file without the mark is a finding, and so is a value of the shape of a secret in
+any other file. So a test needs no change of the config: mark the line. A value that is not a value
+of a test — a token of a run, a password — belongs in neither list, and the check is right to stop
+the merge. The check proves both halves of that promise on every run of itself, on values it builds
+in the runner and does not commit.
 
 ## Process health
 

@@ -52,11 +52,14 @@ jobs:
       - name: Lint
         run: golangci-lint run --timeout 5m ./...
 
-  # A check of its own, named `secrets`, so that a person sees which promise it
-  # keeps and the rules of the branch can demand that one name. The whole history
-  # is walked, not only the commits of the change: a secret that a rewritten branch
-  # hid is still in the history. The findings of the tests that are placeholders
-  # stand in .gitleaksignore.
+  # A check of its own, named `secrets`, so that a person sees which promise it keeps
+  # and the rules of the branch can demand that one name. What is scanned is the
+  # change and not every branch of the repository: a stub of a test in a branch that
+  # is not merged is not a secret of this change, and a check that reported it painted
+  # every pull request red (F-072, #37, 01.10, #91). On main the whole history is
+  # walked once, where a secret of a rewritten branch is still in the history. What is
+  # not a secret stands in .gitleaks.toml: a value this project knows to be public, or
+  # a value of the test data with the mark that says it is a placeholder.
   secrets:
     name: secrets
     runs-on: ubuntu-latest
@@ -78,5 +81,37 @@ jobs:
           tar -xzf gitleaks.tar.gz gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
           gitleaks version
-      - name: Secrets in the history
-        run: gitleaks git --redact --log-opts=--all
+      - name: Secrets in the commits of the change
+        if: github.event_name == 'pull_request'
+        run: >-
+          gitleaks git --redact --config .gitleaks.toml
+          --log-opts=${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+      - name: Secrets in the history of main
+        if: github.event_name != 'pull_request'
+        run: gitleaks git --redact --config .gitleaks.toml --log-opts=${{ github.sha }}
+      # The two promises of .gitleaks.toml are proved here, on every run of the check
+      # and before it hides a real secret behind a rule that is too wide. The value of
+      # a run of a test is built in the shell and not written into a file of the
+      # repository: a token in a commit of it is a finding of this very check.
+      - name: A marked placeholder passes, a value nobody marked does not
+        run: |
+          probe="$RUNNER_TEMP/secrets-probe"
+          value="ghs_$(printf 'abcd1234ef567890%.0s' {1..2})wxyz"
+          mkdir -p "$probe/testdata"
+          printf '{"token": "%s", "_placeholder": "not a token of a run"}\n' "$value" > "$probe/testdata/marked.json"
+          cd "$probe"
+          git init -q .
+          git add -A
+          git -c user.email=probe@example.com -c user.name=probe commit -qm "a marked placeholder of the test data"
+          if ! gitleaks git --redact --config "$GITHUB_WORKSPACE/.gitleaks.toml" --log-opts=HEAD --no-banner .; then
+            echo "::error::a marked placeholder of the test data was reported as a secret"
+            exit 1
+          fi
+          printf '{"token": "%s"}\n' "$value" > "$probe/testdata/unmarked.json"
+          printf 'token = "%s"\n' "$value" > "$probe/ordinary.txt"
+          git add -A
+          git -c user.email=probe@example.com -c user.name=probe commit -qm "a value nobody marked"
+          if gitleaks git --redact --config "$GITHUB_WORKSPACE/.gitleaks.toml" --log-opts=HEAD~1..HEAD --no-banner .; then
+            echo "::error::a value nobody marked passed the check: .gitleaks.toml allows what it must not"
+            exit 1
+          fi

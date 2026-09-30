@@ -51,11 +51,12 @@ run = ["go", "mod", "tidy", "-diff"]
 [[gates]]
 # A secret in a commit of the branch, found by gitleaks. Only the commits of the
 # branch are scanned: origin/main is the base a worktree of a task starts from, and
-# the known placeholders of the tests stand in .gitleaksignore. --redact keeps the
-# value out of the output of a finding: a check that prints a secret of a person has
-# told one person too many.
+# what is not a secret stands in .gitleaks.toml — a value the project knows to be
+# public, or a value of the test data with the mark that says it is a placeholder.
+# --redact keeps the value out of the output of a finding: a check that prints a
+# secret of a person has told one person too many.
 name = "secrets"
-run = ["sh", "-c", "gitleaks git --redact --log-opts=origin/main..HEAD"]
+run = ["sh", "-c", "gitleaks git --redact --config .gitleaks.toml --log-opts=origin/main..HEAD"]
 
 [ci]
 required = true
