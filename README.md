@@ -353,6 +353,25 @@ The branch rule on the default branch has to list the App of the orchestrator in
 — it is the account crewflow pushes the approved commit as. The App of the executor is never in
 it. See §7i of the design.
 
+The `separate` mode also refuses a file that would make the two subjects one: the owner of the
+repository among `merge.reviewers`, or one login in both `merge.reviewers` and `merge.owners`, is
+an error of the load and every command stops where it is. In the `shared` mode the same overlap is
+not an error — one login is both subjects there — and `crewflow doctor` prints the debt of trust
+instead of hiding it:
+
+```
+authority separation:
+  owner:          naghuale
+  orchestrator:   crewflow-orchestrator[bot] (separate)
+  executor:       crewflow-executor[bot] (bot)
+  owner == orchestrator: NO
+  owners ∩ reviewers: none
+```
+
+The same section is in `crewflow doctor -json` as `authority`, and the debts as `trust_debt` —
+`owner-orchestrator-overlap` and `owners-reviewers-overlap`, a list and never a hole. A project of
+the separate mode with both apps set up has an empty one.
+
 The keychain asks the owner of the machine before it lets a program read a secret of it, and it
 asks through a window of the system. crewflow says what it is waiting for before it asks — in the
 terminal and in the journal of the run — and gives the wait an end: a run nobody answered is

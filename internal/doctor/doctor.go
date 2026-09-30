@@ -38,6 +38,27 @@ const specifiedCheck = "specified settings"
 // has to see before approving a task (docs/DESIGN.md §7h, §7i).
 const orchestratorCheck = "orchestrator identity"
 
+// separationCheck is the name a report calls the section of the separation of the
+// subjects by: the one line of it is whether the accounts of the project are the three
+// accounts §7i says they are, and the section under it names each of them (docs/DESIGN.md
+// §7i, §7k).
+const separationCheck = "authority separation"
+
+// The debts of trust a project carries, as the words of the report and of its JSON:
+// every decision of a person that is held on something other than a check of the code.
+// They are named and not counted, because a script that reads the report has to be able
+// to ask for the exact one it cares about (docs/DESIGN.md §7i, §7k).
+const (
+	// DebtOwnerOrchestrator is the debt of a project whose orchestrator works under
+	// the login of the owner: the acceptance of the owner and the record of a review
+	// are one signature, and the gate cannot tell them apart.
+	DebtOwnerOrchestrator = "owner-orchestrator-overlap"
+	// DebtOwnersReviewers is the debt of a project where the same account is among
+	// the accounts of the owner and among the accounts whose record of a review
+	// counts: it approves a change and accepts its result.
+	DebtOwnersReviewers = "owners-reviewers-overlap"
+)
+
 // Status is how one check ended.
 type Status string
 
@@ -84,8 +105,47 @@ type Report struct {
 	// Specified are the settings of the project that ask for a behaviour the design
 	// describes and the code has not written. The file of a project that asks for one
 	// does not load, and this is the list of what asked: a person reads it in one place
-	// instead of taking the keys out of the words of an error (docs/DESIGN.md §5).
+	// instead of taking the keys out of the words of an error (docs.DESIGN §5).
 	Specified []config.Asked `json:"specified"`
+	// Authority is the separation of the three subjects of the project as this report
+	// sees it: the accounts of the owner, of the orchestrator and of the executor, and
+	// whether the owner and the orchestrator are one account. It is in every report,
+	// because the last place where trust stood where a check could stand is this one,
+	// and a person who reads a report has to see whether it stands here or not
+	// (docs.DESIGN §7i, §7k).
+	Authority Authority `json:"authority"`
+	// TrustDebt is every place of this project where a decision of a person is held on
+	// trust instead of on a check of the code, named as in [DebtOwnerOrchestrator] and
+	// [DebtOwnersReviewers]. It is a list and never a nil one: a project that carries no
+	// debt has an empty list, and a script that reads the report must not have to tell
+	// those two apart (docs.DESIGN §7i, §7k).
+	TrustDebt []string `json:"trust_debt"`
+}
+
+// Authority is the separation of the subjects of a project, as a report of it reads
+// them off the file and off the host (docs.DESIGN §7i, §7k).
+type Authority struct {
+	// Owner is the login of the owner of the repository of the project: the account
+	// whose decision every record of the project is measured against.
+	Owner string `json:"owner"`
+	// Owners and Reviewers are the accounts whose records the gate counts — the first
+	// as the decision of a person, the second as an approval. They are the lists of the
+	// file with the default of §5 filled in, and the account of the App of the
+	// orchestrator in the mode of a separate login.
+	Owners    []string `json:"owners"`
+	Reviewers []string `json:"reviewers"`
+	// Overlap are the accounts in both lists, which in the mode of a shared login is
+	// the debt [DebtOwnersReviewers] and in the mode of a separate one is an error the
+	// load of the file refuses (OR-008).
+	Overlap []string `json:"overlap"`
+	// Executor and Orchestrator are the accounts a run and a review of this project
+	// work as, as the host names them.
+	Executor     string `json:"executor"`
+	Orchestrator string `json:"orchestrator"`
+	// OwnerIsOrchestrator says whether the owner of the repository and the
+	// orchestrator are one account: yes in the mode of a shared login, no in the mode
+	// of an account of its own.
+	OwnerIsOrchestrator bool `json:"owner_is_orchestrator"`
 }
 
 // Identity is the mode of one of the two subjects of a project and the one line a
@@ -100,6 +160,10 @@ type Identity struct {
 	// (shared rights)" or "separate — GitHub App crewflow-orchestrator (installation
 	// 12346)".
 	Description string `json:"description"`
+	// Account is the login of the host the subject works as, as the host writes it.
+	// It is empty where nobody could be asked, and the accounts of a project are
+	// compared with it by the section of the separation (docs.DESIGN §7i, §7k).
+	Account string `json:"account"`
 }
 
 // Access is the reading policy of a run as this machine works it out: the folders the
@@ -195,6 +259,8 @@ func Run(ctx context.Context, env Env) Report {
 	c.signature(ctx)
 	c.step("the roles of the project")
 	c.roles(ctx, cfg)
+	c.step("the separation of the subjects")
+	c.separation(ctx, cfg)
 	c.step("the executors")
 	c.executors(cfg)
 	c.step("the reading policy")
@@ -230,6 +296,8 @@ type checker struct {
 	orchestrator Identity
 	access       Access
 	specified    []config.Asked
+	authority    Authority
+	trustDebt    []string
 }
 
 // add puts a check into the report.
@@ -249,7 +317,26 @@ func (c *checker) report() Report {
 	if c.specified == nil {
 		c.specified = []config.Asked{}
 	}
-	return Report{Checks: c.checks, Identity: c.identity, Orchestrator: c.orchestrator, Access: c.access, Specified: c.specified}
+	if c.trustDebt == nil {
+		c.trustDebt = []string{}
+	}
+	c.authority.Overlap = emptyIfNil(c.authority.Overlap)
+	c.authority.Owners = emptyIfNil(c.authority.Owners)
+	c.authority.Reviewers = emptyIfNil(c.authority.Reviewers)
+	return Report{
+		Checks: c.checks, Identity: c.identity, Orchestrator: c.orchestrator,
+		Access: c.access, Specified: c.specified, Authority: c.authority, TrustDebt: c.trustDebt,
+	}
+}
+
+// emptyIfNil is the list a report holds where there is nothing in it: a field a script
+// reads has to be there, and an empty list says that the same thing a nil one does
+// without making every reader of it check.
+func emptyIfNil(list []string) []string {
+	if list == nil {
+		return []string{}
+	}
+	return list
 }
 
 // config reads the project file, which every check below needs: which executor
@@ -387,7 +474,7 @@ func (c *checker) orchestratorIdentity(ctx context.Context, cfg config.Config) {
 		})
 		return
 	}
-	c.orchestrator = Identity{Mode: identity.Mode, Description: identity.Description}
+	c.orchestrator = Identity{Mode: identity.Mode, Description: identity.Description, Account: identity.Account}
 	if identity.Mode != forge.ModeSeparate {
 		c.add(Check{
 			Name:   orchestratorCheck,
@@ -424,7 +511,7 @@ func (c *checker) executorIdentity(ctx context.Context, set forge.Set) {
 		})
 		return
 	}
-	c.identity = Identity{Mode: identity.Mode, Description: identity.Description}
+	c.identity = Identity{Mode: identity.Mode, Description: identity.Description, Account: identity.Account}
 	if identity.Mode == forge.ModeOwner {
 		c.add(Check{
 			Name:   identityCheck,
@@ -438,6 +525,127 @@ func (c *checker) executorIdentity(ctx context.Context, set forge.Set) {
 		return
 	}
 	c.add(Check{Name: identityCheck, Status: OK, Detail: identity.Description})
+}
+
+// separation is the section of a report that names the three subjects of the project
+// and says whether the mode of the orchestrator divides them: the owner, the
+// orchestrator, the executor, whether the owner and the orchestrator are one account,
+// and which accounts are in both lists of the gate (docs.DESIGN §7i, §7k).
+//
+// It is a section and not another mode because it is five lines of one fact, and the
+// fact is the one §7i is about: the report says it once, in the words of the design,
+// instead of spread over the two lines of the modes and the two lists of the file.
+//
+// The check beside it is the verdict: a warning where a decision of a person is held
+// on trust (DR-001), a failure where the mode promises a separation the accounts of the
+// project do not give (DR-002, DR-003), and nothing to say where the three subjects are
+// three accounts.
+func (c *checker) separation(ctx context.Context, cfg config.Config) {
+	set, err := roles.AsOrchestrator(cfg, c.rolesEnv())
+	if err != nil || set.Forge == nil {
+		// Nothing to compare: the check of the mode has already said what is wrong, and
+		// a section that guessed would put an account into a report that nobody checked.
+		return
+	}
+	reviewers, err := roles.ReviewersOf(ctx, cfg, set)
+	if err != nil {
+		return
+	}
+	owners := roles.OwnersOf(cfg)
+	authority := Authority{
+		Owner:        ownerOf(cfg.Project.Repo),
+		Owners:       owners,
+		Reviewers:    reviewers,
+		Overlap:      overlapOf(owners, reviewers),
+		Executor:     c.identity.Account,
+		Orchestrator: c.orchestrator.Account,
+	}
+	// The owner and the orchestrator are one account where the mode says they cannot
+	// be told apart — the shared login, where the orchestrator is a person and nothing
+	// in the file can tell his record from the owner's — and where the accounts say so:
+	// an App of the orchestrator among the owners writes the acceptance of the owner
+	// with its own pen (docs.DESIGN §7i, §7k).
+	authority.OwnerIsOrchestrator = sharedMode(cfg) || containsOf(owners, authority.Orchestrator)
+	c.authority = authority
+	c.trustDebt = debtsOf(cfg, authority)
+	if refused := config.Separation(cfg.Orchestrator.Mode, owners, reviewers, cfg.Project.Repo); refused != nil {
+		c.add(Check{
+			Name:   separationCheck,
+			Status: Fail,
+			Detail: refused.Error(),
+			Hint: fmt.Sprintf("the mode of %q says the orchestrator works under an account of its own, and the "+
+				"accounts of %s do not: fix merge.owners and merge.reviewers there, or put mode = %q back",
+				config.ModeSeparate, c.env.ConfigPath, config.ModeShared),
+		})
+		return
+	}
+	if len(c.trustDebt) > 0 {
+		c.add(Check{
+			Name:   separationCheck,
+			Status: Warn,
+			Detail: strings.Join(c.trustDebt, " · ") + " — a decision of a person is held on trust here",
+			Hint: fmt.Sprintf("the owner and the orchestrator are one account while [orchestrator] mode = %q in %s; "+
+				"a second app with the rights of §7i and `crewflow auth app import <file.pem> -as orchestrator` "+
+				"divide them, and then the debt is empty",
+				config.ModeShared, c.env.ConfigPath),
+		})
+		return
+	}
+	c.add(Check{Name: separationCheck, Status: OK, Detail: "the owner, the orchestrator and the executor are three accounts"})
+}
+
+// debtsOf are the debts of trust a project of these accounts carries, in the order a
+// person reads them: the owner and the orchestrator are one account, and then the same
+// account in both lists of the gate. In the mode of an account of its own and with the
+// accounts the file names, both are impossible — and a project that got here with one of
+// them is a project whose file the load refused, which is what [Check.Status] Fail of
+// the section above says (docs.DESIGN §7i, §7k).
+func debtsOf(cfg config.Config, authority Authority) []string {
+	var debts []string
+	if sharedMode(cfg) {
+		debts = append(debts, DebtOwnerOrchestrator)
+	}
+	if len(authority.Overlap) > 0 {
+		debts = append(debts, DebtOwnersReviewers)
+	}
+	return debts
+}
+
+// sharedMode is whether the file of the project leaves the orchestrator under the login
+// of the person, which is what a project gets without saying anything about a second app.
+func sharedMode(cfg config.Config) bool {
+	return cfg.Orchestrator.Mode != config.ModeSeparate
+}
+
+// ownerOf is the login of the owner of a repository, and the empty string for a string
+// that is not one.
+func ownerOf(repository string) string {
+	owner, _, of := strings.Cut(repository, "/")
+	if !of {
+		return ""
+	}
+	return owner
+}
+
+// overlapOf are the accounts in both lists of the gate, each of them once, in the order
+// of the list of the owners: an account that both approves a change and accepts its
+// result is one subject doing the work of two.
+func overlapOf(owners, reviewers []string) []string {
+	var overlap []string
+	for _, owner := range owners {
+		if containsOf(reviewers, owner) {
+			overlap = append(overlap, owner)
+		}
+	}
+	return overlap
+}
+
+// containsOf is whether the login is in the list, as the host writes a login and as a
+// person writes it: the letters of a login are its letters whatever their case.
+func containsOf(logins []string, login string) bool {
+	return slices.ContainsFunc(logins, func(one string) bool {
+		return strings.EqualFold(one, login)
+	})
 }
 
 // rolesEnv is the environment of the machine as a role needs it: the same

@@ -38,12 +38,18 @@ func TestReportSaysWhoseNameTheOrchestratorWorksUnder(t *testing.T) {
 				prints("git --version", "git version 2.47.1\n").
 				prints("gh --version", "gh version 2.62.0\n").
 				prints("gh auth status", "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n"),
-			want: Identity{Mode: "shared", Description: "shared — the login gh octocat (one login with the owner)"},
+			want: Identity{
+				Mode: "shared", Account: "octocat",
+				Description: "shared — the login gh octocat (one login with the owner)",
+			},
 		},
 		{
-			name:   "the mode of an account of its own",
-			m:      machineWithTheOrchestrator(t),
-			want:   Identity{Mode: "separate", Description: "separate — GitHub App crewflow-orchestrator (installation 12346)"},
+			name: "the mode of an account of its own",
+			m:    machineWithTheOrchestrator(t),
+			want: Identity{
+				Mode: "separate", Account: "crewflow-orchestrator[bot]",
+				Description: "separate — GitHub App crewflow-orchestrator (installation 12346)",
+			},
 			status: OK,
 		},
 	}

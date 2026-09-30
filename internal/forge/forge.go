@@ -352,6 +352,14 @@ type Identity struct {
 	// "separate — GitHub App crewflow-orchestrator (installation 12346)" or
 	// "shared — the login gh naghuale (one login with the owner)".
 	Description string
+	// Account is the login of the host the subject works as, as the host writes it:
+	// "crewflow-executor[bot]" for the App of a run, "crewflow-orchestrator[bot]" for
+	// the App of the orchestrator, and the login of gh for either of them in a mode
+	// where the work happens under the login of the person. It is empty where nobody
+	// could be asked, and the accounts of a project are compared with it by the gate
+	// and by `crewflow doctor` — a report that cannot name them cannot say whether the
+	// owner and the orchestrator are one subject (docs/DESIGN.md §7i, §7k).
+	Account string
 	// Env are the variables the executor of the run is started with on top of the
 	// ones of the person: a token of the host, and the name and the address its
 	// commits are made by. It is empty for the mode of the owner, where the login of

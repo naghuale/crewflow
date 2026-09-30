@@ -57,7 +57,11 @@
   пишется запись ревью и пушится одобренный коммит, а решение владельца (приёмка `ACCEPTED`, `SCOPE:
   ACCEPTED`) gate считает только от `[merge] owners`, где оркестратора нет, — тем же списком, что и
   приёмка сборки (#9). Пока App не настроен, режим `shared`, и `doctor` говорит, что это стоит
-  дисциплины.
+  дисциплины. В режиме `separate` файл, где владелец среди `[merge] reviewers` или где один логин
+  есть и в `reviewers`, и в `owners`, не читается: режим обещает разделение, которого эти аккаунты
+  не делают. `crewflow doctor` печатает раздел **authority separation** — владелец, оркестратор,
+  исполнитель, `owner == orchestrator` (YES/NO), пересечение списков — и держит долг доверия
+  (`trust_debt`: `owner-orchestrator-overlap`, `owners-reviewers-overlap`) и в `-json`.
   ([#89](https://github.com/naghuale/crewflow/pull/89), задача [#31](https://github.com/naghuale/crewflow/issues/31))
 
 ### Изменено

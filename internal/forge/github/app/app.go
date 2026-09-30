@@ -583,8 +583,17 @@ func (s *Source) Describe(ctx context.Context) (forge.Identity, error) {
 	}
 	return forge.Identity{
 		Mode:        ModeBot,
+		Account:     botLogin(app.Slug),
 		Description: fmt.Sprintf("bot — GitHub App %s (installation %d)", app.Slug, installation),
 	}, nil
+}
+
+// botLogin is the login of an account of GitHub that is an App: the name of the App
+// with the suffix the host gives every account of that kind, which is the name the
+// records of that account are signed with and the name the gate compares against the
+// lists of the project (docs/DESIGN.md §7i, §7k).
+func botLogin(slug string) string {
+	return slug + "[bot]"
 }
 
 // installationOf is the number of the installation the tokens of this App are asked
@@ -616,6 +625,7 @@ func (s *Source) DescribeOrchestrator(ctx context.Context) (forge.Identity, erro
 	}
 	return forge.Identity{
 		Mode:        ModeSeparate,
+		Account:     botLogin(app.Slug),
 		Description: fmt.Sprintf("separate — GitHub App %s (installation %d)", app.Slug, installation),
 		// The helper git takes the credentials of a push from is not a secret and is
 		// not a token: a merge pushes the approved commit through it, and a report of
@@ -690,6 +700,7 @@ func (s *Source) Identity(ctx context.Context) (forge.Identity, error) {
 	}
 	return forge.Identity{
 		Mode:        ModeBot,
+		Account:     bot.Login,
 		Description: fmt.Sprintf("bot — GitHub App %s (installation %d)", strings.TrimSuffix(bot.Login, "[bot]"), installation),
 		Env: []string{
 			// gh is the tool of the adapter of GitHub, and the token is what lets it

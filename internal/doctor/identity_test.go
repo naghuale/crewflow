@@ -184,7 +184,7 @@ func TestReportSaysWhoseNameTheExecutorWorksUnder(t *testing.T) {
 				prints("git --version", "git version 2.47.1\n").
 				prints("gh --version", "gh version 2.62.0\n").
 				prints("gh auth status", "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n"),
-			want: Identity{Mode: "owner", Description: "owner — the login gh octocat (shared rights)"},
+			want: Identity{Mode: "owner", Description: "owner — the login gh octocat (shared rights)", Account: "octocat"},
 		},
 		{
 			name: "the mode of the bot",
@@ -193,7 +193,10 @@ func TestReportSaysWhoseNameTheExecutorWorksUnder(t *testing.T) {
 				m.holdsTheKey = true
 				return m
 			}(),
-			want: Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"},
+			want: Identity{
+				Mode: "bot", Account: "crewflow-executor[bot]",
+				Description: "bot — GitHub App crewflow-executor (installation 12345)",
+			},
 		},
 	}
 	for _, tc := range cases {

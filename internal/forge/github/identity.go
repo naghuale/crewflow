@@ -129,6 +129,7 @@ func (a *Adapter) sharedOrchestrator() forge.Identity {
 	}
 	return forge.Identity{
 		Mode:        forge.ModeShared,
+		Account:     account,
 		Description: "shared — the login gh " + account + " (one login with the owner)",
 	}
 }
@@ -192,6 +193,7 @@ func (a *Adapter) ownerIdentity() forge.Identity {
 	}
 	return forge.Identity{
 		Mode:        forge.ModeOwner,
+		Account:     account,
 		Description: "owner — the login gh " + account + " (shared rights)",
 	}
 }

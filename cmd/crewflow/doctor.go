@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/naghuale/crewflow/internal/doctor"
 )
@@ -85,7 +86,52 @@ func printReport(w io.Writer, report doctor.Report) {
 			fmt.Fprintf(w, "  %s\n", check.Hint)
 		}
 	}
+	printAuthority(w, report)
 	fmt.Fprintf(w, "\n%s\n", verdict(report))
+}
+
+// printAuthority is the section of the separation of the subjects of the project: the
+// three accounts, whether the owner and the orchestrator are one, and the accounts in
+// both lists of the gate. It is printed under the checks and not among them, because it
+// is five lines of one fact and a line of a check is one fact (docs/DESIGN.md §7i, §7k).
+func printAuthority(w io.Writer, report doctor.Report) {
+	authority := report.Authority
+	fmt.Fprintf(w, "\nauthority separation:\n")
+	fmt.Fprintf(w, "  %-14s %s\n", "owner:", accountOf(authority.Owner))
+	fmt.Fprintf(w, "  %-14s %s (%s)\n", "orchestrator:", accountOf(authority.Orchestrator), report.Orchestrator.Mode)
+	fmt.Fprintf(w, "  %-14s %s (%s)\n", "executor:", accountOf(authority.Executor), report.Identity.Mode)
+	fmt.Fprintf(w, "  %-14s %s\n", "owner == orchestrator:", yesNo(authority.OwnerIsOrchestrator))
+	fmt.Fprintf(w, "  %-14s %s\n", "owners ∩ reviewers:", listedOrNone(authority.Overlap))
+	if len(report.TrustDebt) > 0 {
+		fmt.Fprintf(w, "  %-14s %s\n", "trust debt:", strings.Join(report.TrustDebt, ", "))
+	}
+}
+
+// accountOf is the account as a person reads it, and says so where nobody named it: a
+// section that printed an empty column would leave a person to guess whether the host
+// could not be asked or the project has no account of its own.
+func accountOf(account string) string {
+	if account == "" {
+		return "the host named no account"
+	}
+	return account
+}
+
+// yesNo is the answer of the section to a question a person asks in one word.
+func yesNo(yes bool) string {
+	if yes {
+		return "YES"
+	}
+	return "NO"
+}
+
+// listedOrNone is the accounts in both lists of the gate, and says so where the lists
+// do not meet.
+func listedOrNone(accounts []string) string {
+	if len(accounts) == 0 {
+		return "none"
+	}
+	return strings.Join(accounts, ", ")
 }
 
 // verdict is the one line that says whether crewflow can work on this machine.
