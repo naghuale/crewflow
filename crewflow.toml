@@ -16,12 +16,16 @@ app_id = 5107052
 installation_id = 165781718
 
 [orchestrator]
-# The orchestrator works under the login of the owner, the way it has since the pilot:
-# the second App (crewflow-orchestrator) is not set up on this machine yet, so `doctor`
-# warns that the acceptance of the owner, the label `approved` and every bypass of a rule
-# are held on the discipline of whoever writes them (§7i, crewflow#31). Switch to
-# `mode = "separate"` with its own `[orchestrator.github_app]` and import its key.
-mode = "shared"
+# The orchestrator works as the bot of the second GitHub App of this project,
+# crewflow-orchestrator (App 5140522), whose key the owner imported into the keychain on
+# 2026-10-01 (crewflow#95): the record of a review and the push of an approved commit are
+# written under an account of its own, and the decisions of the owner the gate counts from
+# [merge] owners below — from the login of the App it counts nothing (§7i).
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 5140522
+installation_id = 0
 
 [executor]
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
@@ -73,14 +77,18 @@ timeout = "30m"
 [merge]
 by = "orchestrator"
 strategy = "ff-only"
-# Логины, чья запись ревью считается одобрением (§7h). Пусто — владелец
-# репозитория, то есть naghuale. Запись исполнителя (App) одобрением не считается.
-reviewers = []
+# Логины, чья запись ревью считается одобрением (§7h). В режиме separate это учётная
+# запись App оркестратора: список назван явно, а не пустым, — иначе пустым он был бы
+# логин владельца, то есть запись ревью пришлось бы писать под ним. Запись исполнителя
+# (App) одобрением не считается.
+reviewers = ["crewflow-orchestrator[bot]"]
 # Логины, чьи записи считаются решением владельца (§7h): приёмка результата
 # (`ACCEPTED <sha>`) и `SCOPE: ACCEPTED` — файл вне границ задачи. Пусто — владелец
 # репозитория. Оркестратора в режиме separate (§7i) здесь нет: он пишет запись
-# ревью, а решение владельца — нет.
-owners = []
+# ревью, а решение владельца — нет. Имя названо явно, а не пустым списком: в этом
+# режиме файл с владельцем среди reviewers или с одним логином в обоих списках не
+# читается вовсе (crewflow#95).
+owners = ["naghuale"]
 
 [acceptance]
 # Метка задачи, результат которой владелец принимает до слияния: без записи

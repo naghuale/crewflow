@@ -331,6 +331,9 @@ mode of its own, exactly as the executor:
   as the owner: `[merge] owners` is a list of its own, and in this mode the App of the
   orchestrator is not in it.
 
+Both projects crewflow works on — crewflow itself and telecli — are in this mode since 2026-10-01,
+and `crewflow doctor` says so for both: `owner == orchestrator: NO` and an empty `trust_debt`.
+
 ```toml
 [orchestrator]
 mode = "separate"
