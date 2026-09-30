@@ -191,7 +191,9 @@ func TestFindChangeRequestWithoutOne(t *testing.T) {
 // wrote it, what was written and when, because the order of the review is the
 // order of the comments.
 func TestComments(t *testing.T) {
-	m := newMachine().prints("pr view", fixture(t, "comments.json"))
+	m := newMachine().
+		prints("pr view", fixture(t, "comments.json")).
+		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors-owner.json"))
 	a := New(repo, "", m.env(t))
 
 	comments, err := a.Comments(t.Context(), 2)

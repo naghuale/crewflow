@@ -95,11 +95,76 @@ func TestChangedFiles(t *testing.T) {
 	}
 }
 
+// TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount is F-081 (01.10.2026): GraphQL
+// names an App by its slug alone — `crewflow-orchestrator` — and a person may have that
+// very slug as a login, so the two are one string there and the gate counts records by
+// the name of an account. The kind of the account is read with the name, and the suffix
+// the host gives accounts of that kind is put there by that kind and not read out of the
+// login: a record of the App and a record of a person with the App's slug are then two
+// different accounts (docs/DESIGN.md §7h, §7i).
+func TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount(t *testing.T) {
+	m := newMachine().
+		prints("pr view", fixture(t, "comments-bot.json")).
+		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors.json"))
+	a := New(repo, "", m.env(t))
+
+	comments, err := a.Comments(t.Context(), 2)
+	if err != nil {
+		t.Fatalf("Comments(2) returned an error: %v", err)
+	}
+
+	if len(comments) != 2 {
+		t.Fatalf("Comments(2) = %d records, want 2", len(comments))
+	}
+	// Both records were written under the same login as GraphQL gives it; what tells
+	// them apart is the kind of the account the REST API holds.
+	want := []string{"crewflow-orchestrator[bot]", "crewflow-orchestrator"}
+	for i, author := range want {
+		if comments[i].Author != author {
+			t.Errorf("the author of the record %d is %q, want %q", i, comments[i].Author, author)
+		}
+	}
+}
+
+// TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal: the account a record was written
+// by is what makes it a record of somebody, and a record nobody may be named for is not
+// a record the gate may count. An answer of the host that holds no name is not that, and
+// it is not an answer either — it is `forge-unavailable` (§7h).
+func TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer string
+	}{
+		{
+			name:   "the answer holds no account at all",
+			answer: fixture(t, "comment-authors-unnamed.json"),
+		},
+		{
+			name:   "the answer does not hold that record",
+			answer: "[]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine().
+				prints("pr view", fixture(t, "comments-bot.json")).
+				prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", tc.answer)
+			a := New(repo, "", m.env(t))
+
+			if _, err := a.Comments(t.Context(), 2); err == nil {
+				t.Fatal("Comments(2) read a record whose author nobody may be named for")
+			}
+		})
+	}
+}
+
 // TestCommentsThatWereEdited is the fact a gate cannot do without: a record of a
 // review that was changed after it was published is a record anybody can rewrite in
 // silence, and the gate counts the ones that were not edited (docs/DESIGN.md §7h).
 func TestCommentsThatWereEdited(t *testing.T) {
-	m := newMachine().prints("pr view", fixture(t, "comments-edited.json"))
+	m := newMachine().
+		prints("pr view", fixture(t, "comments-edited.json")).
+		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors-owner.json"))
 	a := New(repo, "", m.env(t))
 
 	comments, err := a.Comments(t.Context(), 2)
@@ -123,7 +188,9 @@ func TestCommentsThatWereEdited(t *testing.T) {
 // counted and not a record that may be refused silently either: the review is told
 // that the host did not give a certain answer (docs/DESIGN.md §7h).
 func TestCommentsWithAMomentNobodyCanRead(t *testing.T) {
-	m := newMachine().prints("pr view", fixture(t, "comments-broken.json"))
+	m := newMachine().
+		prints("pr view", fixture(t, "comments-broken.json")).
+		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors-owner.json"))
 	a := New(repo, "", m.env(t))
 
 	if _, err := a.Comments(t.Context(), 2); err == nil {

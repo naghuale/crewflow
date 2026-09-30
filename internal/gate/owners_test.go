@@ -12,6 +12,79 @@ import (
 // to tell them apart by the account and not by what is written (docs/DESIGN.md §7h, §7i).
 const orchestrator = "crewflow-orchestrator[bot]"
 
+// A person whose login is the slug of the App of the orchestrator: over GraphQL the two
+// are one string, because an App is named there by its slug alone, and a person may have
+// that slug as a login (F-081, 01.10.2026). The name the gate counts is read with the
+// kind of the account, so the two arrive as two accounts — and a record of the second one
+// is not a record of the first (docs/DESIGN.md §7h, §7i).
+const someoneNamedLikeTheApp = "crewflow-orchestrator"
+
+// TestARecordIsCountedByTheAccountAndNotByTheSlugOfTheApp: the account of the
+// orchestrator is the one whose record approves, and a person whose login is the slug of
+// its App is not it. The two lists of the project are lists of names, so the name that
+// arrives with a record has to be the name of that kind of account — and this is the pair
+// that says so, in both lists: the record of the App approves, the record of the person
+// with its slug does not, and no record of the App is ever a decision of the owner
+// (docs/DESIGN.md §7h, §7i).
+func TestARecordIsCountedByTheAccountAndNotByTheSlugOfTheApp(t *testing.T) {
+	cases := []struct {
+		name   string
+		author string
+		// wants is whether the record of this account counts in each of the two lists:
+		// as an approval of the reviewers, and as a decision of the owners.
+		wants struct{ review, owner bool }
+	}{
+		{
+			name:   "the account of the app of the orchestrator",
+			author: orchestrator,
+			wants:  struct{ review, owner bool }{review: true, owner: false},
+		},
+		{
+			name:   "a person with the slug of that app as a login",
+			author: someoneNamedLikeTheApp,
+			wants:  struct{ review, owner bool }{review: false, owner: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run("the record of a review: "+tc.name, func(t *testing.T) {
+			facts := ready()
+			facts.Reviewers = []string{orchestrator}
+			facts.Reviews = []Review{approvedBy(tc.author, second, false)}
+
+			verdict := Evaluate(facts)
+
+			if tc.wants.review && !verdict.Ready {
+				t.Errorf("Evaluate = %+v, want the record to count", verdict)
+			}
+			if !tc.wants.review && verdict.Reason != ApprovalUntrusted {
+				t.Errorf("Evaluate = %q (%s), want %q: the reviewers of the project are %v",
+					verdict.Reason, verdict.Detail, ApprovalUntrusted, facts.Reviewers)
+			}
+		})
+		t.Run("the record of an owner: "+tc.name, func(t *testing.T) {
+			facts := ready()
+			facts.Reviewers = []string{orchestrator}
+			facts.Reviews = []Review{approvedBy(orchestrator, second, false)}
+			// The owner of this project is the person whose login is the slug of the App:
+			// a name in the file of a project, and not a judgement about the account
+			// behind it.
+			facts.Owners = []string{someoneNamedLikeTheApp}
+			facts.Labels = []string{ownerCheckLabel}
+			facts.OwnerAccepts = []OwnerAccept{acceptedBy(tc.author, second)}
+
+			verdict := Evaluate(facts)
+
+			if tc.wants.owner && !verdict.Ready {
+				t.Errorf("Evaluate = %+v, want the record of the owner to count", verdict)
+			}
+			if !tc.wants.owner && verdict.Reason != OwnerAcceptanceUntrusted {
+				t.Errorf("Evaluate = %q (%s), want %q: the owners of the project are %v",
+					verdict.Reason, verdict.Detail, OwnerAcceptanceUntrusted, facts.Owners)
+			}
+		})
+	}
+}
+
 // TestAnAcceptanceOfTheOrchestratorIsNotTheOwners: a file outside the boundaries of the
 // task is taken into their own hands by a person, and the record of it counts only when
 // a person wrote it. The orchestrator of a project that works apart from the owner has

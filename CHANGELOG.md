@@ -159,6 +159,13 @@
   правил или выдать App `administration: read` (решение владельца). `crewflow doctor` говорит о
   таком раньше первого слияния, строкой `orchestrator branch protection`.
   ([#107](https://github.com/naghuale/crewflow/pull/107), задача [#102](https://github.com/naghuale/crewflow/issues/102))
+- Ворота отличают App от человека больше не по строке логина: GitHub называет App в GraphQL
+  одним slug (`crewflow-orchestrator`), а человек может иметь такой же логин, — и одобрение,
+  написанное человеком, считалось одобрением App оркестратора (наоборот, App не проходил мимо
+  `crewflow-orchestrator[bot]` в списке). Теперь автор записи читается с его видом (`Bot` или
+  `User`), суффикс `[bot]` ставится по виду, а не вычитывается из логина; момент правки
+  по-прежнему берётся там, где он точный, — из GraphQL.
+  ([#107](https://github.com/naghuale/crewflow/pull/107), задача [#102](https://github.com/naghuale/crewflow/issues/102))
 
 ### Безопасность
 
