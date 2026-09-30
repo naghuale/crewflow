@@ -23,6 +23,7 @@ type Config struct {
 	Gates        []Gate       `toml:"gates"`
 	CI           CI           `toml:"ci"`
 	Merge        Merge        `toml:"merge"`
+	Acceptance   Acceptance   `toml:"acceptance"`
 	Parallel     Parallel     `toml:"parallel"`
 	Tasks        Tasks        `toml:"tasks"`
 	Requirements Requirements `toml:"requirements"`
@@ -178,6 +179,22 @@ type Merge struct {
 	// (docs/DESIGN.md §7h). An empty list is the owner of the repository, which is
 	// what a project gets without saying anything.
 	Reviewers []string `toml:"reviewers"`
+	// Owners are the logins whose record of acceptance counts, under the rules an
+	// approval is counted by: the owner of a project looks at the result of a task
+	// himself, and only his own `ACCEPTED <sha>` takes the result in (docs/DESIGN.md
+	// §7h). An empty list is the owner of the repository, as it is for reviewers.
+	Owners []string `toml:"owners"`
+}
+
+// Acceptance is what the owner of the project has to see himself before a change of a
+// task may go in (docs/DESIGN.md §7f, §7h).
+type Acceptance struct {
+	// Label is the label a task is marked with to say that its result has to be
+	// accepted: until there is a record `ACCEPTED <sha>` under its change request, of
+	// one of [merge] owners, for exactly the head the change stands at, the gate
+	// refuses to merge it (`owner-acceptance-missing`). A task without the label is
+	// merged as it always was, and nothing about it changes.
+	Label string `toml:"label"`
 }
 
 // Parallel limits how many tasks run at the same time.

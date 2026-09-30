@@ -22,6 +22,7 @@ const (
 	defaultMaxTasks        = 1
 	defaultIsolationMode   = "host"
 	defaultOwnerApproval   = "risky"
+	defaultAcceptanceLabel = "owner-check"
 )
 
 // DefaultWorktreesRoot is where the worktree of a task is made when the file of
@@ -92,5 +93,12 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Tasks.OwnerApproval == "" {
 		c.Tasks.OwnerApproval = defaultOwnerApproval
+	}
+	// The label a task is marked with to have its result accepted by the owner is the
+	// one crewflow reads of §5: a project that says nothing is a project whose tasks
+	// are marked `owner-check`, and the gate refuses their merges until the owner has
+	// looked at the head (docs/DESIGN.md §7h).
+	if c.Acceptance.Label == "" {
+		c.Acceptance.Label = defaultAcceptanceLabel
 	}
 }

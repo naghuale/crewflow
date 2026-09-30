@@ -85,7 +85,10 @@ func (c Config) Validate() error {
 	if err := oneOf("merge.via", c.Merge.Via, mergeVias); err != nil {
 		return err
 	}
-	if err := validateReviewers(c.Merge.Reviewers); err != nil {
+	if err := validateLogins("merge.reviewers", c.Merge.Reviewers); err != nil {
+		return err
+	}
+	if err := validateLogins("merge.owners", c.Merge.Owners); err != nil {
 		return err
 	}
 	if c.Parallel.MaxTasks < 1 {
@@ -130,27 +133,31 @@ func validateIdentity(c Config) error {
 	return nil
 }
 
-// validateReviewers checks the accounts whose record of a review counts: each of them
-// has to be a name, because a gate that looks for a record in the name of nobody
-// counts no record at all, and none of them twice, because a list that says the same
-// name twice is a file a person meant something else by (docs/DESIGN.md §7h).
+// validateLogins checks the accounts whose record counts, under the key that names
+// them: each of them has to be a name, because a gate that looks for a record in the
+// name of nobody counts no record at all, and none of them twice, because a list that
+// says the same name twice is a file a person meant something else by (docs/DESIGN.md
+// §7h). The reviewers of a change and the owners who accept a result are two such
+// lists, and both are told apart in the reason a file with one of them wrong is
+// refused for.
 //
-// An empty list is not a mistake: the owner of the repository reviews the project
-// until it says otherwise, which is what a project that says nothing gets.
-func validateReviewers(reviewers []string) error {
-	seen := make(map[string]struct{}, len(reviewers))
-	for i, reviewer := range reviewers {
+// An empty list is not a mistake: the owner of the repository reviews the project and
+// accepts its results until it says otherwise, which is what a project that says
+// nothing gets.
+func validateLogins(key string, logins []string) error {
+	seen := make(map[string]struct{}, len(logins))
+	for i, login := range logins {
 		switch {
-		case strings.TrimSpace(reviewer) == "":
-			return fmt.Errorf("merge.reviewers[%d]: must be a login of an account, as %q, got %q",
-				i, "naghuale", reviewer)
-		case strings.HasPrefix(reviewer, "@"):
-			return fmt.Errorf("merge.reviewers[%d]: a login is written without the @ of a mention: %q", i, reviewer)
+		case strings.TrimSpace(login) == "":
+			return fmt.Errorf("%s[%d]: must be a login of an account, as %q, got %q",
+				key, i, "naghuale", login)
+		case strings.HasPrefix(login, "@"):
+			return fmt.Errorf("%s[%d]: a login is written without the @ of a mention: %q", key, i, login)
 		}
-		if _, duplicate := seen[reviewer]; duplicate {
-			return fmt.Errorf("merge.reviewers[%d]: duplicate reviewer %q", i, reviewer)
+		if _, duplicate := seen[login]; duplicate {
+			return fmt.Errorf("%s[%d]: duplicate account %q", key, i, login)
 		}
-		seen[reviewer] = struct{}{}
+		seen[login] = struct{}{}
 	}
 	return nil
 }

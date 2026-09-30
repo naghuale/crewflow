@@ -1,0 +1,10 @@
+# The same account twice is a file a person meant something else by (§7h).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+owners = ["naghuale", "naghuale"]

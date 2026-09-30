@@ -165,15 +165,16 @@ const actionsApp = "github-actions"
 func deps(t *testing.T, repo *repository, h *host) Deps {
 	t.Helper()
 	return Deps{
-		Forge:         h,
-		CI:            h,
-		Repository:    "naghuale/crewflow",
-		DefaultBranch: "main",
-		Reviewers:     []string{owner},
-		Task:          7,
-		Boundaries:    []string{"internal/gate/**"},
-		RequireChecks: true,
-		Git:           repo.history(),
+		Forge:           h,
+		CI:              h,
+		Repository:      "naghuale/crewflow",
+		DefaultBranch:   "main",
+		Reviewers:       []string{owner},
+		AcceptanceLabel: ownerCheckLabel,
+		Task:            7,
+		Boundaries:      []string{"internal/gate/**"},
+		RequireChecks:   true,
+		Git:             repo.history(),
 	}
 }
 
@@ -437,6 +438,77 @@ func TestCollectOfARepositoryWithoutRulesOnItsPlan(t *testing.T) {
 			t.Errorf("the detail %q does not say that the rules are not on the plan of the repository", verdict.Detail)
 		}
 	})
+}
+
+// TestCollectReadsTheTaskOfTheChangeOnce: what the gate needs to know about the task of
+// a change — the paths it was to change and the words it is marked with — comes out of
+// one reading of it. A task marked `owner-check` is refused until the owner has accepted
+// the head of its change, and a task without that label is merged as it always was
+// (docs/DESIGN.md §7f, §7h).
+func TestCollectReadsTheTaskOfTheChangeOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		ready  bool
+		want   Reason
+	}{
+		{
+			name:   "a task without the label needs nothing of the owner",
+			labels: []string{"risky"},
+			ready:  true,
+		},
+		{
+			name:   "a task marked owner-check, and nothing accepted yet",
+			labels: []string{"risky", ownerCheckLabel},
+			want:   OwnerAcceptanceMissing,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := newRepository(t)
+			host := theHead(t, repo)
+			given := deps(t, repo, host)
+			given.Boundaries = nil
+			reads := 0
+			given.TaskOf = func(context.Context, int) (TaskFacts, error) {
+				reads++
+				return TaskFacts{Boundaries: []string{"internal/gate/**"}, Labels: tc.labels}, nil
+			}
+
+			facts := Collect(t.Context(), given, 7)
+
+			if reads != 1 {
+				t.Errorf("the task was read %d times, want once: the boundaries and the labels of it are one reading", reads)
+			}
+			if facts.Labels[0] != tc.labels[0] {
+				t.Errorf("the labels of the task are %v, want what the tracker holds", facts.Labels)
+			}
+			if verdict := Evaluate(facts); verdict.Ready != tc.ready {
+				t.Fatalf("Evaluate = %+v, want ready %v", verdict, tc.ready)
+			} else if !tc.ready && verdict.Reason != tc.want {
+				t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, tc.want)
+			}
+		})
+	}
+}
+
+// TestCollectOfATaskNobodyCanRead: the tracker of a project that could not be asked is
+// a refusal and not a task without a label — a task marked `owner-check` is the one
+// thing a gate must not assume (docs/DESIGN.md §7h).
+func TestCollectOfATaskNobodyCanRead(t *testing.T) {
+	repo := newRepository(t)
+	host := theHead(t, repo)
+	given := deps(t, repo, host)
+	given.Boundaries = nil
+	given.TaskOf = func(context.Context, int) (TaskFacts, error) {
+		return TaskFacts{}, errors.New("gh: the issue could not be read")
+	}
+
+	facts := Collect(t.Context(), given, 7)
+
+	if verdict := Evaluate(facts); verdict.Reason != ForgeUnavailable {
+		t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, ForgeUnavailable)
+	}
 }
 
 // TestCollectFindsTheTaskOfAChange is what gives a change its boundaries: the

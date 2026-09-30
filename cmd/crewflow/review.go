@@ -106,15 +106,17 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int) gate.Facts {
 	number := taskOfChange(home, cfg, change)
 	return gate.Collect(ctx, gate.Deps{
-		Forge:         set.Forge,
-		CI:            set.CI,
-		Repository:    cfg.Project.Repo,
-		DefaultBranch: cfg.Project.DefaultBranch,
-		Reviewers:     cfg.Merge.Reviewers,
-		Task:          number,
-		BoundariesOf:  boundariesOf(set, cfg),
-		RequireChecks: cfg.CI.Required,
-		Git:           historyOf(cfg, repoDir),
+		Forge:           set.Forge,
+		CI:              set.CI,
+		Repository:      cfg.Project.Repo,
+		DefaultBranch:   cfg.Project.DefaultBranch,
+		Reviewers:       cfg.Merge.Reviewers,
+		Owners:          cfg.Merge.Owners,
+		AcceptanceLabel: cfg.Acceptance.Label,
+		Task:            number,
+		TaskOf:          taskFactsOf(set, cfg),
+		RequireChecks:   cfg.CI.Required,
+		Git:             historyOf(cfg, repoDir),
 	}, change)
 }
 
@@ -136,18 +138,22 @@ func runGit(ctx context.Context, name string, args []string, dir string) ([]byte
 	return doctor.Command(ctx, name, args, dir, nil)
 }
 
-// boundariesOf is where the paths a change was to change come from: the task of the
-// change, as the tracker holds it, and the technical part of it (§7c, §7f).
-func boundariesOf(set forge.Set, cfg config.Config) func(context.Context, int) ([]string, error) {
-	return func(ctx context.Context, number int) ([]string, error) {
+// taskFactsOf is what the gate asks the tracker about the task of a change: the paths
+// it was to change and the words it is marked with, out of one reading of the task and
+// its technical part (§7c, §7f).
+func taskFactsOf(set forge.Set, cfg config.Config) func(context.Context, int) (gate.TaskFacts, error) {
+	return func(ctx context.Context, number int) (gate.TaskFacts, error) {
 		if set.Tracker == nil {
-			return nil, fmt.Errorf("tracker.kind: this project has no tracker of tasks, so the boundaries of task %d cannot be read", number)
+			return gate.TaskFacts{}, fmt.Errorf("tracker.kind: this project has no tracker of tasks, so the boundaries of task %d cannot be read", number)
 		}
 		found, err := set.Tracker.Task(ctx, number)
 		if err != nil {
-			return nil, fmt.Errorf("read task %d: %w", number, err)
+			return gate.TaskFacts{}, fmt.Errorf("read task %d: %w", number, err)
 		}
-		return task.Read(found.Body, cfg.Project.Language).Boundaries(), nil
+		return gate.TaskFacts{
+			Boundaries: task.Read(found.Body, cfg.Project.Language).Boundaries(),
+			Labels:     found.Labels,
+		}, nil
 	}
 }
 

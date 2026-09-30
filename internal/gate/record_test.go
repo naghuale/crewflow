@@ -66,6 +66,7 @@ func TestParseOfWhatACommentIsNot(t *testing.T) {
 		{name: "an approval without a commit", body: "REVIEW: APPROVED"},
 		{name: "a decision crewflow does not know", body: "REVIEW: LGTM 1234567890123456789012345678901234567890"},
 		{name: "a record of a scope, which is not a review", body: AcceptOf(second, "the design is this task as well")},
+		{name: "an acceptance of the result, which is not a review", body: AcceptedOf(second)},
 		{name: "the record as a person writes it by hand", body: "REVIEW: APPROVED " + second + "\n\nAll five points are fixed.", want: true},
 	}
 	for _, tc := range cases {
@@ -95,6 +96,39 @@ func TestParseAcceptance(t *testing.T) {
 	}
 	if _, _, is := ParseAcceptance("REVIEW: APPROVED " + second); is {
 		t.Error("an approval of a head was read as an acceptance of a file")
+	}
+}
+
+// TestParseOwnerAccept is the record the owner of the project writes under a change to
+// take the result of the task in, and nothing else of a comment: the head the record is
+// about is the first line, and a commit added after it is a commit nobody has accepted
+// (docs/DESIGN.md §7h).
+func TestParseOwnerAccept(t *testing.T) {
+	commit, is := ParseOwnerAccept(AcceptedOf(second) + "\n\nI have looked at it.")
+	if !is {
+		t.Fatalf("ParseOwnerAccept did not read %q", AcceptedOf(second))
+	}
+	if commit != second {
+		t.Errorf("the acceptance is of %s, want %s", commit, second)
+	}
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{name: "the record as a person writes it", body: "ACCEPTED " + second, want: true},
+		{name: "with what the person wrote about it", body: "ACCEPTED " + second + " — I have read it twice", want: true},
+		{name: "the word in a sentence", body: "I would have ACCEPTED this, but the checks are red."},
+		{name: "an acceptance without a commit", body: "ACCEPTED"},
+		{name: "an acceptance of a file, which is a record of its own", body: AcceptOf(second, "the design is this task as well")},
+		{name: "an approval of the same head", body: ApproveOf(second, 7)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, is := ParseOwnerAccept(tc.body); is != tc.want {
+				t.Errorf("ParseOwnerAccept(%q) is = %v, want %v", tc.body, is, tc.want)
+			}
+		})
 	}
 }
 

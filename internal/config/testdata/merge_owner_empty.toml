@@ -1,0 +1,11 @@
+# An owner of the project has to be an account: a gate that looks for an acceptance in
+# the name of nobody accepts nothing at all (§7h).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+owners = ["  "]

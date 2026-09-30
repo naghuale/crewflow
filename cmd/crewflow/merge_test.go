@@ -187,6 +187,30 @@ func TestRunMergeRefusesAChangeTheGateRefuses(t *testing.T) {
 	}
 }
 
+// TestRunMergeRefusesATaskTheOwnerHasNotAccepted: a change of a task marked
+// `owner-check` whose result the owner has not accepted is not pushed at all, and the
+// answer names the missing acceptance rather than anything else (docs/DESIGN.md §7f, §7h).
+func TestRunMergeRefusesATaskTheOwnerHasNotAccepted(t *testing.T) {
+	host := newMergeHost(t)
+	host.reviewHost.task.Labels = []string{"owner-check"}
+	project := writeConfig(t, mergeConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"merge", "7", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow merge = %d, want %d", code, exitFailure)
+	}
+	for _, want := range []string{"owner-acceptance-missing", "nothing was pushed"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow merge wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+	if host.pushed() {
+		t.Errorf("crewflow merge ran:\n%s\nwant no push at all", strings.Join(host.commands, "\n"))
+	}
+}
+
 // TestRunMergeOfAChangeTheHostRefuses: a host with a rule on its branch refuses the push,
 // the branch is where it was, and that is `push-rejected` — not a merge that went
 // through and not a branch that moved on (docs/DESIGN.md §7h).

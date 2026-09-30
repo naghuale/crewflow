@@ -26,12 +26,20 @@ const (
 	executor = "crewflow-executor[bot]"
 )
 
+// ownerCheckLabel is the label a task is marked with to have its result accepted by
+// the owner before it may be merged, which is what §5 gives a project that says
+// nothing about it.
+const ownerCheckLabel = "owner-check"
+
 // ready are the facts of a change about which there is nothing to say: it is open,
 // of the project, meant for its default branch, approved by its owner on the head
 // itself, green on every check the rules of the branch demand, inside the
 // boundaries of its task, and the default branch is behind it. Every case of the
 // table of §7h is this and one thing more, and a case that is not the whole of it
 // says so by naming what it changed.
+//
+// The task carries no label, so nothing about it has to be accepted by the owner:
+// the cases that are about the acceptance say so by marking it `owner-check`.
 func ready() Facts {
 	return Facts{
 		Number:            7,
@@ -49,6 +57,7 @@ func ready() Facts {
 		Files:             []string{"internal/gate/gate.go", "README.md"},
 		Required:          []forge.RequiredCheck{{Name: "test", App: "github-actions"}},
 		Checks:            []forge.CheckRun{{Name: "test", State: forge.CheckSuccess, App: "github-actions", SHA: second}},
+		AcceptanceLabel:   ownerCheckLabel,
 		DefaultIsAncestor: true,
 	}
 }
@@ -71,6 +80,16 @@ func changesRequestedBy(author, findings string) Review {
 		Author:    author,
 		CreatedAt: time.Date(2026, time.September, 28, 13, 0, 0, 0, time.UTC),
 		Body:      ChangesOf(second, 7, findings),
+	}
+}
+
+// acceptedBy is a record in which the owner of the project takes the result of the task
+// as it stands: the head the record is written for.
+func acceptedBy(author, commit string) OwnerAccept {
+	return OwnerAccept{
+		Author:    author,
+		CreatedAt: time.Date(2026, time.September, 28, 15, 0, 0, 0, time.UTC),
+		Commit:    commit,
 	}
 }
 
@@ -269,6 +288,78 @@ func tableOfTheSpecification() []caseOfTable {
 			given: func(*Facts) {},
 			ready: true,
 		},
+		{
+			it:   "IT-024",
+			name: "the task is marked owner-check, and there is no record of an acceptance",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+			},
+			want:   OwnerAcceptanceMissing,
+			detail: "ACCEPTED",
+		},
+		{
+			it:   "IT-025",
+			name: "the owner accepted another commit",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, first)}
+			},
+			want:   OwnerAcceptanceMissing,
+			detail: first,
+		},
+		{
+			it:   "IT-026",
+			name: "the owner accepted the head, and a commit was added after it",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, second)}
+				facts.Head = third
+				facts.Reviews = []Review{approvedBy(owner, third, false)}
+				facts.Checks = []forge.CheckRun{{Name: "test", State: forge.CheckSuccess, App: "github-actions", SHA: third}}
+			},
+			want:   OwnerAcceptanceMissing,
+			detail: second,
+		},
+		{
+			it:   "IT-027",
+			name: "the acceptance was written by the executor of the run",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executor, second)}
+			},
+			want:   OwnerAcceptanceUntrusted,
+			detail: executor,
+		},
+		{
+			it:   "IT-028",
+			name: "the acceptance of the owner was edited after it was published",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{{
+					Author: owner, CreatedAt: time.Now(), Edited: true, Commit: second,
+				}}
+			},
+			want:   OwnerAcceptanceEdited,
+			detail: owner,
+		},
+		{
+			it:   "IT-029",
+			name: "the owner accepted the head of the change himself",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, second)}
+			},
+			ready: true,
+		},
+		{
+			it:   "IT-029b",
+			name: "a task without the label owner-check needs no acceptance at all",
+			given: func(facts *Facts) {
+				facts.Labels = []string{"risky"}
+				facts.OwnerAccepts = nil
+			},
+			ready: true,
+		},
 	}
 }
 
@@ -435,6 +526,81 @@ func TestAnAcceptanceIsCountedLikeAnApproval(t *testing.T) {
 	}
 }
 
+// TestTheOwnerAcceptsByDefault is the acceptance told apart from the approval of §5:
+// a project that names no owners has the owner of its repository, and only the owners
+// the file names may take the result of a task in. Accepting what a person will see is
+// not reviewing a change, and the two lists are read apart.
+func TestTheOwnerAcceptsByDefault(t *testing.T) {
+	cases := []struct {
+		name  string
+		given func(*Facts)
+		ready bool
+		want  Reason
+	}{
+		{
+			name: "a project that names no owners has the owner of the repository",
+			given: func(facts *Facts) {
+				facts.Owners, facts.OwnerAccepts = nil, []OwnerAccept{acceptedBy(owner, second)}
+			},
+			ready: true,
+		},
+		{
+			name: "an account that is only named like it is not the same account",
+			given: func(facts *Facts) {
+				facts.Owners, facts.OwnerAccepts = nil, []OwnerAccept{acceptedBy("naghuale-e", second)}
+			},
+			want: OwnerAcceptanceUntrusted,
+		},
+		{
+			name: "the owners the project names and nobody else",
+			given: func(facts *Facts) {
+				facts.Owners = []string{owner, "reviewer"}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy("reviewer", second)}
+			},
+			ready: true,
+		},
+		{
+			name: "a reviewer who is no owner of the project accepts nothing",
+			given: func(facts *Facts) {
+				facts.Owners = []string{owner}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy("reviewer", second)}
+			},
+			want: OwnerAcceptanceUntrusted,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ready()
+			facts.Labels = []string{ownerCheckLabel}
+			tc.given(&facts)
+
+			verdict := Evaluate(facts)
+
+			if verdict.Ready != tc.ready {
+				t.Fatalf("Evaluate = %+v, want ready %v", verdict, tc.ready)
+			}
+			if !tc.ready && verdict.Reason != tc.want {
+				t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, tc.want)
+			}
+		})
+	}
+}
+
+// TestApartStandsTheAcceptanceIn is what the owner of the repository gets to see before
+// a change is approved: the acceptance of a task marked `owner-check` is his own act
+// and the orchestrator cannot write it, so a verdict that refused the approval for a
+// missing acceptance would leave the task with no way to start at all
+// (docs/DESIGN.md §7h).
+func TestApartStandsTheAcceptanceIn(t *testing.T) {
+	facts := ready()
+	facts.Labels = []string{ownerCheckLabel}
+	facts.Reviews, facts.OwnerAccepts = nil, nil
+
+	if verdict := Apart(facts); !verdict.Ready {
+		t.Errorf("Apart = %+v, want a change of a task that may be approved and then accepted", verdict)
+	}
+}
+
 // TestTheOwnerReviewsByDefault is the default of §5: a project that names no
 // reviewers has the owner of its repository, and nothing else — an account that
 // happens to be named like it is not the same account as one that is not named at
@@ -491,6 +657,91 @@ func TestARefusalNeverLeaksTheNextReason(t *testing.T) {
 	if verdict.Reason != PRDraft {
 		t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, PRDraft)
 	}
+}
+
+// TestASummaryOfTheAcceptanceOfTheOwner is what the owner of the repository reads to
+// know whether the change is waiting for him: the task is marked as one that waits, and
+// either nobody has taken the result in or the record that does is there to be read. A
+// task without the label says nothing about an acceptance, and its report is the report
+// it always was (docs/DESIGN.md §7f, §7h).
+func TestASummaryOfTheAcceptanceOfTheOwner(t *testing.T) {
+	cases := []struct {
+		name  string
+		given func(*Facts)
+		want  string
+	}{
+		{
+			name:  "the task is marked and nobody has accepted the result",
+			given: func(facts *Facts) { facts.Labels = []string{ownerCheckLabel} },
+			want:  "  owner acceptance: the task is marked `owner-check`, and there is no record of it under the change\n",
+		},
+		{
+			name: "the owner accepted the head",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, second)}
+			},
+			want: "  owner acceptance: ACCEPTED " + second[:8] + " by " + owner + " at 2026-09-28T15:00:00Z\n",
+		},
+		{
+			name: "the record is of an earlier head",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, first)}
+			},
+			want: "and it does not count: of another commit than the head\n",
+		},
+		{
+			name: "the record was edited after it was published",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{{
+					Author: owner, CreatedAt: time.Now(), Edited: true, Commit: second,
+				}}
+			},
+			want: "and it does not count: edited after it was published\n",
+		},
+		{
+			name: "the record is of the executor of the run",
+			given: func(facts *Facts) {
+				facts.Labels = []string{ownerCheckLabel}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executor, second)}
+			},
+			want: "and it does not count: not one of the owners of the project\n",
+		},
+		{
+			name:  "a task nobody has to accept says nothing about it",
+			given: func(facts *Facts) { facts.Labels = []string{"risky"} },
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ready()
+			tc.given(&facts)
+
+			var out bytes.Buffer
+			Summarize(facts, Evaluate(facts)).Write(&out)
+
+			line := ownerAcceptLine(out.String())
+			switch {
+			case tc.want == "" && line != "":
+				t.Errorf("the report holds the line %q, want none: the task waits for no one", line)
+			case tc.want != "" && !strings.Contains(line, tc.want):
+				t.Errorf("the line %q does not hold %q", line, tc.want)
+			}
+		})
+	}
+}
+
+// ownerAcceptLine is the line of a report about the acceptance of the result of the
+// task, and an empty string where the report holds none.
+func ownerAcceptLine(report string) string {
+	for line := range strings.Lines(report) {
+		if strings.HasPrefix(line, "  owner acceptance:") {
+			return line
+		}
+	}
+	return ""
 }
 
 // TestASummaryOfNothingGathered: when not even the change could be read, a report of

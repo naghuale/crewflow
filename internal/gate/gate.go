@@ -52,6 +52,17 @@ const (
 	// HistoryRewritten says that the approved commit is not in the history of the
 	// head at all: the branch was rewritten under the approval.
 	HistoryRewritten Reason = "history-rewritten"
+	// OwnerAcceptanceMissing says that the task is one the owner has to accept, and
+	// that there is no record of it for the head of the change: either nobody wrote
+	// one, or the one that is there is of a commit that is not the head any more.
+	OwnerAcceptanceMissing Reason = "owner-acceptance-missing"
+	// OwnerAcceptanceUntrusted says that the only records of an acceptance came from
+	// accounts that are not among the owners of the project.
+	OwnerAcceptanceUntrusted Reason = "owner-acceptance-untrusted"
+	// OwnerAcceptanceEdited says that a record of an acceptance was edited after it was
+	// published, which is how an acceptance of another commit could be written in
+	// silence.
+	OwnerAcceptanceEdited Reason = "owner-acceptance-edited"
 	// PRNotOpen says that the change request is closed or merged.
 	PRNotOpen Reason = "pr-not-open"
 	// PRDraft says that the change request is a draft and asks for nothing yet.
@@ -96,6 +107,7 @@ const (
 // crewflow, and a caller that counts them must be able to name them all.
 var Reasons = []Reason{
 	ApprovalMissing, ApprovalUntrusted, ApprovalEdited, ApprovalStale, HistoryRewritten,
+	OwnerAcceptanceMissing, OwnerAcceptanceUntrusted, OwnerAcceptanceEdited,
 	PRNotOpen, PRDraft, WrongRepository, WrongTargetBranch, OutOfScope,
 	RequiredCheckMissing, RequiredCheckIncomplete, RequiredCheckFailed, RequiredCheckUntrusted,
 	CISHAMismatch, NotFastForward, PushRejected, VerifyMismatch, ForgeUnavailable,
@@ -184,6 +196,19 @@ type Facts struct {
 	// crewflow does not know has no boundaries, and no file is inside them.
 	Files      []string
 	Boundaries []string
+	// Labels are the words the tracker marks the task of the change with, and
+	// AcceptanceLabel the one of them that says the owner has to accept the result
+	// himself before it may go in. A project that names none has `owner-check`, and a
+	// task without that label is merged as it always was (docs/DESIGN.md §5, §7f, §7h).
+	Labels          []string
+	AcceptanceLabel string
+	// Owners are the logins whose record of an acceptance counts, with the default of
+	// §5 filled in, and OwnerAccepts the records in which the owner of the project says
+	// that they have taken the result of the task as it stands: under the same rules of
+	// the author and of the editing as an approval, because an acceptance anybody can
+	// rewrite is not one (docs/DESIGN.md §7h).
+	Owners       []string
+	OwnerAccepts []OwnerAccept
 	// Task is the number of the task the change is of, which a report names.
 	Task int
 	// DefaultIsAncestor says that the default branch of the project is an ancestor
@@ -231,6 +256,25 @@ type Acceptance struct {
 	Reason string
 }
 
+// OwnerAccept is one record in which the owner of the project takes the result of a
+// task as it stands: `ACCEPTED <full sha>` under the change (docs/DESIGN.md §7h).
+//
+// It is a record and not a word in a report: the owner writes it under the change
+// himself, in his own account, and the gate reads it there — which is the whole of
+// what makes it his own look at the result and not somebody else's word that he did.
+type OwnerAccept struct {
+	// Author is who wrote it, by the name the host knows them under.
+	Author string
+	// CreatedAt orders the records against each other.
+	CreatedAt time.Time
+	// Edited says that the record was changed after it was published, which takes it
+	// out of the count as it takes an approval out of it.
+	Edited bool
+	// Commit is the head the record was written for: a commit added after it is a
+	// commit nobody has accepted, and the acceptance of it has to be written anew.
+	Commit string
+}
+
 // Evaluate is the whole of the gate: the facts of a change go in, and the verdict
 // comes out. The order of the checks is the order of `merge_ready` in docs/DESIGN.md
 // §7h, and the first one that does not hold is the reason: a person who is told
@@ -259,6 +303,9 @@ func Evaluate(f Facts) Verdict {
 	if verdict, no := f.approval(); no {
 		return verdict
 	}
+	if verdict, no := f.ownerAcceptance(); no {
+		return verdict
+	}
 	if verdict, no := f.boundaries(); no {
 		return verdict
 	}
@@ -278,18 +325,26 @@ func Evaluate(f Facts) Verdict {
 	return Verdict{Ready: true}
 }
 
-// Apart is the verdict on everything but the approval: the same facts with the
-// records of the reviews taken out and a record of an approval of the current head
-// in their place, written by the first of the trusted reviewers.
+// Apart is the verdict on everything but the approval and the acceptance: the same
+// facts with the records of the reviews taken out, a record of an approval of the
+// current head in their place written by the first of the trusted reviewers, and a
+// record of an acceptance of that head in the place of the ones there are.
 //
 // It is what the orchestrator is shown before it writes a real approval, so that
 // an approval of a change with a red CI or a file outside the boundaries of its
 // task is never written by mistake — a comment that says "approved" is not a gate,
 // and a gate that approves such a change has stopped being one (docs/DESIGN.md §7h).
+// The acceptance of the owner is stood in for as well: it is his own act and the
+// orchestrator cannot write it, and a gate that refused an approval for a missing
+// acceptance would leave a task marked `owner-check` without a way to start at all.
 func Apart(f Facts) Verdict {
 	f.Reviews = []Review{{
 		Author: firstOf(f.reviewers()),
 		Body:   ApprovedOf(f.Head),
+	}}
+	f.OwnerAccepts = []OwnerAccept{{
+		Author: firstOf(f.owners()),
+		Commit: f.Head,
 	}}
 	return Evaluate(f)
 }
@@ -307,7 +362,7 @@ func Apart(f Facts) Verdict {
 func (f Facts) approval() (Verdict, bool) {
 	ofReviewers := f.reviewsOfReviewers()
 	if len(ofReviewers) == 0 {
-		if authors := authorsOf(f.Reviews); len(authors) > 0 {
+		if authors := authorsOf(f.Reviews, func(review Review) string { return review.Author }); len(authors) > 0 {
 			return refused(ApprovalUntrusted, fmt.Sprintf("the only records of a review are of %s, and the reviewers of the project are %s",
 				listed(authors), listed(f.reviewers()))), true
 		}
@@ -345,6 +400,60 @@ func (f Facts) approval() (Verdict, bool) {
 	}
 	return refused(HistoryRewritten, fmt.Sprintf("the approved commit %s is not in the history of the head %s: the history was rewritten under the approval",
 		record.Commit, f.Head)), true
+}
+
+// ownerAcceptance is the whole of `owner_accepted(pr)` of docs/DESIGN.md §7h: the
+// result of a task marked `owner-check` is taken in by a record of one of the owners
+// of the project, written for exactly the head of the change and not edited since it
+// was published.
+//
+// Each way of it failing is a reason of its own, because each is fixed by something
+// else: a record of an executor is a record of nobody, a record that was edited is a
+// record anybody can rewrite in silence, and a record of an earlier head is a record
+// of work that has grown since.
+func (f Facts) ownerAcceptance() (Verdict, bool) {
+	if !f.requiresOwnerAcceptance() {
+		return Verdict{}, false
+	}
+	records := f.ownerAcceptsOfOwners()
+	if len(records) == 0 {
+		if authors := authorsOf(f.OwnerAccepts, func(record OwnerAccept) string { return record.Author }); len(authors) > 0 {
+			return refused(OwnerAcceptanceUntrusted, fmt.Sprintf("the only records of an acceptance are of %s, and the owners of the project are %s",
+				listed(authors), listed(f.owners()))), true
+		}
+		return refused(OwnerAcceptanceMissing, fmt.Sprintf("task %d is marked `%s`, and there is no record of an acceptance under the change: "+
+			"the owner takes the result in himself, with a record `ACCEPTED %s` under the change", f.Task, f.AcceptanceLabel, f.Head)), true
+	}
+	last := records[len(records)-1]
+	if last.Edited {
+		return refused(OwnerAcceptanceEdited, fmt.Sprintf("the acceptance of %s was edited after it was published: an acceptance that can be rewritten accepts nothing",
+			last.Author)), true
+	}
+	if sameCommit(last.Commit, f.Head) {
+		return Verdict{}, false
+	}
+	return refused(OwnerAcceptanceMissing, fmt.Sprintf("the acceptance is of %s and the head is %s: commits were added after the owner accepted the result, and nobody has accepted them",
+		last.Commit, f.Head)), true
+}
+
+// requiresOwnerAcceptance is whether the task of the change is one the owner has to accept
+// before it may go in, which is what the label of the project says: a task without
+// that label is merged as it always was, and a project that names no label at all has
+// nothing to require of anybody (docs/DESIGN.md §5, §7f, §7h).
+func (f Facts) requiresOwnerAcceptance() bool {
+	return f.AcceptanceLabel != "" && slices.Contains(f.Labels, f.AcceptanceLabel)
+}
+
+// ownerAcceptsOfOwners are the records of an acceptance of somebody who may accept,
+// edited or not, in the order they were written.
+func (f Facts) ownerAcceptsOfOwners() []OwnerAccept {
+	var records []OwnerAccept
+	for _, record := range f.OwnerAccepts {
+		if f.isOwner(record.Author) {
+			records = append(records, record)
+		}
+	}
+	return records
 }
 
 // boundaries are the paths the task of the change was to touch, and the files it
@@ -391,6 +500,20 @@ func (f Facts) accepted() (Acceptance, bool) {
 	}
 	last := records[len(records)-1]
 	return last, sameCommit(last.Commit, f.Head)
+}
+
+// ownerAccepted is the last record in which the owner of the project takes the result
+// of the task in, and whether it counts: only a record of an owner, only while it has
+// not been edited, and only for the head as it stands — the same three ways an
+// approval is counted, because an acceptance anybody can rewrite, and an acceptance of
+// a commit that has grown since, are not a look at the result (docs/DESIGN.md §7h).
+func (f Facts) ownerAccepted() (OwnerAccept, bool) {
+	records := f.ownerAcceptsOfOwners()
+	if len(records) == 0 {
+		return OwnerAccept{}, false
+	}
+	last := records[len(records)-1]
+	return last, !last.Edited && sameCommit(last.Commit, f.Head)
 }
 
 // checks is what the head of the change has of what the rules of its branch demand,
@@ -530,11 +653,35 @@ func (f Facts) isReviewer(author string) bool {
 	})
 }
 
+// isOwner is whether the account may accept the result of a task: the ones the file of
+// the project names as its owners, or the owner of the repository when it names none
+// (docs/DESIGN.md §5, §7h).
+func (f Facts) isOwner(author string) bool {
+	return slices.ContainsFunc(f.owners(), func(owner string) bool {
+		return strings.EqualFold(owner, author)
+	})
+}
+
 // reviewers are the accounts whose records count, with the default of §5 filled in:
 // a project that names none has the owner of its repository, and nothing else.
 func (f Facts) reviewers() []string {
 	if len(f.Reviewers) > 0 {
 		return f.Reviewers
+	}
+	if owner, _, of := strings.Cut(f.WantRepository, "/"); of {
+		return []string{owner}
+	}
+	return nil
+}
+
+// owners are the accounts who may accept the result of a task, with the default of §5
+// filled in: a project that names none has the owner of its repository, and nothing
+// else. A project whose repository names no owner has nobody who may accept, and a task
+// of it marked `owner-check` is then refused for a missing acceptance — a record of one
+// is a record nobody could write.
+func (f Facts) owners() []string {
+	if len(f.Owners) > 0 {
+		return f.Owners
 	}
 	if owner, _, of := strings.Cut(f.WantRepository, "/"); of {
 		return []string{owner}
@@ -550,12 +697,14 @@ func sameCommit(one, other string) bool {
 }
 
 // authorsOf are the accounts that wrote the given records, each of them once, in
-// the order they wrote.
-func authorsOf(reviews []Review) []string {
+// the order they wrote. The records of a review and the records of an acceptance are
+// told apart by the field their author is in, which is the only thing the refusal
+// about them asks for.
+func authorsOf[T any](records []T, author func(T) string) []string {
 	var authors []string
-	for _, review := range reviews {
-		if !slices.Contains(authors, review.Author) {
-			authors = append(authors, review.Author)
+	for _, record := range records {
+		if name := author(record); !slices.Contains(authors, name) {
+			authors = append(authors, name)
 		}
 	}
 	return authors

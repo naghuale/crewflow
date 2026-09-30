@@ -48,13 +48,14 @@ Works today:
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
   one of the reasons of §7h says why it may not
+- ✅ the owner's acceptance: a task marked `owner-check` is not merged until the owner writes
+  `ACCEPTED <sha of the head>` under its PR
 - ✅ the merge itself: `crewflow merge` fast-forwards the branch to exactly the approved
   commit and proves it with `git ls-remote`; `crewflow verify` checks the branch, the
   issue and the CI of it afterwards
 
 In progress:
 
-- ⏳ the owner's acceptance of a review build before a merge
 - ⏳ `crewflow init` and recovery of an interrupted task
 
 The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian). The steps of the
@@ -138,14 +139,21 @@ the next run does: `-json` is the same answer it has always been.
 `crewflow review <PR>` gathers the facts of a change from the host and from git and answers
 one question: may it be merged? When it may not, the answer names a single reason out of the
 table of §7h — `approval-missing`, `approval-untrusted`, `approval-edited`, `approval-stale`,
-`history-rewritten`, `pr-not-open`, `pr-draft`, `wrong-repository`, `wrong-target-branch`,
-`out-of-scope`, `required-check-missing` / `-incomplete` / `-failed` / `-untrusted`,
-`ci-sha-mismatch`, `not-fast-forward`, `forge-unavailable` — and says what to do about it.
+`history-rewritten`, `owner-acceptance-missing`, `owner-acceptance-untrusted`,
+`owner-acceptance-edited`, `pr-not-open`, `pr-draft`, `wrong-repository`,
+`wrong-target-branch`, `out-of-scope`, `required-check-missing` / `-incomplete` / `-failed` /
+`-untrusted`, `ci-sha-mismatch`, `not-fast-forward`, `forge-unavailable` — and says what to do
+about it.
 
 - an approval counts only from `[merge] reviewers` (the owner of the repository by default),
   only unedited, and only of the current head of the change;
 - the record of a review is a comment whose first line is `REVIEW: APPROVED <full sha>` or
   `REVIEW: CHANGES REQUESTED`; `-approve` and `-request-changes <file>` write it for you;
+- a task marked `owner-check` (the name is `[acceptance] label`) is not merged until one of
+  `[merge] owners` — the owner of the repository by default — writes `ACCEPTED <full sha>` of
+  that exact head under the change; the report says on its own line that the result is
+  waiting for him. A commit after the acceptance is a commit nobody has looked at, so the
+  acceptance has to be written again;
 - the files the change touches are checked against the boundaries of its task, and only a
   reviewer may take a file outside them with `SCOPE: ACCEPTED <full sha> <why>`;
 - the required checks are the ones the rules of the branch demand, taken from GitHub Actions

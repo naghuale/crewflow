@@ -61,6 +61,11 @@ const (
 	executor     = "crewflow-executor[bot]"
 )
 
+// ownerCheckLabel is the label a task is marked with to have its result accepted by the
+// owner before its change may be merged, which is what §5 gives a project that says
+// nothing about it (docs/DESIGN.md §7f, §7h).
+const ownerCheckLabel = "owner-check"
+
 // theTask is the whole task the change of a test is of, with the boundaries the change
 // is checked against: it is about the merge, and the merge is what it was to write.
 const theTask = "## Why\n\nA merge is done by hand.\n\n## What changes\n\ncrewflow merges a change.\n\n" +
@@ -225,15 +230,14 @@ func TestMT003FailsWhenAPromiseIsStillWaitedFor(t *testing.T) {
 // carry a number the code may disagree with the design about.
 const (
 	// promiseOfChecks is the promise that a merge is impossible with the CI of the head
-	// red, and promiseOfTheMerge the one that the merge happened and exactly that.
-	promiseOfChecks = 3
-	promiseOfMerge  = 6
-	// promiseOfTheOwner is the acceptance of the owner before a merge and taskOfTheOwner
-	// the task that writes it; taskOfThisTask is the task that keeps the promise of the
-	// merge, and promiseAheadOfTheCode the number a test gives a promise that §7h has and
-	// the code has not, so that no test writes a promise into the design.
-	promiseOfTheOwner     = 5
-	taskOfTheOwner        = 9
+	// red, promiseOfTheOwner the one that the owner has seen the result of a task before
+	// its merge, and promiseOfMerge the one that the merge happened and exactly that.
+	promiseOfChecks   = 3
+	promiseOfTheOwner = 5
+	promiseOfMerge    = 6
+	// taskOfThisTask is the task that keeps the promise of the merge, and
+	// promiseAheadOfTheCode the number a test gives a promise that §7h has and the code
+	// has not, so that no test writes a promise into the design.
 	taskOfThisTask        = 8
 	promiseAheadOfTheCode = 9
 )
@@ -351,6 +355,9 @@ func registry() []promise {
 		{number: 4, its: []string{
 			"IT-012", "IT-013", "IT-014", "IT-015", "IT-016", "IT-017", "IT-018",
 		}},
+		{number: promiseOfTheOwner, its: []string{
+			"IT-024", "IT-025", "IT-026", "IT-027", "IT-028", "IT-029",
+		}},
 		{number: promiseOfMerge, its: []string{"IT-019", "IT-020", "IT-021", "IT-022", "IT-023", "IT-030"}},
 		{number: 7, its: []string{"MT-001", "MT-002", "MT-003"}},
 	}
@@ -360,10 +367,11 @@ func registry() []promise {
 // that writes them. The list is short and it is not a place to leave a promise nobody is
 // working on: the rule of MT-003 fails while a promise here has its cases in the registry
 // of the code (docs/DESIGN.md §7h).
+//
+// It is empty: every promise of §7h has its cases in the registry above, and the next
+// promise of the design is written with its cases in the same task that adds them here.
 func waitingFor() []waitedFor {
-	return []waitedFor{
-		{number: promiseOfTheOwner, task: taskOfTheOwner},
-	}
+	return nil
 }
 
 // promisesInTheDesign is the numbers of the cases §7h names under every promise of the
@@ -737,6 +745,72 @@ func tableOfTheSpecification() []caseOfTable {
 			pushes: true,
 		},
 		{
+			it:   "IT-024",
+			name: "the task is marked owner-check, and nobody has accepted the result",
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.ownerChecked()
+			},
+			want: gate.OwnerAcceptanceMissing,
+		},
+		{
+			it:   "IT-025",
+			name: "the owner accepted a commit that is not the head",
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.ownerChecked()
+				s.accepted(s.sha(s.t.Context(), "change~1"), owner)
+			},
+			want: gate.OwnerAcceptanceMissing,
+		},
+		{
+			it:   "IT-026",
+			name: "the owner accepted the head, and a commit was pushed on top of it",
+			// A commit after the acceptance is a commit nobody has looked at, and the
+			// acceptance of the head it replaces is not of it: this is the whole of why
+			// an acceptance is bound to a SHA, as an approval is.
+			given: func(s *scenario) {
+				s.ownerChecked()
+				s.accepted(s.head(), owner)
+				s.pushedOnTopOfTheChange(s.t)
+				s.checks[0].SHA = s.head()
+				s.approved(s.head())
+			},
+			want: gate.OwnerAcceptanceMissing,
+		},
+		{
+			it:   "IT-027",
+			name: "the acceptance was written by the executor of the run",
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.ownerChecked()
+				s.accepted(s.head(), executor)
+			},
+			want: gate.OwnerAcceptanceUntrusted,
+		},
+		{
+			it:   "IT-028",
+			name: "the acceptance of the owner was edited after it was published",
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.ownerChecked()
+				s.accepted(s.head(), owner, true)
+			},
+			want: gate.OwnerAcceptanceEdited,
+		},
+		{
+			it:   "IT-029",
+			name: "the owner accepted the head himself: the change may be merged",
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.ownerChecked()
+				s.accepted(s.head(), owner)
+			},
+			outcome:  Merged,
+			pushes:   true,
+			closedBy: ClosedByHost,
+		},
+		{
 			it:   "IT-030",
 			name: "the host did not close the task in the time the merge waited for it",
 			// A host that closed the task behind a change it merged does not do it
@@ -832,6 +906,19 @@ func newScenario(t *testing.T, given func(*scenario)) *scenario {
 // about.
 func (s *scenario) head() string { return s.change.HeadSHA }
 
+// ownerChecked is the task of a case the owner has to accept himself before its change
+// may be merged: the label of §5 on the task, which is the only thing that makes the
+// gate wait for him (docs/DESIGN.md §7f, §7h).
+func (s *scenario) ownerChecked() {
+	s.task.Labels = append(s.task.Labels, ownerCheckLabel)
+}
+
+// accepted is a record in which somebody takes the result of the task in as it stands,
+// which counts only of an owner of the project (docs/DESIGN.md §7h).
+func (s *scenario) accepted(commit, author string, edited ...bool) {
+	s.comment(gate.AcceptedOf(commit), author, edited...)
+}
+
 // addWorktree is the checkout of the task of a test: a worktree of the repository of
 // the test, detached at the head of the change, which is what a merge takes away when
 // it has taken the change in.
@@ -877,14 +964,16 @@ func (s *scenario) keepState(t *testing.T) {
 func (s *scenario) deps() Deps {
 	return Deps{
 		Gate: gate.Deps{
-			Forge:         s.host,
-			CI:            s.host,
-			Repository:    repositoryOf,
-			DefaultBranch: "main",
-			Reviewers:     []string{owner},
-			Task:          s.task.Number,
-			Boundaries:    []string{"internal/merge/**", "README.md"},
-			RequireChecks: true,
+			Forge:           s.host,
+			CI:              s.host,
+			Repository:      repositoryOf,
+			DefaultBranch:   "main",
+			Reviewers:       []string{owner},
+			AcceptanceLabel: ownerCheckLabel,
+			Task:            s.task.Number,
+			Boundaries:      []string{"internal/merge/**", "README.md"},
+			Labels:          s.task.Labels,
+			RequireChecks:   true,
 		},
 		Checkout: Git{
 			Dir:     s.checkout,

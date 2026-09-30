@@ -136,14 +136,16 @@ func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (mer
 	state := stateOfTaskAt(home, cfg, number)
 	return merge.Deps{
 		Gate: gate.Deps{
-			Forge:         set.Forge,
-			CI:            set.CI,
-			Repository:    cfg.Project.Repo,
-			DefaultBranch: cfg.Project.DefaultBranch,
-			Reviewers:     cfg.Merge.Reviewers,
-			Task:          number,
-			BoundariesOf:  boundariesOf(set, cfg),
-			RequireChecks: cfg.CI.Required,
+			Forge:           set.Forge,
+			CI:              set.CI,
+			Repository:      cfg.Project.Repo,
+			DefaultBranch:   cfg.Project.DefaultBranch,
+			Reviewers:       cfg.Merge.Reviewers,
+			Owners:          cfg.Merge.Owners,
+			AcceptanceLabel: cfg.Acceptance.Label,
+			Task:            number,
+			TaskOf:          taskFactsOf(set, cfg),
+			RequireChecks:   cfg.CI.Required,
 		},
 		Checkout: merge.Git{
 			Dir:     checkoutOf(repoDir),

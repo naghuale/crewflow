@@ -39,6 +39,13 @@ type Summary struct {
 	// of a review among those: what was decided, about which commit, and by whom.
 	Reviewers []string   `json:"reviewers,omitempty"`
 	Review    *DecidedOn `json:"review,omitempty"`
+	// AcceptanceRequired says that the task of the change is one the owner has to
+	// accept himself, under the label the project named, and OwnerAccept the record in
+	// which he took the result as it stands: a person reading a report has to see that
+	// the change waits for him before he reads the verdict (docs/DESIGN.md §7f, §7h).
+	AcceptanceRequired bool        `json:"acceptance_required,omitempty"`
+	AcceptanceLabel    string      `json:"acceptance_label,omitempty"`
+	OwnerAccept        *AcceptedOn `json:"owner_accept,omitempty"`
 	// Checks are the required checks of the head, one line each, whether the head
 	// has them or not: a check that is not there is a line of a report too, and
 	// the one that stops the merge is in the verdict.
@@ -68,6 +75,17 @@ type DecidedOn struct {
 	CreatedAt string   `json:"created_at"`
 	Edited    bool     `json:"edited,omitempty"`
 	Counted   bool     `json:"counted"`
+}
+
+// AcceptedOn is one record in which the owner of the project takes the result of a task
+// in: about which commit, by whom, when, and whether the gate counts it — a record of an
+// earlier head is of work that has grown since, and a person has to see that (docs/DESIGN.md §7h).
+type AcceptedOn struct {
+	Commit    string `json:"commit"`
+	Author    string `json:"author"`
+	CreatedAt string `json:"created_at"`
+	Edited    bool   `json:"edited,omitempty"`
+	Counted   bool   `json:"counted"`
 }
 
 // CheckLine is one required check of a head as a report shows it: the name it is
@@ -115,6 +133,7 @@ func Summarize(f Facts, v Verdict) Summary {
 	} else if last, ok := lastReview(f); ok {
 		s.Review = decidedOn(last, false)
 	}
+	s.acceptance(f)
 	s.Checks = checkLines(f)
 	// The files outside the boundaries are a fact of the report even where the
 	// boundaries are unreadable: a summary that cannot say them says nothing, and the
@@ -135,6 +154,40 @@ func decidedOn(record Review, counted bool) *DecidedOn {
 	return &DecidedOn{
 		Decision:  decided.Decision,
 		Commit:    decided.Commit,
+		Author:    record.Author,
+		CreatedAt: record.CreatedAt.UTC().Format(timeLayout),
+		Edited:    record.Edited,
+		Counted:   counted,
+	}
+}
+
+// acceptance is what a report says about the acceptance of the result of the task: the
+// task is marked as one that waits for its owner, and either nobody has taken the
+// result in or the record that does is shown — the one of an owner when it counts, and
+// the last one of anybody otherwise, because an "ACCEPTED" of an executor or of an
+// earlier head is what a person has to see to know that the change is not waiting for
+// anybody (docs/DESIGN.md §7h).
+//
+// A task without that label says nothing about an acceptance at all: nothing about it
+// changes, and a report that grew a line about every change would hide the one that
+// needs a person.
+func (s *Summary) acceptance(f Facts) {
+	if !f.requiresOwnerAcceptance() {
+		return
+	}
+	s.AcceptanceRequired, s.AcceptanceLabel = true, f.AcceptanceLabel
+	if record, counted := f.ownerAccepted(); counted {
+		s.OwnerAccept = acceptedOn(record, true)
+	} else if last, ok := lastOwnerAccept(f); ok {
+		s.OwnerAccept = acceptedOn(last, false)
+	}
+}
+
+// acceptedOn is one record of an acceptance as a report shows it: about which commit,
+// by whom and when — and whether the gate counts it.
+func acceptedOn(record OwnerAccept, counted bool) *AcceptedOn {
+	return &AcceptedOn{
+		Commit:    record.Commit,
 		Author:    record.Author,
 		CreatedAt: record.CreatedAt.UTC().Format(timeLayout),
 		Edited:    record.Edited,
@@ -198,6 +251,15 @@ func lastReview(f Facts) (Review, bool) {
 	return f.Reviews[len(f.Reviews)-1], true
 }
 
+// lastOwnerAccept is the last record in which anybody took the result of the task in,
+// and whether there is one.
+func lastOwnerAccept(f Facts) (OwnerAccept, bool) {
+	if len(f.OwnerAccepts) == 0 {
+		return OwnerAccept{}, false
+	}
+	return f.OwnerAccepts[len(f.OwnerAccepts)-1], true
+}
+
 // Write is the report as a person reads it: what the change is, the record that
 // counts, every required check on its own line, the files against the boundaries of
 // the task, and the verdict last, because it is the one line everybody came for.
@@ -223,6 +285,7 @@ func (s Summary) Write(out io.Writer) {
 	fmt.Fprintf(out, "  base: %s of %s (%s)\n", s.Base, s.Repository, s.State)
 	fmt.Fprintf(out, "  reviewers: %s\n", listed(s.Reviewers))
 	s.writeReview(out)
+	s.writeOwnerAccept(out)
 	if s.State == "open" {
 		s.writeChecks(out)
 		s.writeFiles(out)
@@ -247,6 +310,33 @@ func (s Summary) writeReview(out io.Writer) {
 		}
 		fmt.Fprintf(out, "  review: %s of %s by %s at %s, and it does not count: %s\n",
 			s.Review.Decision, shortCommit(s.Review.Commit), s.Review.Author, s.Review.CreatedAt, why)
+	}
+}
+
+// writeOwnerAccept is whether the result of the task waits for its owner, and the record
+// in which he took it in. It is a line of a report only where the task is marked as one
+// that waits: a change nobody has to accept says nothing about an acceptance, and the
+// line that stops the merge is in the verdict (docs/DESIGN.md §7h).
+func (s Summary) writeOwnerAccept(out io.Writer) {
+	if !s.AcceptanceRequired {
+		return
+	}
+	switch {
+	case s.OwnerAccept == nil:
+		fmt.Fprintf(out, "  owner acceptance: the task is marked `%s`, and there is no record of it under the change\n", s.AcceptanceLabel)
+	case s.OwnerAccept.Counted:
+		fmt.Fprintf(out, "  owner acceptance: %s %s by %s at %s\n",
+			ownerMark, shortCommit(s.OwnerAccept.Commit), s.OwnerAccept.Author, s.OwnerAccept.CreatedAt)
+	default:
+		why := "not one of the owners of the project"
+		switch {
+		case s.OwnerAccept.Edited:
+			why = "edited after it was published"
+		case !sameCommit(s.OwnerAccept.Commit, s.Head):
+			why = "of another commit than the head"
+		}
+		fmt.Fprintf(out, "  owner acceptance: %s %s by %s at %s, and it does not count: %s\n",
+			ownerMark, shortCommit(s.OwnerAccept.Commit), s.OwnerAccept.Author, s.OwnerAccept.CreatedAt, why)
 	}
 }
 

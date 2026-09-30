@@ -92,6 +92,7 @@ func TestLoadExample(t *testing.T) {
 		{"merge.by", cfg.Merge.By, "orchestrator"},
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
 		{"merge.via", cfg.Merge.Via, "git-push"},
+		{"acceptance.label", cfg.Acceptance.Label, "owner-check"},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 	}
@@ -131,6 +132,9 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"isolation.mode", cfg.Isolation.Mode, "host"},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
+		// A project that says nothing about the acceptance of the owner gets the label
+		// of §5, and the owners of its repository with it (docs/DESIGN.md §7h).
+		{"acceptance.label", cfg.Acceptance.Label, "owner-check"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {
@@ -163,6 +167,36 @@ owner_approval = "`+want+`"
 				t.Errorf("tasks.owner_approval = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+// TestLoadMergeLogins checks the two lists of the accounts whose records count: the
+// reviewers of a change and the owners who accept the result of a task. A project may
+// name one of them and leave the other out, and each one that is left out is the owner
+// of the repository — reviewing a change and accepting what a person will see are two
+// acts, and a project may give them to different people (docs/DESIGN.md §5, §7h).
+func TestLoadMergeLogins(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crewflow.toml")
+	writeFile(t, path, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[merge]
+reviewers = ["naghuale", "reviewer"]
+owners = ["naghuale"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned an error: %v", err)
+	}
+	if want := []string{"naghuale", "reviewer"}; !reflect.DeepEqual(cfg.Merge.Reviewers, want) {
+		t.Errorf("merge.reviewers = %#v, want %#v", cfg.Merge.Reviewers, want)
+	}
+	if want := []string{"naghuale"}; !reflect.DeepEqual(cfg.Merge.Owners, want) {
+		t.Errorf("merge.owners = %#v, want %#v", cfg.Merge.Owners, want)
 	}
 }
 

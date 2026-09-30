@@ -16,6 +16,13 @@ const (
 	// outside the boundaries of its task into their own hands:
 	// `SCOPE: ACCEPTED <full sha> <why>`.
 	scopeMark = "SCOPE"
+	// ownerMark opens a record in which the owner of the project takes the result of a
+	// task as it stands into their own hands: `ACCEPTED <full sha>`. It is a word of its
+	// own and not the mark of the record above it: one is about a file outside the
+	// boundaries of a task, the other about the result of the task itself, and a
+	// person who accepts the second has not thereby accepted the first (docs/DESIGN.md
+	// §7h).
+	ownerMark = "ACCEPTED"
 )
 
 // Decision is what a record of a review says about a change. There are two words,
@@ -80,6 +87,21 @@ func ParseAcceptance(body string) (commit, reason string, ok bool) {
 	return fields[2], strings.Join(fields[3:], " "), true
 }
 
+// ParseOwnerAccept reads a record in which the owner of the project takes the result of
+// a task as it stands: the head it is about, and whether there is such a record at all.
+// Who wrote it and whether it was edited are the facts of the comment it is in, not of
+// its text (docs/DESIGN.md §7h).
+//
+// Anything a person wrote under the record is left alone: the record is the first line,
+// as it is for the other two.
+func ParseOwnerAccept(body string) (commit string, ok bool) {
+	fields := strings.Fields(firstLineOf(body))
+	if len(fields) < 2 || fields[0] != ownerMark {
+		return "", false
+	}
+	return fields[1], true
+}
+
 // ApproveOf is the record that approves the commit: the first line the gate reads
 // is the whole of the decision, and the block under it is for whatever has to read
 // the record without a person.
@@ -100,6 +122,13 @@ func ChangesOf(commit string, number int, findings string) string {
 // anything.
 func AcceptOf(commit, reason string) string {
 	return fmt.Sprintf("%s: ACCEPTED %s %s\n", scopeMark, commit, strings.TrimSpace(reason))
+}
+
+// AcceptedOf is the first line of the record in which the owner of the project takes
+// the result of a task in, and nothing else: the commit is what the record is about and
+// the head is the whole of it, as it is of an approval.
+func AcceptedOf(commit string) string {
+	return ownerMark + " " + commit
 }
 
 // ApprovedOf is the first line of a record that approves the commit and nothing

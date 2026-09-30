@@ -30,6 +30,9 @@ func TestLoadRejects(t *testing.T) {
 		{"merge_reviewer_empty.toml", []string{"merge.reviewers[0]", "naghuale"}},
 		{"merge_reviewer_duplicate.toml", []string{"merge.reviewers[1]", "naghuale"}},
 		{"merge_reviewer_mention.toml", []string{"merge.reviewers[0]", "@"}},
+		{"merge_owner_empty.toml", []string{"merge.owners[0]", "naghuale"}},
+		{"merge_owner_duplicate.toml", []string{"merge.owners[1]", "naghuale"}},
+		{"merge_owner_mention.toml", []string{"merge.owners[0]", "@"}},
 		{
 			"forge_kind_unknown.toml",
 			[]string{"forge.kind", "bogus", "github, gitlab, bitbucket, gitea, azure, none"},

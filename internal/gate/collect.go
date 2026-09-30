@@ -24,23 +24,43 @@ type Deps struct {
 	// this project.
 	Repository    string
 	DefaultBranch string
-	// Reviewers are the logins whose record of a review counts. Empty is the owner
-	// of the repository, which is the default of §5.
+	// Reviewers are the logins whose record of a review counts, and Owners those whose
+	// record of an acceptance of the result of a task counts. Empty is the owner of the
+	// repository in both, which is the default of §5.
 	Reviewers []string
+	Owners    []string
+	// AcceptanceLabel is the label a task is marked with to say that its result has to
+	// be accepted by the owner before the change of it may go in, and empty is a project
+	// that asks for no acceptance at all (docs/DESIGN.md §5, §7f, §7h).
+	AcceptanceLabel string
 	// Task is the task the change is of, zero when crewflow does not know it, and
-	// Boundaries are the paths that task was to change. A caller that reads the
-	// boundaries out of the tracker of the project hands BoundariesOf over instead:
-	// the gate asks for them once it knows which task the change is of, and a task
-	// crewflow does not know leaves every file of the change outside them.
-	Task         int
-	Boundaries   []string
-	BoundariesOf func(ctx context.Context, task int) ([]string, error)
+	// TaskOf where the boundaries and the labels of that task come from. A caller that
+	// reads them out of the tracker of the project hands Boundaries and Labels over
+	// instead: the gate asks for them once it knows which task the change is of, and a
+	// task crewflow does not know leaves every file of the change outside its
+	// boundaries.
+	Task       int
+	Boundaries []string
+	Labels     []string
+	TaskOf     func(ctx context.Context, task int) (TaskFacts, error)
 	// RequireChecks is [ci] required: what the rules of the branch of the host do
 	// not name is required as well, and nothing at all is when the project says
 	// its checks are nobody's business.
 	RequireChecks bool
 	// Git is the checkout the history of the change is asked of.
 	Git History
+}
+
+// TaskFacts is what the gate asks the tracker for about the task of a change: the paths
+// the task was to change and the words it is marked with. Both come out of one reading
+// of the task, because a task read twice is a task that may have been marked in between
+// (docs/DESIGN.md §7h).
+type TaskFacts struct {
+	// Boundaries are the paths the task was to change.
+	Boundaries []string
+	// Labels are the words the tracker marks the task with, the label of the owner's
+	// acceptance among them.
+	Labels []string
 }
 
 // Collect gathers the facts of a change from the host, from the CI of the head and
@@ -53,11 +73,14 @@ type Deps struct {
 // (docs/DESIGN.md §7h).
 func Collect(ctx context.Context, deps Deps, number int) Facts {
 	f := Facts{
-		WantRepository: deps.Repository,
-		WantBranch:     deps.DefaultBranch,
-		Reviewers:      deps.Reviewers,
-		Task:           deps.Task,
-		Boundaries:     deps.Boundaries,
+		WantRepository:  deps.Repository,
+		WantBranch:      deps.DefaultBranch,
+		Reviewers:       deps.Reviewers,
+		Owners:          deps.Owners,
+		AcceptanceLabel: deps.AcceptanceLabel,
+		Task:            deps.Task,
+		Boundaries:      deps.Boundaries,
+		Labels:          deps.Labels,
 	}
 	if deps.Forge == nil {
 		return f.unavailable("forge.kind: this project has no host of its code, so there is no change request to review")
@@ -91,7 +114,7 @@ func Collect(ctx context.Context, deps Deps, number int) Facts {
 		return f
 	}
 
-	f.boundariesOf(ctx, deps)
+	f.taskOf(ctx, deps)
 	f.files(ctx, deps, number)
 	// The checks of a change that conflicts with its branch are asked about only
 	// when it does not: GitHub does not run them, and the gate names the conflict
@@ -104,9 +127,10 @@ func Collect(ctx context.Context, deps Deps, number int) Facts {
 }
 
 // reviews are the records under the change: the ones that approve or ask for
-// changes, and the ones in which a person takes a file outside the boundaries of
-// the task into their own hands. Both are read as they are written and both are
-// counted only of the reviewers of the project (docs/DESIGN.md §7h).
+// changes, the ones in which a person takes a file outside the boundaries of the
+// task into their own hands, and the ones in which the owner takes the result of
+// the task as it stands in. All three are read as they are written and each is
+// counted only of the accounts of the project that may write it (docs/DESIGN.md §7h).
 func (f *Facts) reviews(ctx context.Context, deps Deps, number int) {
 	comments, err := deps.Forge.Comments(ctx, number)
 	if err != nil {
@@ -134,31 +158,40 @@ func (f *Facts) reviews(ctx context.Context, deps Deps, number int) {
 				Commit:    commit,
 				Reason:    reason,
 			})
+			continue
+		}
+		if commit, is := ParseOwnerAccept(comment.Body); is {
+			f.OwnerAccepts = append(f.OwnerAccepts, OwnerAccept{
+				Author:    comment.Author,
+				CreatedAt: comment.CreatedAt,
+				Edited:    comment.Edited,
+				Commit:    commit,
+			})
 		}
 	}
 }
 
-// boundariesOf are the paths the task of the change was to change, out of the tracker
-// of the project. A change whose task crewflow does not know has no boundaries, and
-// then every file of it is outside them: a gate that let a change through because
-// nobody could say what it was to touch would be a gate with a hole in it
-// (docs/DESIGN.md §7c, §7h).
-func (f *Facts) boundariesOf(ctx context.Context, deps Deps) {
-	if len(f.Boundaries) > 0 || deps.BoundariesOf == nil {
+// taskOf are the paths the task of the change was to change and the words it is marked
+// with, out of the tracker of the project. A change whose task crewflow does not know
+// has no boundaries, and then every file of it is outside them: a gate that let a
+// change through because nobody could say what it was to touch would be a gate with a
+// hole in it (docs/DESIGN.md §7c, §7h).
+func (f *Facts) taskOf(ctx context.Context, deps Deps) {
+	if len(f.Boundaries) > 0 || deps.TaskOf == nil {
 		return
 	}
 	// The record of a review may name the task of the change where the run that
 	// opened it is not known here, and the record is read before this: a change of a
-	// project crewflow ran on another machine still has its boundaries.
+	// project crewflow ran on another machine still has its boundaries and its labels.
 	if f.Task <= 0 {
 		return
 	}
-	boundaries, err := deps.BoundariesOf(ctx, f.Task)
+	found, err := deps.TaskOf(ctx, f.Task)
 	if err != nil {
-		*f = f.unavailable(fmt.Sprintf("read the boundaries of task %d: %v", f.Task, err))
+		*f = f.unavailable(fmt.Sprintf("read the task %d of the change: %v", f.Task, err))
 		return
 	}
-	f.Boundaries = boundaries
+	f.Boundaries, f.Labels = found.Boundaries, found.Labels
 }
 
 // files is what the change touches, as the host knows it. It is the work and not

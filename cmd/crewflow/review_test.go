@@ -280,6 +280,119 @@ const reviewTask = "## Why\n\nThe rules of a review are kept by hand.\n\n" +
 	"### Acceptance criteria\n\n- [ ] the gate names the reason\n\n" +
 	"### Boundaries\n\n```\ninternal/gate/**\nREADME.md\n```\n\n</details>\n"
 
+// TestRunReviewOfATaskTheOwnerHasToAccept is the step before the merge of a task marked
+// `owner-check`: the report says that the result of the task waits for its owner, the
+// gate refuses the change until he has taken it in for exactly this head, and the head
+// he accepted is the one in the record (docs/DESIGN.md §7f, §7h).
+func TestRunReviewOfATaskTheOwnerHasToAccept(t *testing.T) {
+	host := newReviewHost(t)
+	host.task.Labels = []string{"owner-check"}
+	host.comment(gate.ApproveOf(reviewHead, 7))
+	project := writeConfig(t, reviewConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"review", "7", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow review = %d, want %d: the result waits for its owner", code, exitFailure)
+	}
+	for _, want := range []string{
+		"owner acceptance: the task is marked `owner-check`, and there is no record of it under the change",
+		"verdict: may not be merged, owner-acceptance-missing",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow review wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+
+	host.comment(gate.AcceptedOf(reviewHead))
+	stdout.Reset()
+
+	if code := run([]string{"review", "7", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow review = %d, want %d (stdout: %q)", code, exitOK, stdout.String())
+	}
+	for _, want := range []string{
+		"owner acceptance: ACCEPTED " + reviewHead[:8] + " by naghuale",
+		"verdict: ready to merge",
+	} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow review wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+}
+
+// TestRunReviewApproveOfATaskTheOwnerHasToAccept: the acceptance is the owner's own act
+// and the orchestrator cannot write it, so a verdict that refused the approval for a
+// missing acceptance would leave a task marked `owner-check` with no way to start at all
+// (docs/DESIGN.md §7h).
+//
+// The record is written and the command still leaves a code that is not zero: what it
+// answers afterwards is whether the change may be merged now, and it may not until the
+// owner has accepted the head. What was written is said on stderr all the same, so that
+// an orchestrator knows where the task stands.
+func TestRunReviewApproveOfATaskTheOwnerHasToAccept(t *testing.T) {
+	host := newReviewHost(t)
+	host.task.Labels = []string{"owner-check"}
+	project := writeConfig(t, reviewConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"review", "7", "-config", project, "-approve"}, &stdout, &stderr)
+
+	if len(host.written) != 1 {
+		t.Fatalf("%d records were written under the change, want one (stderr: %q)", len(host.written), stderr.String())
+	}
+	if want := "REVIEW: APPROVED " + reviewHead; !strings.HasPrefix(host.written[0].body, want) {
+		t.Errorf("the record written is %q, want it to start with %q", host.written[0].body, want)
+	}
+	if code != exitFailure {
+		t.Errorf("crewflow review -approve = %d, want %d: the result waits for its owner", code, exitFailure)
+	}
+	if want := "verdict: may not be merged, owner-acceptance-missing"; !strings.Contains(stdout.String(), want) {
+		t.Errorf("crewflow review wrote:\n%s\nwant it to name %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), "approved "+reviewHead) {
+		t.Errorf("crewflow review said %q, want it to name the commit it approved", stderr.String())
+	}
+}
+
+// TestRunReviewAsJSONOfATaskTheOwnerHasToAccept is the shape the orchestrator reads:
+// whether the result waits for its owner and which record of an acceptance stands, in
+// fields and not in a report to be read (docs/DESIGN.md §7h).
+func TestRunReviewAsJSONOfATaskTheOwnerHasToAccept(t *testing.T) {
+	host := newReviewHost(t)
+	host.task.Labels = []string{"owner-check"}
+	host.comment(gate.ApproveOf(reviewHead, 7))
+	host.comment(gate.AcceptedOf("1111111111111111111111111111111111111111"))
+	project := writeConfig(t, reviewConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"review", "7", "-config", project, "-json"}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow review = %d, want %d", code, exitFailure)
+	}
+	var summary struct {
+		AcceptanceRequired bool   `json:"acceptance_required"`
+		AcceptanceLabel    string `json:"acceptance_label"`
+		OwnerAccept        *struct {
+			Commit  string `json:"commit"`
+			Author  string `json:"author"`
+			Counted bool   `json:"counted"`
+		} `json:"owner_accept"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("the answer of crewflow review is not the JSON of a summary: %v\n%s", err, stdout.String())
+	}
+	if !summary.AcceptanceRequired || summary.AcceptanceLabel != "owner-check" {
+		t.Errorf("the summary holds %q as the label of the acceptance, want it to wait for its owner",
+			summary.AcceptanceLabel)
+	}
+	if summary.OwnerAccept == nil || summary.OwnerAccept.Counted || summary.OwnerAccept.Author != "naghuale" {
+		t.Errorf("the summary holds the acceptance %+v, want the record of an earlier head shown and not counted",
+			summary.OwnerAccept)
+	}
+}
+
 // TestRunReviewOfAChangeWithNoTask is a change that no run of this machine opened: its
 // task is unknown, its boundaries are nobody's to say, and the gate refuses it as
 // `out-of-scope` rather than let it through on the strength of a task it cannot find
