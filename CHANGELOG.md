@@ -165,5 +165,11 @@
 - Отказ на секрете никогда не причина продолжить прогон: он заканчивается `blocked-secret`, и
   crewflow не возобновляет такой прогон сам.
   ([#30](https://github.com/naghuale/crewflow/pull/30), задача [#26](https://github.com/naghuale/crewflow/issues/26))
+- Проект crewflow работает в режиме `separate`: запись ревью и пуш одобренного коммита пишет
+  App `crewflow-orchestrator` (5140522) под своим именем, а `[merge] owners = ["naghuale"]` —
+  решения владельца (приёмка `ACCEPTED`, `SCOPE: ACCEPTED`, обход правила) gate считает только
+  от владельца, и от оркестратора не считает ничего. `crewflow doctor` у этого проекта печатает
+  `owner == orchestrator: NO` и пустой `trust_debt`.
+  ([#98](https://github.com/naghuale/crewflow/pull/98), задача [#95](https://github.com/naghuale/crewflow/issues/95))
 
 [Не выпущено]: https://github.com/naghuale/crewflow/commits/main
