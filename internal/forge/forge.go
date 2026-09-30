@@ -183,10 +183,54 @@ type CheckLister interface {
 	// source and a commit.
 	Checks(ctx context.Context, sha string) ([]CheckRun, error)
 	// RequiredChecks returns what the rules of the branch of the project demand of
-	// a change, and the app each of them is to come from. An answer with nothing in
-	// it means the host names no check, and what the project says about its CI is
+	// a change, and the app each of them is to be taken from. An answer with nothing
+	// in it means the host names no check, and what the project says about its CI is
 	// then what stands (docs/DESIGN.md §7h).
 	RequiredChecks(ctx context.Context) ([]RequiredCheck, error)
+}
+
+// RuleState is what a host says about the rules of the branch of a project: it named
+// the checks they demand, or the plan of the repository has no rules to demand
+// anything with. Both are answers, and neither of them is a host that could not be
+// read (docs/DESIGN.md §7h, §7k).
+type RuleState string
+
+const (
+	// RulesNamed says that the host answered about the rules of the branch, whether
+	// or not it named a check in them.
+	RulesNamed RuleState = "named"
+	// RulesUnavailableOnPlan says that the plan of the repository has no rules of a
+	// branch at all: GitHub has rulesets only in public repositories on the free
+	// plan, and it says so with a refusal that names the plan. That refusal is a
+	// fact about the repository and not a silence of the host, and a gate that read
+	// it as a silence would refuse every change of such a project for ever
+	// (docs/DESIGN.md §7h, §7k).
+	RulesUnavailableOnPlan RuleState = "unavailable-on-plan"
+)
+
+// BranchRules are the rules of the branch of a project as the host holds them: what
+// they demand of a change, and whether the host has any rules to demand it with.
+type BranchRules struct {
+	// Required is what the rules of the branch demand of a change. It is empty where
+	// the host names no check, and it is empty for a repository whose plan has no
+	// rules as well — which is a fact of the plan and not of the rules.
+	Required []RequiredCheck
+	// State is what the host said about the rules themselves.
+	State RuleState
+}
+
+// RuleLister is the CI of a project that can say whether the rules of the branch of
+// the project are there at all. A CI that names checks and says nothing about that is
+// a [CheckLister], and its answer is read as rules that demanded what it named
+// (docs/DESIGN.md §7g, §7h).
+type RuleLister interface {
+	CI
+	// Rules returns what the rules of the branch demand of a change and what the host
+	// said about the rules themselves. A state of [RulesUnavailableOnPlan] is an
+	// answer and not a gap in what was asked: the host has said that the repository
+	// has no rules, and what the project says about its CI is then what stands
+	// (docs/DESIGN.md §7h).
+	Rules(ctx context.Context) (BranchRules, error)
 }
 
 // FileLister is the host that can say which files a change request touches. The

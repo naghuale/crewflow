@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -125,22 +126,30 @@ func (a *Adapter) statuses(ctx context.Context, sha string) ([]statusJSON, error
 	return answer.Statuses, nil
 }
 
-// RequiredChecks returns what the rules of the branch of the project demand of a
-// change, and the app every one of them is to come from.
+// Rules returns what the rules of the branch of the project demand of a change, the
+// app every one of them is to come from, and what the host said about the rules
+// themselves.
 //
-// The rules of a branch of GitHub are of two kinds and both of them are asked
-// about, because a project may have either or both: the protection of the branch
-// itself, and the rulesets of the repository, of its organization or of its
-// enterprise. An answer with nothing in it means the host names no check, and what
-// the file of the project says about its CI is then what stands (§7h).
-func (a *Adapter) RequiredChecks(ctx context.Context) ([]forge.RequiredCheck, error) {
+// The rules of a branch of GitHub are of two kinds and both of them are asked about,
+// because a project may have either or both: the protection of the branch itself, and
+// the rulesets of the repository, of its organization or of its enterprise. Both may
+// be there at once, and neither may be there at all: a private repository on the free
+// plan has no rulesets, GitHub says which plan it is about, and that is an answer
+// about the repository rather than a silence of the host (docs/DESIGN.md §7h, §7k).
+func (a *Adapter) Rules(ctx context.Context) (forge.BranchRules, error) {
 	protected, err := a.protection(ctx)
 	if err != nil {
-		return nil, err
+		return forge.BranchRules{}, err
 	}
-	fromRulesets, err := a.rulesetChecks(ctx)
+	fromRulesets, state, err := a.rulesetChecks(ctx)
 	if err != nil {
-		return nil, err
+		return forge.BranchRules{}, err
+	}
+	// The plan of the repository has no rules of a branch to demand anything with,
+	// and what it names no more than the rulesets do: an answer with nothing in it
+	// is an answer, and what the project says about its CI is what stands (§7h, §7k).
+	if state == forge.RulesUnavailableOnPlan {
+		return forge.BranchRules{State: state}, nil
 	}
 	var required []forge.RequiredCheck
 	for _, contexts := range [][]string{protected, fromRulesets} {
@@ -150,7 +159,19 @@ func (a *Adapter) RequiredChecks(ctx context.Context) ([]forge.RequiredCheck, er
 			}
 		}
 	}
-	return required, nil
+	return forge.BranchRules{Required: required, State: forge.RulesNamed}, nil
+}
+
+// RequiredChecks returns what the rules of the branch of the project demand of a
+// change, and the app every one of them is to come from — the answer of a CI of §7g
+// that says nothing about the plan of the repository. GitHub says both at once, so
+// this is [Adapter.Rules] with the state of the rules taken away (docs/DESIGN.md §7h).
+func (a *Adapter) RequiredChecks(ctx context.Context) ([]forge.RequiredCheck, error) {
+	rules, err := a.Rules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return rules.Required, nil
 }
 
 // protection are the checks the protection of the default branch of the project
@@ -267,20 +288,37 @@ func answerIn(out []byte) (int, []byte, bool) {
 }
 
 // rulesetChecks are the checks the rulesets of the repository, of its organization
-// and of its enterprise demand of its default branch. A ruleset is asked for one by
-// one, because the list of them holds no rules: a ruleset is a document of its own
-// and the checks are in it.
-func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, error) {
-	out, err := a.json(ctx, "api", "repos/"+a.repo+"/rulesets?includes_parents=true")
-	if err != nil {
-		return nil, err
+// and of its enterprise demand of its default branch, and what the host said about the
+// rulesets themselves. A ruleset is asked for one by one, because the list of them
+// holds no rules: a ruleset is a document of its own and the checks are in it.
+//
+// The list is asked for with the status of the answer in it, because it has three
+// answers and which of them came is the whole of what a ruleset question asks: a list
+// of rulesets, a refusal that names the plan of the repository, and a host that could
+// not answer (docs/DESIGN.md §7h, §7k).
+func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, forge.RuleState, error) {
+	path := "repos/" + a.repo + "/rulesets?includes_parents=true"
+	answer, err := a.api(ctx, path)
+	switch {
+	case err != nil:
+		return nil, "", err
+	case answer.Status == http.StatusForbidden && mentionsThePlan.Match(answer.Body):
+		// The plan of the repository has no rulesets to ask about: GitHub has them
+		// in public repositories and in the paid ones, and it names the plan rather
+		// than sending an empty list. It answered — there are none — and a gate that
+		// read this as a silence would refuse every change of such a repository for
+		// ever (docs/DESIGN.md §7h, §7k).
+		return nil, forge.RulesUnavailableOnPlan, nil
+	case answer.Status != http.StatusOK:
+		return nil, "", fmt.Errorf("the rulesets of %s cannot be read: the API answered %d: %s",
+			a.repo, answer.Status, said(answer.Body))
 	}
 	var rulesets []struct {
 		ID     int64  `json:"id"`
 		Target string `json:"target"`
 	}
-	if err := decode(out, &rulesets); err != nil {
-		return nil, err
+	if err := decode(answer.Body, &rulesets); err != nil {
+		return nil, "", err
 	}
 	var required []string
 	for _, ruleset := range rulesets {
@@ -289,7 +327,7 @@ func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, error) {
 		}
 		out, err := a.json(ctx, "api", fmt.Sprintf("repos/%s/rulesets/%d", a.repo, ruleset.ID))
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		var full struct {
 			Conditions struct {
@@ -307,7 +345,7 @@ func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, error) {
 			} `json:"rules"`
 		}
 		if err := decode(out, &full); err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if !covers(full.Conditions.RefName.Include, a.base()) {
 			continue
@@ -323,7 +361,32 @@ func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, error) {
 			}
 		}
 	}
-	return required, nil
+	return required, forge.RulesNamed, nil
+}
+
+// mentionsThePlan is whether the body of a refusal of GitHub is about the plan of the
+// repository: it names the plan to upgrade to or asks for the repository to be made
+// public, and that is what a refusal of a feature the plan does not have looks like.
+//
+// It is never read on its own: a refusal with nothing of a plan in it is somebody who
+// may not read the rules of the repository, and reading that as "there are no rules"
+// would take a refusal of access for a fact about the repository and let a change
+// through on it (docs/DESIGN.md §7h).
+var mentionsThePlan = regexp.MustCompile(`(?i)upgrade to github|github (pro|team|enterprise)|` +
+	`make this repository public|current plan|only available for public repositories`)
+
+// said is what the host said in the body of a refusal: the message of the answer of
+// GitHub, which is JSON, and the first line of it whatever else it is. A report is
+// read by people, and a person who is told "the API answered 500" learns less than one
+// who is told what the host said (docs/DESIGN.md §7h).
+func said(body []byte) string {
+	var refusal struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &refusal); err == nil && refusal.Message != "" {
+		return refusal.Message
+	}
+	return firstLine(body)
 }
 
 // defaultBranchPattern is how a ruleset names the default branch of a repository

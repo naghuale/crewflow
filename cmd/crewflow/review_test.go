@@ -329,6 +329,64 @@ func TestRunReviewOfAChangeThatConflicts(t *testing.T) {
 	}
 }
 
+// TestRunReviewOfARepositoryWithoutRulesOnItsPlan is `crewflow review 69` in
+// naghuale/tele on 30.09.2026 (F-043): the repository is private and on the free plan,
+// so GitHub has no rules for its branch and says which plan it is about. That answer
+// used to be read as a silence and to refuse every change of such a repository with
+// `forge-unavailable` — a gate no merge may pass through. The report says where the
+// checks of the change come from instead (docs/DESIGN.md §7h, §7k).
+func TestRunReviewOfARepositoryWithoutRulesOnItsPlan(t *testing.T) {
+	host := newReviewHost(t)
+	host.comment(gate.ApproveOf(reviewHead, 7))
+	host.required, host.rules = nil, forge.RulesUnavailableOnPlan
+	project := writeConfig(t, reviewConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"review", "7", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow review = %d, want %d (stdout: %q, stderr: %q)", code, exitOK, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "forge-unavailable") {
+		t.Errorf("crewflow review wrote:\n%s\nwant it not to refuse a repository that has no rules on its plan", stdout.String())
+	}
+	for _, want := range []string{"rules of the branch", "plan of this repository", "crewflow.toml"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow review wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+}
+
+// TestRunReviewOfARepositoryWithoutRulesOnItsPlanAsJSON is the same answer in the
+// shape an orchestrator reads: the state of the rules of the branch is a word it may
+// compare, and not a line to be read (docs/DESIGN.md §7h, §7k).
+func TestRunReviewOfARepositoryWithoutRulesOnItsPlanAsJSON(t *testing.T) {
+	host := newReviewHost(t)
+	host.comment(gate.ApproveOf(reviewHead, 7))
+	host.required, host.rules = nil, forge.RulesUnavailableOnPlan
+	project := writeConfig(t, reviewConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"review", "7", "-config", project, "-json"}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow review -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	var summary struct {
+		Rules   forge.RuleState `json:"rules"`
+		Verdict gate.Verdict    `json:"verdict"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &summary); err != nil {
+		t.Fatalf("the answer of crewflow review is not the JSON of a summary: %v\n%s", err, stdout.String())
+	}
+	if summary.Rules != forge.RulesUnavailableOnPlan {
+		t.Errorf("the summary says the rules are %q, want %q", summary.Rules, forge.RulesUnavailableOnPlan)
+	}
+	if !summary.Verdict.Ready {
+		t.Errorf("the verdict is %+v, want a green head of a repository without rules to be enough", summary.Verdict)
+	}
+}
+
 // TestRunReviewApproveAsAnAccountThatDoesNotCount is the record crewflow must not
 // write: the gate counts only the records of the reviewers of the project, and one
 // written in the name of anybody else is a comment that says "approved" and approves
@@ -431,7 +489,10 @@ type reviewHost struct {
 	files    []string
 	checks   []forge.CheckRun
 	required []forge.RequiredCheck
-	written  []record
+	// rules is what the host says about the rules of the branch themselves, and
+	// the state of them is what a repository on the free plan is judged by (§7h, §7k).
+	rules   forge.RuleState
+	written []record
 	// signedIn is the account a record of a review is written in, and the owner of
 	// the repository unless a case says otherwise.
 	signedIn string
@@ -458,6 +519,7 @@ func newReviewHost(t *testing.T) *reviewHost {
 		required: []forge.RequiredCheck{
 			{Name: "test", App: "github-actions"},
 		},
+		rules: forge.RulesNamed,
 	}
 	h.use(t)
 	keepStateOfTask(t)
@@ -580,6 +642,13 @@ func (h *reviewHost) RequiredChecks(context.Context) ([]forge.RequiredCheck, err
 	return h.required, nil
 }
 
+// Rules is what the rules of the branch demand and what the host said about the rules
+// themselves: a repository on the free plan has none to demand anything with, and that
+// is a fact about the repository rather than a silence of the host (§7h, §7k).
+func (h *reviewHost) Rules(context.Context) (forge.BranchRules, error) {
+	return forge.BranchRules{Required: h.required, State: h.rules}, nil
+}
+
 func (h *reviewHost) Status(context.Context, string) (forge.CheckState, error) {
 	return forge.CheckSuccess, nil
 }
@@ -606,6 +675,7 @@ var (
 	_ forge.Forge         = (*reviewHost)(nil)
 	_ forge.CI            = (*reviewHost)(nil)
 	_ forge.CheckLister   = (*reviewHost)(nil)
+	_ forge.RuleLister    = (*reviewHost)(nil)
 	_ forge.FileLister    = (*reviewHost)(nil)
 	_ forge.HeadRef       = (*reviewHost)(nil)
 	_ forge.CommentWriter = (*reviewHost)(nil)

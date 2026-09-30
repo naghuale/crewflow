@@ -20,6 +20,9 @@ type host struct {
 	comment []forge.Comment
 	checks  []forge.CheckRun
 	needed  []forge.RequiredCheck
+	// plan is what the host says about the rules of the branch themselves: the rules
+	// are there, or the plan of the repository has none to demand anything with.
+	plan forge.RuleState
 
 	// noChange, noFiles, noComments, noChecks and noRules are the ways a host of the
 	// test does not answer, one per question a review asks of it.
@@ -84,6 +87,17 @@ func (h *host) RequiredChecks(context.Context) ([]forge.RequiredCheck, error) {
 	return h.needed, nil
 }
 
+// Rules returns what the rules of the branch demand and what the host said about the
+// rules themselves: a repository of a free plan has no rules to demand anything with,
+// and that is an answer about the repository and not a silence of the host
+// (docs/DESIGN.md §7h, §7k).
+func (h *host) Rules(context.Context) (forge.BranchRules, error) {
+	if h.noRules != nil {
+		return forge.BranchRules{}, h.noRules
+	}
+	return forge.BranchRules{Required: h.needed, State: h.plan}, nil
+}
+
 // Status and Doctor are of no use to a review and are here for the role of §7g this
 // host plays as well.
 func (*host) Status(context.Context, string) (forge.CheckState, error) {
@@ -119,6 +133,7 @@ func theHost() *host {
 		comment: []forge.Comment{{Author: owner, Body: ApproveOf(second, 7), CreatedAt: time.Now().Add(-time.Hour)}},
 		checks:  []forge.CheckRun{{Name: "test", State: forge.CheckSuccess, App: actionsApp, SHA: second}},
 		needed:  []forge.RequiredCheck{{Name: "test", App: actionsApp}},
+		plan:    forge.RulesNamed,
 	}
 }
 
@@ -360,6 +375,66 @@ func TestCollectRequiresWhatTheHostNames(t *testing.T) {
 
 		if verdict := Evaluate(facts); !verdict.Ready {
 			t.Errorf("Evaluate = %+v, want a project that does not ask for CI to be judged on everything else", verdict)
+		}
+	})
+}
+
+// TestCollectOfARepositoryWithoutRulesOnItsPlan is F-043 of 30.09.2026: a private
+// repository on the free plan has no rules for its branch, the host says so, and a
+// gate that read the answer as a silence refused every change of it with
+// `forge-unavailable` — a refusal nobody can merge a task through. The rules are
+// absent there, and what stands is what the project says about its CI (docs/DESIGN.md
+// §7h, §7k).
+func TestCollectOfARepositoryWithoutRulesOnItsPlan(t *testing.T) {
+	t.Run("the checks of the head are what the project asks for", func(t *testing.T) {
+		repo := newRepository(t)
+		host := theHead(t, repo)
+		host.needed, host.plan = nil, forge.RulesUnavailableOnPlan
+
+		facts := Collect(t.Context(), deps(t, repo, host), 7)
+
+		if facts.Unavailable != "" {
+			t.Fatalf("Collect could not gather the facts: %s", facts.Unavailable)
+		}
+		if facts.Rules != forge.RulesUnavailableOnPlan {
+			t.Errorf("the state of the rules is %q, want %q", facts.Rules, forge.RulesUnavailableOnPlan)
+		}
+		if len(facts.Required) != 1 || facts.Required[0].Name != "test" {
+			t.Errorf("the required checks are %v, want the check the head has", facts.Required)
+		}
+		if verdict := Evaluate(facts); !verdict.Ready {
+			t.Errorf("Evaluate = %+v, want a green head of a repository without rules to be enough", verdict)
+		}
+	})
+	t.Run("a project that asks for no CI asks for no checks", func(t *testing.T) {
+		repo := newRepository(t)
+		host := theHead(t, repo)
+		host.needed, host.plan = nil, forge.RulesUnavailableOnPlan
+		given := deps(t, repo, host)
+		given.RequireChecks = false
+
+		facts := Collect(t.Context(), given, 7)
+
+		if len(facts.Required) != 0 {
+			t.Errorf("the required checks are %v, want none: the project asks for the CI of nobody", facts.Required)
+		}
+		if verdict := Evaluate(facts); !verdict.Ready {
+			t.Errorf("Evaluate = %+v, want a project that does not ask for CI to be judged on everything else", verdict)
+		}
+	})
+	t.Run("a head with no checks is still a refusal, and it names the plan", func(t *testing.T) {
+		repo := newRepository(t)
+		host := theHead(t, repo)
+		host.needed, host.checks, host.plan = nil, nil, forge.RulesUnavailableOnPlan
+
+		facts := Collect(t.Context(), deps(t, repo, host), 7)
+
+		verdict := Evaluate(facts)
+		if verdict.Reason != ForgeUnavailable {
+			t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, ForgeUnavailable)
+		}
+		if !strings.Contains(verdict.Detail, "plan") {
+			t.Errorf("the detail %q does not say that the rules are not on the plan of the repository", verdict.Detail)
 		}
 	})
 }

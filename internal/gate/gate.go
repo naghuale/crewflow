@@ -175,6 +175,10 @@ type Facts struct {
 	// not there is not in Checks, which is what `required-check-missing` is about.
 	Required []forge.RequiredCheck
 	Checks   []forge.CheckRun
+	// Rules is what the host said about the rules of the branch themselves: they are
+	// there, or the plan of the repository has none to demand anything with, and then
+	// what the project says about its CI is what stands (docs/DESIGN.md §7h, §7k).
+	Rules forge.RuleState
 	// Files is what the change touches, against the branch it is meant for, and
 	// Boundaries is what the task of the change was to touch. A change whose task
 	// crewflow does not know has no boundaries, and no file is inside them.

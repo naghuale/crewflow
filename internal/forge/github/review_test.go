@@ -187,7 +187,7 @@ func TestRequiredChecksOfTheRulesOfTheBranch(t *testing.T) {
 	m := newMachine().
 		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
 		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection.raw")).
-		prints("api repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.json")).
+		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
 		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
 		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
 	a := New(repo, "", m.env(t))
@@ -206,6 +206,106 @@ func TestRequiredChecksOfTheRulesOfTheBranch(t *testing.T) {
 	}
 }
 
+// TestRulesOfTheBranchOfAPublicRepository: a repository whose plan has rules has them
+// named, and what it named is what stands — the answer of a repository with rules and
+// the answer of one without them are told apart by the state of the rules (docs/DESIGN.md §7h, §7k).
+func TestRulesOfTheBranchOfAPublicRepository(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
+		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection.raw")).
+		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
+		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
+		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Rules(t.Context())
+	if err != nil {
+		t.Fatalf("Rules returned an error: %v", err)
+	}
+
+	if got.State != forge.RulesNamed {
+		t.Errorf("Rules = %+v, want the rules of the branch to be said to be there", got)
+	}
+	if len(got.Required) != 2 {
+		t.Errorf("Rules = %+v, want the two checks of the rules of the branch", got)
+	}
+}
+
+// TestRulesOfARepositoryWithoutRulesOnItsPlan is the answer GitHub gives the rulesets
+// of a private repository on the free plan (F-043 of 30.09.2026): it has none, it says
+// which plan it is about, and that is a fact about the repository rather than a
+// silence of the host. Read as a silence it made a review refuse every change of such
+// a repository with `forge-unavailable`, and a gate nobody may merge through
+// (docs/DESIGN.md §7h, §7k).
+func TestRulesOfARepositoryWithoutRulesOnItsPlan(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
+		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets-on-plan.raw"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Rules(t.Context())
+
+	if err != nil {
+		t.Fatalf("Rules returned an error: %v", err)
+	}
+	if got.State != forge.RulesUnavailableOnPlan {
+		t.Errorf("Rules = %+v, want the rules of the branch to be said to be out of the plan of the repository", got)
+	}
+	if len(got.Required) != 0 {
+		t.Errorf("Rules = %+v, want no checks at all: there are no rules to demand any", got)
+	}
+	// The same answer without the plan in it is what the CI of §7g is asked for, and
+	// an error there is what a review of a repository of the free plan used to get.
+	required, err := a.RequiredChecks(t.Context())
+	if err != nil {
+		t.Errorf("RequiredChecks returned an error: %v", err)
+	}
+	if len(required) != 0 {
+		t.Errorf("RequiredChecks = %v, want no checks", required)
+	}
+}
+
+// TestRulesOfARepositoryNobodyMayRead walks the two answers that are not a fact about
+// the plan: a refusal with nothing of the plan in it and a host that did not answer at
+// all. Both are a host that could not be read, and a gate that read either of them as
+// "there are no rules" would take a refusal of access for an answer about the
+// repository (docs/DESIGN.md §7h).
+func TestRulesOfARepositoryNobodyMayRead(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer string
+		want   string
+	}{
+		{
+			name:   "the host refuses and says nothing of a plan",
+			answer: fixture(t, "rulesets-refused.raw"),
+			want:   "403",
+		},
+		{
+			name:   "the host did not answer",
+			answer: fixture(t, "rulesets-silent.raw"),
+			want:   "500",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine().
+				prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
+				prints("api --include repos/"+repo+"/rulesets?includes_parents=true", tc.answer)
+			a := New(repo, "", m.env(t))
+
+			got, err := a.Rules(t.Context())
+
+			if err == nil {
+				t.Fatalf("Rules = %+v, want an error: the host did not say what the rules of the branch are", got)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error %q does not say what the host answered", err)
+			}
+		})
+	}
+}
+
 // TestRequiredChecksOfARulesetOnly is a branch that is protected by rulesets rather
 // than by the protection of the branch: the protection of it is not there (404) and
 // the ruleset of the default branch is what names the checks.
@@ -213,7 +313,7 @@ func TestRequiredChecksOfARulesetOnly(t *testing.T) {
 	m := newMachine().
 		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
 		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection-none.raw")).
-		prints("api repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.json")).
+		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
 		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
 		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
 	a := New(repo, "", m.env(t))
@@ -234,7 +334,7 @@ func TestRequiredChecksOfARulesetOnly(t *testing.T) {
 func TestRequiredChecksOfARulesetAboutOtherBranches(t *testing.T) {
 	m := newMachine().
 		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
-		prints("api repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets-work.json")).
+		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets-work.raw")).
 		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
 	a := New(repo, "", m.env(t))
 

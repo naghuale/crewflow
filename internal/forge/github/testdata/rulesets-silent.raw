@@ -1,0 +1,8 @@
+HTTP/2.0 500 Internal Server Error
+Content-Type: application/json; charset=utf-8
+X-Content-Type-Options: nosniff
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: 90FE:6B2D:71C4A8E3:00000000
+Retry-After: 60
+
+{"message":"Server Error","documentation_url":"https://docs.github.com/rest/repos/rules#get-all-repository-rulesets","status":"500"}

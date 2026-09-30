@@ -226,6 +226,7 @@ var (
 	// one of them the gate of §7h has nothing to judge.
 	_ forge.FileLister    = (*Adapter)(nil)
 	_ forge.CheckLister   = (*Adapter)(nil)
+	_ forge.RuleLister    = (*Adapter)(nil)
 	_ forge.HeadRef       = (*Adapter)(nil)
 	_ forge.CommentWriter = (*Adapter)(nil)
 )

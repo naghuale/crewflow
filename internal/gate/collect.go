@@ -186,6 +186,10 @@ func (f *Facts) files(ctx context.Context, deps Deps, number int) {
 // either and the project says its CI is required, nothing is known to have run and
 // the gate is told so rather than let a commit through on the strength of a silence
 // (docs/DESIGN.md §7h).
+//
+// The rules of a branch of the host may also be absent altogether: a repository on the
+// free plan has none, and that is what the host says, so the checks of the head stand
+// for them just as they do where the rules name none (§7h, §7k).
 func (f *Facts) collectChecks(ctx context.Context, deps Deps) {
 	if !deps.RequireChecks {
 		return
@@ -196,7 +200,7 @@ func (f *Facts) collectChecks(ctx context.Context, deps Deps) {
 		// a commit: nothing, and that is an answer and not a gap.
 		return
 	}
-	required, err := host.RequiredChecks(ctx)
+	rules, err := rulesOf(ctx, host)
 	if err != nil {
 		*f = f.unavailable(fmt.Sprintf("read the rules of the branch %s: %v", f.WantBranch, err))
 		return
@@ -207,19 +211,50 @@ func (f *Facts) collectChecks(ctx context.Context, deps Deps) {
 		return
 	}
 	f.Checks = checks
-	f.Required = required
-	if len(required) > 0 {
+	f.Required = rules.Required
+	f.Rules = rules.State
+	if len(rules.Required) > 0 {
 		return
 	}
 	if len(checks) == 0 {
-		*f = f.unavailable(fmt.Sprintf("the rules of the branch %s name no check, and the commit %s has none either, "+
-			"while the project asks for the CI of every commit: nothing is known to have run for this change",
-			f.WantBranch, f.Head))
+		*f = f.unavailable(nothingRan(rules.State, f.WantBranch, f.Head))
 		return
 	}
 	for _, check := range checks {
 		f.Required = append(f.Required, forge.RequiredCheck{Name: check.Name, App: check.App})
 	}
+}
+
+// rulesOf are the rules of the branch of the project as the CI of it holds them.
+//
+// The CI that can say whether the host has any rules at all is asked for both at once,
+// and a CI that names checks and says nothing about that is asked for the names alone:
+// its answer is rules that demanded what it named, and a repository without rules is
+// not a thing it can tell (docs/DESIGN.md §7g, §7h).
+func rulesOf(ctx context.Context, host forge.CheckLister) (forge.BranchRules, error) {
+	if lister, ok := host.(forge.RuleLister); ok {
+		return lister.Rules(ctx)
+	}
+	required, err := host.RequiredChecks(ctx)
+	if err != nil {
+		return forge.BranchRules{}, err
+	}
+	return forge.BranchRules{Required: required, State: forge.RulesNamed}, nil
+}
+
+// nothingRan is why nothing is known to have run for a change, told as whichever of
+// the two silences of the host it is: the rules of the branch are there and name no
+// check, or the plan of the repository has no rules to name any. Both are refusals, and
+// a person has to be told which of them they are looking at (docs/DESIGN.md §7h, §7k).
+func nothingRan(state forge.RuleState, branch, head string) string {
+	if state == forge.RulesUnavailableOnPlan {
+		return fmt.Sprintf("the plan of this repository has no rules of a branch to demand a check, "+
+			"and the commit %s has none either, while the project asks for the CI of every commit: "+
+			"nothing is known to have run for this change", head)
+	}
+	return fmt.Sprintf("the rules of the branch %s name no check, and the commit %s has none either, "+
+		"while the project asks for the CI of every commit: nothing is known to have run for this change",
+		branch, head)
 }
 
 // history is what git says about the commits of the change: the objects first, and

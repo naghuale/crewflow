@@ -43,6 +43,12 @@ type Summary struct {
 	// has them or not: a check that is not there is a line of a report too, and
 	// the one that stops the merge is in the verdict.
 	Checks []CheckLine `json:"checks,omitempty"`
+	// Rules is what the host said about the rules of the branch of the project:
+	// forge.RulesNamed when it named the checks they demand, and
+	// forge.RulesUnavailableOnPlan when the plan of the repository has none — then
+	// the checks of a change are the ones crewflow.toml asks for, and a person has
+	// to see that rather than read "no checks" (docs/DESIGN.md §7h, §7k).
+	Rules forge.RuleState `json:"rules,omitempty"`
 	// Files is how many files the change touches, and Outside the ones the task
 	// was not to touch, with whoever took them into their own hands.
 	Files      int      `json:"files"`
@@ -97,6 +103,7 @@ func Summarize(f Facts, v Verdict) Summary {
 		MergeState: f.MergeState,
 		Reviewers:  f.reviewers(),
 		Files:      len(f.Files),
+		Rules:      f.Rules,
 		Verdict:    v,
 	}
 	// The record that stands is the one the gate counts, and the last record of
@@ -248,6 +255,12 @@ func (s Summary) writeReview(out io.Writer) {
 // there is a line of a report like any other, and the one that stops the merge is in
 // the verdict.
 func (s Summary) writeChecks(out io.Writer) {
+	// The plan of the repository has no rules to demand checks with, and a report
+	// that said "the project asks for none" where it asks for the checks of the head
+	// would be saying something the host never said (docs/DESIGN.md §7h, §7k).
+	if s.Rules == forge.RulesUnavailableOnPlan {
+		fmt.Fprintf(out, "  rules of the branch: not on the plan of this repository, so the checks are the ones crewflow.toml asks for\n")
+	}
 	switch {
 	case s.Conflicted:
 		fmt.Fprintf(out, "  the change conflicts with %s: CI will not run for it, rebase the branch\n", s.Base)

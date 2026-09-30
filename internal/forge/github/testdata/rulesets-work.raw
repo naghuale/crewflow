@@ -1,0 +1,22 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+X-Content-Type-Options: nosniff
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: 8B3F:22D1:5C7E9A40:00000000
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4911
+X-Ratelimit-Reset: 1789587666
+X-Ratelimit-Used: 89
+
+[
+  {
+    "id": 24115315,
+    "name": "task branches: no force push, no deletion",
+    "target": "branch",
+    "source_type": "Repository",
+    "source": "naghuale/crewflow",
+    "enforcement": "active"
+  }
+]
