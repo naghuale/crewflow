@@ -16,6 +16,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -71,7 +72,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 	// person: the record of a review counts only because a reviewer of the project
 	// wrote it, and the rules of a branch are rights a person has and the App of an
 	// executor does not (§7h, §7i).
-	set, err := reviewRoles(cfg, roleEnv(*configPath))
+	set, err := reviewRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}

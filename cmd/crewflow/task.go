@@ -105,7 +105,13 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, roleEnv(*configPath))
+	// Everything crewflow says about the machine of this run — the line about the window
+	// of the keychain of macOS above all — is said to the terminal of the person and, as
+	// soon as the run has a journal of its own, to that journal too. The store of the
+	// secrets and the run are given the same notices, so that one line reaches both and
+	// not one of them (docs/DESIGN.md §7i).
+	notices := secret.NewNotices(stderr)
+	set, err := taskRoles(cfg, roleEnv(*configPath, notices))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -117,6 +123,7 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	env := taskRunEnv(home)
 	env.ConfigPath = *configPath
+	env.Notices = notices
 	result, err := taskrun.Run(ctx, env, cfg, set, taskrun.Request{
 		Number:   wanted,
 		RepoDir:  *repoDir,
@@ -162,7 +169,7 @@ func runTaskCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, roleEnv(*configPath))
+	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -437,14 +444,16 @@ func taskNumber(stderr io.Writer, subcommand, number string) (int, bool) {
 
 // roleEnv is the machine the roles of a project are built on: the programs of PATH, the
 // way they are started, the file a hint names — and, for a project whose executor works
-// as an account of the host, the store of the machine where the key of it is, the HTTP
-// to the host and the clock (docs/DESIGN.md §7i).
-func roleEnv(configPath string) forge.Env {
+// as an account of the host, the store of the machine where its key is, the HTTP to the
+// host and the clock. The store of the secrets is behind the wait of the keychain of
+// macOS and says what it is about to wait for to the notices of the command
+// (docs/DESIGN.md §7i).
+func roleEnv(configPath string, notices *secret.Notices) forge.Env {
 	return forge.Env{
 		LookPath:   exec.LookPath,
 		Run:        runRole,
 		ConfigPath: configPath,
-		Secrets:    secret.System(),
+		Secrets:    storeOfSecrets(notices),
 		HTTP:       httpOfMachine,
 		Now:        time.Now,
 	}
@@ -498,7 +507,10 @@ func printResult(w io.Writer, result taskrun.Result) {
 		fmt.Fprintf(w, "  refused: %s\n", refusal)
 	}
 	if result.Reason != "" {
-		fmt.Fprintf(w, "  the executor stopped: %s\n", result.Reason)
+		// The reason of a run is why the run stopped, whatever stopped it: the words of
+		// the executor that stopped itself, or the keychain of macOS that was asked to
+		// let this build of crewflow in and did not (docs/DESIGN.md §7i).
+		fmt.Fprintf(w, "  the run stopped: %s\n", result.Reason)
 	}
 	for _, outside := range result.Outside {
 		fmt.Fprintf(w, "  outside the boundaries of the task: %s\n", outside)

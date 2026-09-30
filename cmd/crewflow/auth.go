@@ -127,10 +127,15 @@ func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 		return authFailed(stderr, fmt.Errorf("%s: %w", path, err))
 	}
 	account := secret.AppKey(appID)
-	if err := secretsOfMachine().Set(secret.Service, account, key.PEM()); err != nil {
+	// The keychain of macOS asks the owner of the machine in a window of the system
+	// before it lets a program write a secret of it, and an import is a program of a
+	// terminal the owner is sitting at: the line about the window is said to the same
+	// place as the rest of the answer, and the wait has an end (docs/DESIGN.md §7i).
+	store := storeOfSecrets(secret.NewNotices(stderr))
+	if err := store.Set(secret.Service, account, key.PEM()); err != nil {
 		return authFailed(stderr, fmt.Errorf("put the key of the app %d away: %w", appID, err))
 	}
-	kept, err := secretsOfMachine().Get(secret.Service, account)
+	kept, err := store.Get(secret.Service, account)
 	if err != nil {
 		return authFailed(stderr, fmt.Errorf("read the key of the app %d back: %w", appID, err))
 	}
@@ -164,7 +169,7 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return authFailed(stderr, err)
 	}
-	source, err := appOf(cfg, *configPath)
+	source, err := appOf(cfg, *configPath, secret.NewNotices(stderr))
 	if err != nil {
 		return authFailed(stderr, err)
 	}
@@ -282,7 +287,7 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 		// it did before crewflow had a helper to ask.
 		return exitOK
 	}
-	source, err := appOf(cfg, *configPath)
+	source, err := appOf(cfg, *configPath, secret.NewNotices(stderr))
 	if err != nil {
 		return authFailed(stderr, err)
 	}
@@ -331,7 +336,11 @@ func readRequest(in io.Reader) (map[string]string, error) {
 // project, the store of the machine where its key is, the HTTP to the host and the
 // clock. Every field is a plain value, which is what makes a test of these commands a
 // test of a store and a server of its own (docs/DESIGN.md §7i).
-func appOf(cfg config.Config, configPath string) (*app.Source, error) {
+//
+// The store is behind the wait of the keychain of macOS and says what it is about to
+// wait for to the notices of the command: a check that stands in front of a window of
+// the system in silence for ever is a check that looks like a machine that hangs (§7i).
+func appOf(cfg config.Config, configPath string, notices *secret.Notices) (*app.Source, error) {
 	if cfg.Identity.Mode != "bot" {
 		return nil, fmt.Errorf("identity.mode: the executor of this project works as %q, "+
 			"so there is no app of its own: set [identity] mode = %q in %s", cfg.Identity.Mode, "bot", configPath)
@@ -344,7 +353,7 @@ func appOf(cfg config.Config, configPath string) (*app.Source, error) {
 		InstallationID: cfg.Identity.GitHubApp.InstallationID,
 		Repo:           cfg.Project.Repo,
 		BaseURL:        app.API(cfg.Forge.Host),
-		Store:          secretsOfMachine(),
+		Store:          storeOfSecrets(notices),
 		HTTP:           httpOfMachine,
 		Now:            clockOfMachine,
 	}, nil

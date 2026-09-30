@@ -385,6 +385,17 @@ func (s *storeOfTheTest) Set(service, account string, value []byte) error {
 // for that and not for a value.
 func (s *storeOfTheTest) Has(service, account string) (bool, error) { return s.key != nil, nil }
 
+// Allowed says that the store of a test lets this program in: it was made by the test
+// that reads it, and nothing in a store of a test stands in front of a window of the
+// system. A store that does not is a store of a machine whose keychain has not been told
+// about this build of the program, and a test of that is its own (docs/DESIGN.md §7i).
+func (s *storeOfTheTest) Allowed(service string) (bool, error) {
+	if s.key == nil {
+		return false, secret.ErrNotFound
+	}
+	return true, nil
+}
+
 // keyOfTheTest is a private key of a test, in the PEM a person downloads from GitHub:
 // no test of crewflow signs a token with the key of a real app.
 func keyOfTheTest(t *testing.T) []byte {

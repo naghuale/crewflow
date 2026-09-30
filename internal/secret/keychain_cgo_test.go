@@ -35,6 +35,10 @@ func TestTheKeychainOfThisMachineWhenTheOwnerAsks(t *testing.T) {
 	if !ok {
 		t.Fatal("the store of this machine cannot say whether a value is there, want the keychain of macOS")
 	}
+	trust, ok := store.(Trust)
+	if !ok {
+		t.Fatal("the store of this machine cannot say whether this program is allowed to read it, want the keychain of macOS")
+	}
 	// Whatever is under that name is taken away first and last: an item of a test that
 	// outlived it is rubbish in a store of a person.
 	if err := keys.delete(service, account); err != nil {
@@ -82,6 +86,24 @@ func TestTheKeychainOfThisMachineWhenTheOwnerAsks(t *testing.T) {
 	}
 	if string(kept) != string(second) {
 		t.Errorf("Get = %q, want the value of the second Set", kept)
+	}
+	// The question of the access of this program is the one question of the store of a
+	// machine that is asked without a window of the system, and a service with nothing
+	// in it has nothing to be allowed for: that is the answer every machine gives, and
+	// it is the one a report of a machine reads as "there is nothing to ask about".
+	if _, err := trust.Allowed(service + ".never-kept"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Allowed of a service that was never written to = %v, want %v", err, ErrNotFound)
+	}
+	// What this program may read of an item that is there is a question about the
+	// signature of this binary and about the keychain of this machine, and the two are
+	// not the same on every machine: a test binary of Go is not a signed program and a
+	// keychain of a person may be locked. The question is asked without a window
+	// either way, which is what matters here, and a machine that cannot answer it says
+	// so instead of opening one.
+	if allowed, err := trust.Allowed(service); err != nil {
+		t.Errorf("Allowed of the service of the test: %v, want an answer and not a window", err)
+	} else if allowed {
+		t.Log("this machine lets the test binary read the item of the test without a window")
 	}
 	// A value that is not printable is a value of a secret, and it comes back as it
 	// went in: the bytes of a key of an app are not lines of text, which is why the

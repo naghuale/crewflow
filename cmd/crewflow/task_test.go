@@ -1248,6 +1248,10 @@ type host struct {
 	// refusal is what the executor says on the way out, which is how a run that was
 	// refused a permission looks from the outside.
 	refusal string
+	// noIdentity is the refusal of a host that cannot hand out a token of an account of
+	// its own: no key imported, no store to read it from, or a keychain of macOS whose
+	// window of the system nobody answered (docs/DESIGN.md §7i).
+	noIdentity error
 	// home is the root of what crewflow keeps on this machine, worktrees the root
 	// the worktrees of its tasks are made under, and git the folder of the repository
 	// of the project as git names it: the local ignore of the scratch of a run is
@@ -1415,3 +1419,20 @@ func (h *host) Comments(context.Context, int) ([]forge.Comment, error) { return 
 
 // Doctor says nothing: a test of the command has a host of its own already.
 func (h *host) Doctor(context.Context) []forge.Check { return nil }
+
+// ExecutorIdentity is whose name the executor of a run of this host works under, and it
+// is the host that answers it because a host is what knows what accounts of its own an
+// executor can work as (docs/DESIGN.md §7i).
+//
+// A host that cannot answer at all is the machine of a project whose key of an App is
+// nowhere, and a host with nothing to refuse works as the person who runs crewflow: that
+// is what every run of a project that is not in the mode of the bot has been.
+func (h *host) ExecutorIdentity(context.Context) (forge.Identity, error) {
+	if h.noIdentity != nil {
+		return forge.Identity{}, h.noIdentity
+	}
+	return forge.Identity{
+		Mode:        forge.ModeOwner,
+		Description: "owner — the person who runs crewflow (shared rights)",
+	}, nil
+}

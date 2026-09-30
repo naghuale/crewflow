@@ -344,6 +344,14 @@ func (f *AttemptFiles) Close() error {
 	return errors.Join(f.Out.Close(), f.ErrOut.Close())
 }
 
+// takeAway is what a run does with the files of an attempt that was never made: the
+// journal of a run that did not start is a file nobody will ever read, and an empty one
+// among the journals of a task is a question a person has to answer on their own
+// (docs/DESIGN.md §7i).
+func (f *AttemptFiles) takeAway() error {
+	return errors.Join(f.Close(), os.Remove(f.Journal), os.Remove(f.ErrorJournal))
+}
+
 // openForWriting makes the file of a journal and empties it: the file of an attempt
 // is written by one run, and what a run of an earlier attempt wrote is in the file of
 // that attempt.

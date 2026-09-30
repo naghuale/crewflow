@@ -52,7 +52,12 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	}
 	defer removeFolder()
 
-	report := doctor.Run(context.Background(), systemEnv(*configPath, folder, *probe))
+	// The report is the answer of the command and is printed to stdout — it is the whole
+	// of what `-json` gives an orchestrator — and everything crewflow says while the
+	// report is being made goes to stderr: the step it is in, and the window of the
+	// keychain of macOS it is waiting for the owner of the machine to answer
+	// (docs/DESIGN.md §7d, §7i).
+	report := doctor.Run(context.Background(), systemEnv(*configPath, folder, *probe, stderr))
 	if *asJSON {
 		encoder := json.NewEncoder(stdout)
 		// The report is read by a person too, when something in it surprises

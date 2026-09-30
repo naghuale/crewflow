@@ -67,6 +67,38 @@ Requires Go 1.27 or later and the [GitHub CLI](https://cli.github.com/) (`gh`), 
 go install github.com/naghuale/crewflow/cmd/crewflow@latest
 ```
 
+A run in the mode of the `bot` reads the key of the App from the macOS keychain, and the keychain
+only gives it to a program whose signature the owner of the machine has allowed. `go install` gives
+you a build signed for that build alone, so the keychain asks again after every update. Sign the
+program with a certificate of your own and the answer survives:
+
+```sh
+make install SIGN_IDENTITY="crewflow (local)"    # the same go install, plus codesign
+```
+
+The name is the one your machine prints:
+
+```sh
+security find-identity -v -p codesigning
+```
+
+A certificate of your own is made in Keychain Access: **Certificate Assistant → Create a
+Certificate**, *Create a new certificate*, type **Code Signing**, name it `crewflow (local)`, and
+let it be created in the login keychain. `security find-identity -v -p codesigning` then lists it
+under *Self Signed Certificates*, and that is the name to pass in `SIGN_IDENTITY`.
+
+Without `SIGN_IDENTITY` the program is built and installed as it is, and `crewflow doctor` says
+what that costs:
+
+```
+! binary signature   this program is signed for this build alone, and the next build is a
+                    program macOS has not seen: CodeDirectory … flags=0x20002(adhoc,linker-signed)
+```
+
+When a window of the system does open, crewflow says what it is waiting for before it waits, and
+stops waiting after two minutes: `blocked` with the reason `keychain-approval`, in the journal of
+the attempt, in the report and in `-json`. Nothing is stored outside the keychain.
+
 ## Use
 
 Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml)), then:
@@ -86,8 +118,10 @@ crewflow task run 12 -continue "fix the failing test"   # the same session, afte
 ```
 
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-permission`,
-`timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `blocked-secret`
-is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
+`timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted`. `blocked` is
+the one a run that stopped by itself ends with, and it carries the reason — `keychain-approval`
+when nobody answered the window of the keychain, the words of the executor otherwise.
+`blocked-secret` is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
 report says which path it reached for and how. `task list` says which
 project the tasks are counted on, who ran each of them and whose name it worked under
 (`EXECUTOR`, `opencode · bot`), how its last try came out, how long ago that try began
@@ -181,6 +215,14 @@ crewflow auth app check                          # key, installation, rights —
 
 The private key stays in the macOS keychain and never reaches the executor, a journal or a
 terminal. See §7i of the design.
+
+The keychain asks the owner of the machine before it lets a program read a secret of it, and it
+asks through a window of the system. crewflow says what it is waiting for before it asks — in the
+terminal and in the journal of the run — and gives the wait an end: a run nobody answered is
+`blocked: keychain-approval`, not a run that stands still. `crewflow doctor` answers the question
+that can be answered without a window (`keychain access`) before any check of the report needs the
+key, and prints each step as it makes it. Sign the program with `make install SIGN_IDENTITY=…` (see
+[Install](#install)) and the "Always Allow" of that window survives the next build.
 
 ## Responsibilities
 

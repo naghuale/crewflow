@@ -12,6 +12,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -729,6 +730,12 @@ type host struct {
 	// key of an app in it looks to a run (§7i).
 	identity   forge.Identity
 	noIdentity error
+	// store is the store of the secrets of the machine as the roles of this host see
+	// it: a project whose executor works as an App asks it for the key of the App
+	// before anything else, and a test of the keychain of macOS puts a store of its
+	// own in here so that no run of a test ever opens the one of the person who runs
+	// it (§7e, §7i).
+	store secret.Store
 	// openedByTheRun is the request crewflow opened for a run whose executor did
 	// not, and the title and the body it opened it with.
 	openedByTheRun *forge.ChangeRequest
@@ -753,6 +760,15 @@ func (h *host) set() forge.Set {
 func (h *host) ExecutorIdentity(context.Context) (forge.Identity, error) {
 	if h.noIdentity != nil {
 		return forge.Identity{}, h.noIdentity
+	}
+	// The key of the App comes before the name of the account: a run that is given a
+	// token of the app is a run that signs one, and the store of the machine is where
+	// the key of the app is (§7i). It is asked of the store and not of a field of this
+	// host, because the store is what a machine of a test replaces.
+	if h.store != nil {
+		if _, err := h.store.Get(secret.Service, secret.AppKey(5107052)); err != nil {
+			return forge.Identity{}, err
+		}
 	}
 	if h.identity.Description == "" {
 		return forge.Identity{

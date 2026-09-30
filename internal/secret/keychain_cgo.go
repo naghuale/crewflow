@@ -19,6 +19,25 @@ static CFStringRef crewflowString(const char *text) {
 	return CFStringCreateWithCString(kCFAllocatorDefault, text, kCFStringEncodingUTF8);
 }
 
+// How a call of the keychain is told not to open the window of the system: the value
+// is one of the three the documentation of Security describes, and the other two say
+// "show the window" and "show it only as far as the lock screen". The one crewflow asks
+// for is the last of the three, because the window is the owner's to answer and not
+// something a program of a terminal may open in front of them without a word.
+//
+// The documentation of Security retired that constant in macOS 11 in favour of a
+// context of the local authentication with interactionNotAllowed set, and that context
+// is an object of Objective-C: what this package needs of it cannot be called from the
+// C this file is, and the question asked here is the same one. Hence the constant is
+// used in a function of its own with the warning of the compiler about it turned off
+// around that function and not around the file (docs/DESIGN.md §7i).
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+static void crewflowNoWindow(CFMutableDictionaryRef match) {
+	CFDictionarySetValue(match, kSecUseAuthenticationUI, kSecUseAuthenticationUIFail);
+}
+#pragma clang diagnostic pop
+
 static CFDictionaryRef crewflowMatch(const char *service, const char *account, int withData) {
 	CFStringRef name = crewflowString(service);
 	CFStringRef who = crewflowString(account);
@@ -116,10 +135,34 @@ static int crewflowSet(const char *service, const char *account, const unsigned 
 
 // crewflowHas asks for the status of an item alone, and the framework reads nothing for
 // it: a report that says the key of an app is there does not read the key to say it.
+// The framework is told not to ask the owner anything, because the keychain asks for the
+// status of an item as well — a report that opens a window of the system to say that a
+// secret is there is a report that stands in front of a person instead of telling them
+// something (docs/DESIGN.md §7i).
 static int crewflowHas(const char *service, const char *account) {
 	CFDictionaryRef match = crewflowMatch(service, account, 0);
+	crewflowNoWindow((CFMutableDictionaryRef)match);
 	OSStatus status = SecItemCopyMatching(match, NULL);
 	CFRelease(match);
+	return (int)status;
+}
+
+// crewflowAllowed asks the keychain whether this program may look at anything at all of
+// the service without the owner of the machine answering a window. It is the one
+// question of the store of a machine that can be asked without asking, and it is what
+// crewflow asks before it does anything that would open a window of its own
+// (docs/DESIGN.md §7i).
+static int crewflowAllowed(const char *service) {
+	CFStringRef name = crewflowString(service);
+	CFMutableDictionaryRef match = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+		&kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	CFDictionarySetValue(match, kSecClass, kSecClassGenericPassword);
+	CFDictionarySetValue(match, kSecAttrService, name);
+	CFDictionarySetValue(match, kSecMatchLimit, kSecMatchLimitOne);
+	crewflowNoWindow(match);
+	OSStatus status = SecItemCopyMatching(match, NULL);
+	CFRelease(match);
+	CFRelease(name);
 	return (int)status;
 }
 
@@ -170,15 +213,22 @@ import (
 	"unsafe"
 )
 
-// The two codes of the framework crewflow tells apart: it did what was asked, and there
-// is no such item. The rest is said in the words of macOS, which crewflow does not
-// guess (docs/DESIGN.md §7i).
+// The codes of the framework crewflow tells apart: it did what it was asked, there is no
+// such item, and there is one that this program may not look at without the owner of the
+// machine answering a window of the system. The rest is said in the words of macOS,
+// which crewflow does not guess (docs/DESIGN.md §7i).
 const (
 	// statusYes is errSecSuccess of Security: the call did what it was asked.
 	statusYes = 0
 	// statusNoItem is errSecItemNotFound of Security: there is no item of that name,
 	// which is an empty store and not a store that could not be read.
 	statusNoItem = -25300
+	// statusNoWindow is errSecInteractionNotAllowed of Security: the item is there
+	// and this program may not have it without the owner of the machine answering a
+	// window. It is what the framework answers when it is told not to open one, and it
+	// is what a keychain of macOS holds in front of a program it has never been given
+	// the answer for (docs/DESIGN.md §7i).
+	statusNoWindow = -25308
 )
 
 // System returns the store of this machine: the keychain of macOS through
@@ -214,7 +264,7 @@ func (keychain) Get(service, account string) ([]byte, error) {
 	case statusNoItem:
 		return nil, fmt.Errorf("%s/%s: %w", service, account, ErrNotFound)
 	default:
-		return nil, keychainRefused("read", service, account, status)
+		return nil, keychainRefused("read", service+"/"+account, status)
 	}
 }
 
@@ -229,7 +279,7 @@ func (keychain) Set(service, account string, value []byte) error {
 	defer C.free(unsafe.Pointer(name))
 	defer C.free(unsafe.Pointer(who))
 	if status := int(C.crewflowSet(name, who, (*C.uchar)(unsafe.Pointer(&value[0])), C.long(len(value)))); status != statusYes {
-		return keychainRefused("keep", service, account, status)
+		return keychainRefused("keep", service+"/"+account, status)
 	}
 	return nil
 }
@@ -238,17 +288,44 @@ func (keychain) Set(service, account string, value []byte) error {
 // reading it: the framework is asked for the status of the item alone, and a report
 // that says the key of an App is there says all a person needs before a run without
 // reading a key to say it (docs/DESIGN.md §7e, §7i).
+//
+// The framework is told not to open a window of the system for the question, because
+// there is a question to ask it that is the same and does not: [Allowed]. An item that
+// is there and that this program may not read without the owner answering is a value
+// that is kept under that name, which is all a presence is — the access of the program
+// to it is the other question, and the one a report asks first.
 func (keychain) Has(service, account string) (bool, error) {
 	name, who := C.CString(service), C.CString(account)
 	defer C.free(unsafe.Pointer(name))
 	defer C.free(unsafe.Pointer(who))
 	switch status := int(C.crewflowHas(name, who)); status {
-	case statusYes:
+	case statusYes, statusNoWindow:
 		return true, nil
 	case statusNoItem:
 		return false, nil
 	default:
-		return false, keychainRefused("look for", service, account, status)
+		return false, keychainRefused("look for", service+"/"+account, status)
+	}
+}
+
+// Allowed is whether this build of crewflow may read a secret of the service without the
+// owner of this machine answering a window of the system first. The keychain is asked
+// the question and answers it without opening one — that is what the framework is told
+// when it is told not to open any — and the access of a program to a secret of macOS is
+// tied to the signature of that program: a build of it that macOS has never seen is a
+// program the keychain has no answer for, whoever signed it (docs/DESIGN.md §7i).
+func (keychain) Allowed(service string) (bool, error) {
+	name := C.CString(service)
+	defer C.free(unsafe.Pointer(name))
+	switch status := int(C.crewflowAllowed(name)); status {
+	case statusYes:
+		return true, nil
+	case statusNoWindow:
+		return false, nil
+	case statusNoItem:
+		return false, fmt.Errorf("%s: %w", service, ErrNotFound)
+	default:
+		return false, keychainRefused("look into", service, status)
 	}
 }
 
@@ -264,7 +341,7 @@ func (keychain) delete(service, account string) error {
 	case statusYes, statusNoItem:
 		return nil
 	default:
-		return keychainRefused("take", service, account, status)
+		return keychainRefused("take", service+"/"+account, status)
 	}
 }
 
@@ -273,17 +350,18 @@ func (keychain) delete(service, account string) error {
 var (
 	_ Store    = keychain{}
 	_ Presence = keychain{}
+	_ Trust    = keychain{}
 )
 
 // keychainRefused is what macOS said, in the words of macOS: a code and a sentence are
 // two very different things to act on, and the sentence is the one a person can act
 // on. The key of an App is never in it — macOS was never given any.
-func keychainRefused(what, service, account string, status int) error {
+func keychainRefused(what, name string, status int) error {
 	detail := ""
 	if reason := C.crewflowError(C.int(status)); reason != nil {
 		defer C.crewflowFree(unsafe.Pointer(reason))
 		detail = ": " + C.GoString(reason)
 	}
-	return fmt.Errorf("the keychain of macOS refused to %s %s/%s (status %d)%s",
-		what, service, account, status, detail)
+	return fmt.Errorf("the keychain of macOS refused to %s %s (status %d)%s",
+		what, name, status, detail)
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,8 +38,17 @@ func TestRunDoctorReady(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("crewflow doctor = %d, want %d (stderr: %q)\n%s", code, exitOK, stderr.String(), stdout.String())
 	}
-	if stderr.Len() != 0 {
-		t.Errorf("crewflow doctor wrote %q to stderr, want nothing", stderr.String())
+	// The report is the answer and is printed to stdout, and the steps of the report are
+	// said on the way out to stderr: a machine that takes its time is a machine whose
+	// steps a person watches, and nothing of them is part of the answer a script reads
+	// with `-json` (docs/DESIGN.md §7d, §7i).
+	for _, want := range []string{"the file of the project", "the roles of the project", "the requirements"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("crewflow doctor wrote %q to stderr, want it to say the step %q", stderr.String(), want)
+		}
+	}
+	if strings.Contains(stdout.String(), "crewflow doctor:") {
+		t.Errorf("crewflow doctor wrote %q to stdout, want the report and nothing else", stdout.String())
 	}
 	for _, want := range []string{
 		"✓", "config", "git", "gh", "executor", "nothing is missing",
@@ -327,7 +337,10 @@ func (m *machine) use(t *testing.T) {
 	t.Helper()
 	m.home = t.TempDir()
 	t.Cleanup(func() { systemEnv = doctor.System })
-	systemEnv = func(configPath, tempDir string, probe bool) doctor.Env {
+	// The steps of the report and whatever the store of the secrets is waiting for are
+	// said to the writer the command was given, and the test looks at that writer: the
+	// steps of a report are not part of its answer and never go to stdout (§7i).
+	systemEnv = func(configPath, tempDir string, probe bool, out io.Writer) doctor.Env {
 		m.seen = doctor.Env{
 			LookPath:   m.lookPath,
 			Run:        m.run,
@@ -335,6 +348,7 @@ func (m *machine) use(t *testing.T) {
 			Home:       m.home,
 			TempDir:    tempDir,
 			Probe:      probe,
+			Out:        out,
 		}
 		return m.seen
 	}

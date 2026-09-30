@@ -12,6 +12,7 @@ import (
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // The machine a merge works on: the roles of a project and the way git is started. They
@@ -43,7 +44,7 @@ func runMerge(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	deps, _, err := depsOfChange(*configPath, *repoDir, change)
+	deps, _, err := depsOfChange(*configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -81,7 +82,7 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	deps, cfg, err := depsOfChange(*configPath, *repoDir, change)
+	deps, cfg, err := depsOfChange(*configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -118,7 +119,7 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 // change is of and the state of that task. The task comes out of what crewflow kept of
 // the runs of this project, and a change no run of it opened still says which task it is
 // of (docs/DESIGN.md §7, §7h).
-func depsOfChange(configPath, repoDir string, change int) (merge.Deps, config.Config, error) {
+func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
@@ -127,7 +128,7 @@ func depsOfChange(configPath, repoDir string, change int) (merge.Deps, config.Co
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}
-	set, err := mergeRoles(cfg, roleEnv(configPath))
+	set, err := mergeRoles(cfg, roleEnv(configPath, secret.NewNotices(stderr)))
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}

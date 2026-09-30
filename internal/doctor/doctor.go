@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -123,6 +124,17 @@ type Env struct {
 	Secrets secret.Store
 	HTTP    *http.Client
 	Now     func() time.Time
+	// Out is where the report says which step of itself it is making, and where the
+	// store of the secrets says what it is waiting for. The report itself is printed
+	// where the caller wants it — the answer of a command with `-json` is the report
+	// and nothing else — and the steps go elsewhere, because a step is not part of the
+	// answer (docs/DESIGN.md §7d, §7i).
+	Out io.Writer
+	// Executable is the program of this build, which the check of its signature asks
+	// the system about: the keychain of macOS ties the access of a program to a secret
+	// to the signature of that program, and there is no way to ask about it without
+	// naming the file (docs/DESIGN.md §7i).
+	Executable string
 }
 
 // Run checks the machine and reports what it found. The checks are made in the
@@ -130,22 +142,56 @@ type Env struct {
 // of, then everything else the file says the project needs. A check that needs
 // the file is skipped when the file is not readable, because a check that could
 // not be made is not a check that failed.
+//
+// Every step of it is said on the way out, before it is made, wherever the report is
+// being made: a check of the machine can take a long time — the keychain of macOS may
+// stand in front of a window of the system until the owner of the machine answers it —
+// and a report that prints nothing until the end says nothing at all about where it is
+// while it lasts (docs/DESIGN.md §7d, §7i).
 func Run(ctx context.Context, env Env) Report {
 	c := &checker{env: env}
+	c.step("the file of the project")
 	cfg, readable := c.config()
+	c.step("git")
 	c.git(ctx)
 	if !readable {
 		return c.report()
 	}
+	// The two questions about the keychain of macOS and about the signature of this
+	// program come before the roles of the project, because the checks of the roles read
+	// the key of an App and that read is what makes macOS open a window of the system: a
+	// report that has already said whether a window is going to open lets the owner of the
+	// machine answer it, and one that says it afterwards has already stood in front of it
+	// (docs/DESIGN.md §7i).
+	c.step("the keychain of macOS")
+	c.keychain(cfg)
+	c.step("the signature of this program")
+	c.signature(ctx)
+	c.step("the roles of the project")
 	c.roles(ctx, cfg)
+	c.step("the executors")
 	c.executors(cfg)
+	c.step("the reading policy")
 	c.reading(ctx, cfg)
 	if env.Probe {
+		c.step("the executor of the project")
 		c.probe(ctx, cfg)
 	}
+	c.step("the gates")
 	c.gates(cfg)
+	c.step("the requirements")
 	c.requirements(ctx, cfg)
 	return c.report()
+}
+
+// step is the line a person reads before a check of the machine is made: what a report
+// is doing right now, said where they are looking, because the alternative is a terminal
+// that says nothing for as long as the machine takes (docs/DESIGN.md §7d, §7i).
+func (c *checker) step(name string) {
+	if c.env.Out == nil {
+		return
+	}
+	fmt.Fprintf(c.env.Out, "crewflow doctor: %s…\n", name)
 }
 
 // checker makes the checks of one Run and keeps them in order, together with the

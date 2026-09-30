@@ -1,6 +1,7 @@
 package doctor
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,10 +76,20 @@ func TestCommandTellsTheCodeFromTheError(t *testing.T) {
 // programs of the host.
 func TestSystem(t *testing.T) {
 	dir := t.TempDir()
-	env := System("crewflow.toml", dir, true)
+	var out bytes.Buffer
+	env := System("crewflow.toml", dir, true, &out)
 
 	if env.ConfigPath != "crewflow.toml" || env.TempDir != dir || !env.Probe {
 		t.Errorf("System = %+v, want the file, the folder and the probe it was given", env)
+	}
+	// The steps of the report and whatever the store of the secrets is waiting for are
+	// said to the writer it was given, and the program of this build is the one whose
+	// signature the keychain of macOS knows about (docs/DESIGN.md §7i).
+	if env.Out != &out {
+		t.Errorf("System writes its steps to %v, want the writer it was given", env.Out)
+	}
+	if env.Executable == "" {
+		t.Error("System does not say which program this is, want the one whose signature the keychain remembers")
 	}
 	path, err := env.LookPath("sh")
 	if err != nil {

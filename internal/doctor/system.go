@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -14,12 +15,18 @@ import (
 
 // System returns the environment of the machine this process runs on: the
 // programs of PATH, the given project file, the home of the person and, for the
-// probe, the given temporary folder.
-func System(configPath, tempDir string, probe bool) Env {
+// probe, the given temporary folder. The steps of the report and whatever the store of
+// the secrets is waiting for are said to out, and out is not the answer: the report is
+// printed by the command wherever a caller of it wants the report.
+func System(configPath, tempDir string, probe bool, out io.Writer) Env {
 	// A machine that cannot say where the home of the person is has no folder crewflow
 	// may resolve a "~" of the file of a project to, and the report says so rather
 	// than guessing one.
 	home, _ := os.UserHomeDir()
+	// The program of this build is the one whose signature the keychain of macOS knows
+	// about, and a machine that cannot say which program it is has nothing to ask.
+	executable, _ := os.Executable()
+	notices := secret.NewNotices(out)
 	return Env{
 		LookPath:   exec.LookPath,
 		Run:        Command,
@@ -31,9 +38,16 @@ func System(configPath, tempDir string, probe bool) Env {
 		// store of the machine, over the HTTP of the machine, with the clock of it: a
 		// report that asks anything else of the machine it runs on is a report of the
 		// machine the tests of crewflow happen to run on (docs/DESIGN.md §7i).
-		Secrets: secret.System(),
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
-		Now:     time.Now,
+		//
+		// The store of the machine is behind the wait: the keychain of macOS asks the
+		// owner in a window of the system before it lets a program read a secret of it,
+		// and a report that stands in front of that window in silence is a report that
+		// looks like a machine that hangs (§7i).
+		Secrets:    secret.Waited(secret.System(), notices, secret.Waiting),
+		HTTP:       &http.Client{Timeout: 30 * time.Second},
+		Now:        time.Now,
+		Out:        out,
+		Executable: executable,
 	}
 }
 

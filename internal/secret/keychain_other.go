@@ -35,3 +35,12 @@ func (elsewhere) Has(service, account string) (bool, error) {
 	_, err := elsewhere{}.Get(service, account)
 	return false, err
 }
+
+// Allowed says that there is no store here either, and for the same reason: there is
+// no keychain of macOS on this machine that could let this program in or keep it out,
+// and a machine that says so is a machine a run of the mode of the bot cannot be done
+// on (docs/DESIGN.md §7i).
+func (elsewhere) Allowed(service string) (bool, error) {
+	_, err := elsewhere{}.Get(service, "any")
+	return false, err
+}

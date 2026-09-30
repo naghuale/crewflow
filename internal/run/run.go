@@ -74,6 +74,12 @@ type Env struct {
 	// asks the store for anything, and no run of any mode ever shows what is in it
 	// (docs/DESIGN.md §7e, §7i).
 	Secrets secret.Store
+	// Notices is where the run says that it is waiting for the owner of the machine,
+	// and the journal of the attempt is put there for as long as the attempt is open.
+	// It is the same notices the store of the machine is behind the wait of, so that
+	// a line about the keychain of macOS reaches the person who started the run and
+	// the journal of the attempt both, and not one of them alone (§7i).
+	Notices *secret.Notices
 }
 
 // System is the machine this process runs on, with the given root of what crewflow
@@ -414,21 +420,37 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// The journal of the attempt is opened before crewflow goes to the machine for the
+	// key of the App, and the state of the task is written after it. That call can make
+	// macOS ask the owner in a window of the system, and a run that stands in front of
+	// that window has to say what it waits for where the run of the task is written and
+	// not only in the terminal of the person who started it (§7i).
+	number, err := r.nextAttempt()
+	if err != nil {
+		return Result{}, err
+	}
+	files, err := r.journals.Begin(r.task.Number, number)
+	if err != nil {
+		return Result{}, err
+	}
+	listening := r.env.Notices.Listening(files.Out)
+	defer listening()
+
 	// Whose name the executor of this run works under is worked out before the state
 	// of the task is written, because the state says it: a run in the mode of the bot
 	// that cannot be given a token of its own is a run that is not started at all, and
 	// a state of a task with an attempt that never was is a state that lies (§7i).
 	if r.identity, err = r.identityOf(ctx); err != nil {
-		return Result{}, err
+		if errors.Is(err, secret.ErrApproval) {
+			return r.blockedOnApproval(files, err)
+		}
+		return Result{}, errors.Join(err, files.takeAway())
 	}
 	state := r.stateOf(r.env.Now())
 	attempt := state.Attempts[len(state.Attempts)-1]
 	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+		_ = files.takeAway()
 		return Result{}, err
-	}
-	files, err := r.journals.Begin(r.task.Number, attempt.Number)
-	if err != nil {
-		return r.stopBeforeStart(state, err)
 	}
 	if err := r.scratch(ctx); err != nil {
 		_ = files.Close()
@@ -479,23 +501,8 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// secret, and the run is over: it is written before the files are closed.
 	ended := r.endOf(ctx, runCtx)
 	flushed := errors.Join(journal.Flush(), wayOut.Flush())
-	result := Result{
-		Task:         r.task.Number,
-		Title:        r.task.Title,
-		Branch:       r.branch,
-		Worktree:     r.worktree,
-		Profile:      r.profile.Name(),
-		Session:      r.session,
-		Attempt:      attempt.Number,
-		Continued:    r.req.Continue != "",
-		AutoResumed:  r.auto,
-		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
-		StartedAt:    attempt.StartedAt,
-		EndedAt:      r.env.Now(),
-		Journal:      files.Journal,
-		ErrorJournal: files.ErrorJournal,
-		ExitCode:     code,
-	}
+	result := r.resultOf(attempt, r.env.Now(), files)
+	result.ExitCode = code
 	if err != nil {
 		// The executor could not be started at all. That is said where a person
 		// reads the way out of a run, and the outcome is a run that failed.
