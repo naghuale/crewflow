@@ -1072,6 +1072,18 @@ func TestTheMergeRecordsTheCommitInTheStateOfTheTask(t *testing.T) {
 	}
 }
 
+// pushedOnTopOfTheChange is a change that was merged and got a commit pushed to its
+// branch afterwards: what a host says the head of a merged change is, and what the
+// commit that went into the branch is, are then two commits (docs/DESIGN.md §7h).
+func (s *scenario) pushedOnTopOfTheChange(t *testing.T) {
+	t.Helper()
+	s.git(t, s.checkout, "checkout", "--quiet", "change")
+	s.commit(t, "after-the-merge")
+	s.git(t, s.checkout, "push", "--quiet", "origin", "change:"+headRef(changeNumber))
+	s.change.HeadSHA = s.sha(t.Context(), "change")
+	s.git(t, s.checkout, "checkout", "--quiet", "main")
+}
+
 // repository is a bare repository — what a host is — and a checkout of it, which is what
 // a merge pushes from. Both are made for one test and are gone with it, and neither of
 // them is a repository of the person who runs the tests.

@@ -457,6 +457,13 @@ func TestTheCycleOfATaskWithoutAPushByHand(t *testing.T) {
 			t.Fatalf("crewflow %s = %d, want %d\nstdout:\n%s\nstderr:\n%s",
 				step.name, code, step.want, stdout.String(), stderr.String())
 		}
+		// The check after the merge is the step that has to read a change the host
+		// holds as merged: a change that has gone in is not one anyone may merge, and
+		// the check has to confirm the merge out of the head of the change all the same
+		// (docs/DESIGN.md §6, §7h).
+		if step.name == "verify" && !strings.Contains(stdout.String(), "verified:") {
+			t.Errorf("crewflow verify wrote:\n%s\nwant it to confirm the merge", stdout.String())
+		}
 	}
 
 	// What a person would look at by hand is what the commands said: the branch of the
@@ -580,14 +587,18 @@ func (h *cycleHost) Task(_ context.Context, number int) (forge.Task, error) {
 		return forge.Task{}, fmt.Errorf("could not find issue %d", number)
 	}
 	found := forge.Task{Number: 7, Title: "the merge of a change", Body: cycleTask, State: "open"}
-	if h.head() != "" && remoteOfCycleCmd(h.origin, "main") == h.head() {
+	if h.merged() {
 		found.State = "closed"
 	}
 	return found, nil
 }
 
 // ChangeRequest is the change request the run opened, with the head read out of the
-// repository of the test: what the host says the head is, is what git holds.
+// repository of the test: what the host says the head is, is what git holds. It is
+// `merged` as soon as the branch of the host is at that head, which is what a host does
+// behind a change that has gone in — and it is the shape `verify` is written against,
+// since a check after a merge is made of a change nobody may merge any more
+// (docs/DESIGN.md §7h).
 func (h *cycleHost) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
 	if number != 7 {
 		return forge.ChangeRequest{}, fmt.Errorf("could not find change request %d", number)
@@ -595,16 +606,27 @@ func (h *cycleHost) ChangeRequest(_ context.Context, number int) (forge.ChangeRe
 	if h.branch == "" {
 		h.branch = branchOfCycle(h.repo)
 	}
+	state := "open"
+	if h.merged() {
+		state = "merged"
+	}
 	return forge.ChangeRequest{
 		Number:     7,
 		URL:        "https://github.com/naghuale/crewflow/pull/7",
 		HeadBranch: h.branch,
 		HeadSHA:    h.head(),
 		BaseBranch: "main",
-		State:      "open",
+		State:      state,
 		Body:       "Closes #7\n\n## What changed\n\ncrewflow merges a change.",
 		Repository: "naghuale/crewflow",
 	}, nil
+}
+
+// merged is whether the branch of the host has taken in the change, which is what a
+// host says with the state of a change request and with the state of its task.
+func (h *cycleHost) merged() bool {
+	head := h.head()
+	return head != "" && remoteOfCycleCmd(h.origin, "main") == head
 }
 
 // head is the commit at the head of the change, as the branch of it stands on the host.

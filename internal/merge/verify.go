@@ -24,9 +24,11 @@ type Verification struct {
 	Task   int    `json:"task,omitempty"`
 	Change int    `json:"change"`
 	URL    string `json:"url,omitempty"`
-	// Head is the head of the change, which is the commit a fast-forward merge put
-	// into the branch, and Merged the commit crewflow recorded as merged — what the
-	// branch of the host is compared with, and the head where nothing was recorded.
+	// Head is the head of the change, as the host holds it now, and Merged the commit
+	// that was merged — what the branch of the host is compared with, which is the head
+	// of the change where nothing was recorded. The two are one and the same for a
+	// fast-forward merge, and a head that has moved on since is said in Note rather than
+	// called the commit that was merged (docs/DESIGN.md §7h).
 	Head   string `json:"head,omitempty"`
 	Merged string `json:"merged,omitempty"`
 	// Branch is the branch the project merges into and Main the commit it is at, as
@@ -58,27 +60,39 @@ type Verification struct {
 // branch of the host at the commit that was merged, is the task closed, and is the CI
 // of that branch green — and it says every one of them (docs/DESIGN.md §6).
 //
+// The facts of the change are read without the rules of the gate: a change that has
+// gone in is not a change anyone may merge, and a check that asked the gate about one
+// would be asking whether it may still go in (docs/DESIGN.md §7h).
+//
 // The CI of the branch is waited for while it is going on, up to the time limit the
 // project gives it: a merge and the check of it are two moments of one thing, and the
 // second of them has to wait for the first (docs/DESIGN.md §7h).
 func Verify(ctx context.Context, deps Deps, number int) (Verification, error) {
 	d := deps.whole()
-	facts := gate.Collect(ctx, d.Gate, number)
-	task := d.task(facts.Task)
+	change := gate.ReadChange(ctx, d.Gate, number)
+	task := d.task(change.Task)
 	result := Verification{
 		Task:      task,
 		Change:    number,
-		URL:       facts.URL,
-		Head:      facts.Head,
-		Merged:    d.merged(task, facts.Head),
+		URL:       change.URL,
+		Head:      change.Head,
+		Merged:    d.merged(task, change.Head),
 		Branch:    d.Checkout.Branch,
 		TaskState: d.stateOfTask(ctx, task),
 	}
-	if result.Merged == "" {
-		result.Missing = append(result.Missing,
-			"crewflow does not know which commit was merged: the change names no head and this machine kept no state of the task")
+	// A change the host did not answer about is a fact nobody has, and the check says
+	// that instead of asking the person who reads it to go and look for a fault of a
+	// change that may not have one (docs/DESIGN.md §6, §7h).
+	if change.Unavailable != "" {
+		result.Missing = append(result.Missing, change.Unavailable)
 		return result, nil
 	}
+	if result.Merged == "" {
+		result.Missing = append(result.Missing,
+			"crewflow does not know which commit was merged: the state of the task holds none and the change names no head")
+		return result, nil
+	}
+	result.crossChecked(change.Head)
 
 	main, err := d.Checkout.Head(ctx, d.Checkout.Branch)
 	if err != nil {
@@ -104,6 +118,32 @@ func Verify(ctx context.Context, deps Deps, number int) (Verification, error) {
 	return result, nil
 }
 
+// crossChecked is what the head of the change says about the commit crewflow merged:
+// they are one and the same for a fast-forward merge, and a head that has moved on
+// since is a change that grew after it went in, which the branch of the host was never
+// asked about. It is said rather than hidden, because a person reading a check that
+// calls the head the merged commit is being told something false (docs/DESIGN.md §7h).
+//
+// A branch of the host that moved on is said in the same line, and a check that has two
+// things to say says both: each of them is a fact a person cannot work out from the
+// other, and one of them written over is a fact lost.
+func (v *Verification) crossChecked(head string) {
+	if head == "" || sameCommit(head, v.Merged) {
+		return
+	}
+	v.noted(fmt.Sprintf("the change stands at %s and the commit that was merged is %s",
+		short(head), short(v.Merged)))
+}
+
+// noted is one more thing the check has to say about an answer that is in order.
+func (v *Verification) noted(line string) {
+	if v.Note == "" {
+		v.Note = line
+		return
+	}
+	v.Note += "; " + line
+}
+
 // didTheMergeGoIn is whether the branch of the host holds the commit that was merged:
 // it is at it, or it has moved on since and still holds it. A branch that is somewhere
 // else has neither, and that is what a check after a merge is for (docs/DESIGN.md §7h).
@@ -120,8 +160,8 @@ func (v *Verification) didTheMergeGoIn(ctx context.Context, d *deps, main string
 	case holds:
 		// The branch has moved on since the merge — another change went in after it —
 		// and it holds the commit that was merged, which is what the merge was for.
-		v.Note = fmt.Sprintf("%s of the host has moved on to %s and holds the merged %s",
-			v.Branch, short(main), short(v.Merged))
+		v.noted(fmt.Sprintf("%s of the host has moved on to %s and holds the merged %s",
+			v.Branch, short(main), short(v.Merged)))
 	default:
 		v.Missing = append(v.Missing,
 			fmt.Sprintf("the branch of the host is at %s, and the merged commit %s is not in it",

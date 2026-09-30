@@ -1,6 +1,7 @@
 package merge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -195,6 +196,164 @@ func TestVerifyBeforeAMerge(t *testing.T) {
 	}
 	if len(result.Missing) == 0 {
 		t.Error("the check says what is not in order is nothing, want the branch of the host named")
+	}
+}
+
+// TestVerifyOfAMergedChangeOfATaskThisMachineKeptNoStateOf is a check of a merge that
+// did happen, on the shape a host gives a change that is merged: `merged`, the head of
+// the change still named, `Closes #N` in the body — and nothing under it, because the
+// records of the review were written by hand or not at all.
+//
+// The check reads the head and the task of the change off the host, whatever the state
+// of this machine is: `Closes #7` is what a change says it is of, and a check that goes
+// looking for it in a state file of this machine sends a person to do it by hand
+// (docs/DESIGN.md §6, §7h).
+func TestVerifyOfAMergedChangeOfATaskThisMachineKeptNoStateOf(t *testing.T) {
+	s := newScenario(t, nil)
+	s.merged(t)
+	s.change.State = "merged"
+	s.comments = nil
+	deps := s.deps()
+	deps.Task, deps.Gate.Task, deps.Worktree = 0, 0, ""
+
+	result, err := Verify(t.Context(), deps, changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if !result.Verified {
+		t.Fatalf("the check says %+v, want a merged change of a task with no state here to be verified", result)
+	}
+	if result.Task != changeNumber {
+		t.Errorf("the check is of task %d, want %d: `Closes #%d` is what the change is of",
+			result.Task, changeNumber, changeNumber)
+	}
+	if result.Merged != s.change.HeadSHA {
+		t.Errorf("the check compares the branch with %q, want the head of the change %s", result.Merged, s.change.HeadSHA)
+	}
+}
+
+// TestVerifyOfAChangeTheHostCouldNotBeRead: a check after a merge on a host that did not
+// answer about the change says what the host could not be asked, and not that the
+// change names no head — the change was never read, and a report that says so is a
+// person looking at all of it by hand (docs/DESIGN.md §6, §7h).
+func TestVerifyOfAChangeTheHostCouldNotBeRead(t *testing.T) {
+	s := newScenario(t, nil)
+	s.merged(t)
+	s.change.State = "merged"
+	s.changeErr = errors.New("gh pr view 7 -R naghuale/crewflow: exited with 1: could not reach the host")
+
+	result, err := Verify(t.Context(), s.deps(), changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if result.Verified {
+		t.Fatalf("the check says %+v, want a change the host did not answer about not to be verified", result)
+	}
+	missing := strings.Join(result.Missing, "; ")
+	if !strings.Contains(missing, "could not reach the host") {
+		t.Errorf("the check holds %v, want it to say what the host could not be asked", result.Missing)
+	}
+	if strings.Contains(missing, "names no head") {
+		t.Errorf("the check holds %v, want it not to speak of a head and a state nobody read", result.Missing)
+	}
+}
+
+// TestVerifyOfAMergedChangeTheHostCannotBeAskedAboutAndThisMachineKeptNoStateOf is what
+// F-023 of the journal of the practice met on 30.09.2026 on PR #42 of this project, an
+// hour after its own `crewflow merge` said `merged` and wrote `merged_sha` into the state
+// of task #8: the host was asked about the change and gave no answer, and this machine
+// kept no state to answer out of either — the worktree of the task was left behind by a
+// cleanup that was refused, and the state went with the run of a machine that is not
+// this one.
+//
+// The check said «crewflow does not know which commit was merged: the change names no
+// head and this machine kept no state of the task» — a statement about a change nobody
+// read, which sent the person reading it to look for a head the change had and a state
+// the machine had. What it had to say is that the host could not be asked, which is a
+// thing a person can go and do something about (docs/DESIGN.md §6, §7h).
+func TestVerifyOfAMergedChangeTheHostCannotBeAskedAboutAndThisMachineKeptNoStateOf(t *testing.T) {
+	s := newScenario(t, nil)
+	s.merged(t)
+	s.change.State = "merged"
+	s.changeErr = errors.New("gh pr view 7 -R naghuale/crewflow: exited with 1: could not reach the host")
+	deps := s.deps()
+	deps.Task, deps.Gate.Task, deps.Worktree = 0, 0, ""
+	deps.Home = t.TempDir()
+
+	result, err := Verify(t.Context(), deps, changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if result.Verified {
+		t.Fatalf("the check says %+v, want nothing to be verified on a host that gave no answer", result)
+	}
+	missing := strings.Join(result.Missing, "; ")
+	if !strings.Contains(missing, "could not reach the host") {
+		t.Errorf("the check holds %q, want it to name the host that could not be asked", missing)
+	}
+	if strings.Contains(missing, "names no head") {
+		t.Errorf("the check holds %q, want it not to speak of a head and a state nobody read", missing)
+	}
+}
+
+// TestVerifyOfAMergedChangeWhoseHeadHasMovedOnSince: a change that was merged and got
+// commits pushed to its branch afterwards. The commit that was merged is the one the
+// state of the task recorded and the one the branch of the host is compared with, and
+// the check says that the head of the change is somewhere else rather than calling it
+// the commit that was merged — a person reading the other would be told something
+// false (docs/DESIGN.md §7h).
+func TestVerifyOfAMergedChangeWhoseHeadHasMovedOnSince(t *testing.T) {
+	s := newScenario(t, nil)
+	s.merged(t)
+	s.change.State = "merged"
+	s.pushedOnTopOfTheChange(t)
+
+	result, err := Verify(t.Context(), s.deps(), changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if !result.Verified {
+		t.Fatalf("the check says %+v, want the merge of the commit that was merged to be verified", result)
+	}
+	if result.Merged != s.sha(t.Context(), "change~1") {
+		t.Errorf("the check compares the branch with %q, want the commit that was merged", result.Merged)
+	}
+	if result.Head != s.change.HeadSHA {
+		t.Errorf("the check holds the head %q, want the head the host names now", result.Head)
+	}
+	if !strings.Contains(result.Note, "stands at") {
+		t.Errorf("the check says %q, want it to say that the head of the change has moved on", result.Note)
+	}
+}
+
+// TestVerifyOfAMergedChangeWhoseHeadMovedOnAndWhoseBranchMovedOn: both ends of the
+// merge went on after it happened — a change went in after this one, and this change
+// got commits pushed to its branch. Each is a fact a person cannot work out from the
+// other, and a check that wrote the second over the first has lost one of them
+// (docs/DESIGN.md §6, §7h).
+func TestVerifyOfAMergedChangeWhoseHeadMovedOnAndWhoseBranchMovedOn(t *testing.T) {
+	s := newScenario(t, nil)
+	s.merged(t)
+	s.change.State = "merged"
+	s.pushedOnTopOfTheChange(t)
+	s.moveMain(t.Context())
+
+	result, err := Verify(t.Context(), s.deps(), changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if !result.Verified {
+		t.Fatalf("the check says %+v, want the merge of the commit that was merged to be verified", result)
+	}
+	for _, want := range []string{"the change stands at", "has moved on"} {
+		if !strings.Contains(result.Note, want) {
+			t.Errorf("the check says %q, want it to mention %q", result.Note, want)
+		}
 	}
 }
 
