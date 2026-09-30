@@ -387,12 +387,21 @@ func (h *mergeHost) use(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		mergeRoles = roles.AsOwner
-		mergeGit = runGit
+		gitOf = gitIn
 	})
 	mergeRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Forge: h, Tracker: h, CI: h}, nil
 	}
-	mergeGit = h.git
+	gitOf = h.gitIn
+}
+
+// gitIn is the git of a merge of this host — the one that pushes the approved commit —
+// and the environment every command of it is started with: the push of a merge in the
+// mode of a separate login is made as the account of an app of the host, and a test of
+// that has to see the settings git was pointed at (§7i).
+func (h *mergeHost) gitIn(environment []string) merge.Runner {
+	h.environment = environment
+	return h.git
 }
 
 // Task is the task of the change, closed behind the merge: a host closes an issue behind
@@ -623,16 +632,17 @@ func (h *cycleHost) use(t *testing.T) {
 	t.Cleanup(func() {
 		taskRoles = roles.New
 		taskRunEnv = taskrun.System
-		reviewRoles = rolesAsOwner
-		reviewGit = runGit
+		reviewRoles = roles.AsOrchestrator
 		mergeRoles = roles.AsOwner
-		mergeGit = runGit
+		gitOf = gitIn
 	})
 	set := func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Forge: h, Tracker: h, CI: h}, nil
 	}
 	taskRoles, reviewRoles, mergeRoles = set, set, set
-	reviewGit, mergeGit = runGit, runGit
+	// The git of this test is the real one: the cycle is made of a real repository and a
+	// real bare repository standing in for the host of it (docs/DESIGN.md §7h).
+	gitOf = gitIn
 	// The run of the test happens with real git and a real program where the agent is,
 	// and the process of the run is the process of the test (docs/DESIGN.md §7).
 	taskRunEnv = func(home string) taskrun.Env {

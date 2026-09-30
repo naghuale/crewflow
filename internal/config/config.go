@@ -17,6 +17,7 @@ type Config struct {
 	Forge        Forge        `toml:"forge"`
 	Tracker      Tracker      `toml:"tracker"`
 	Identity     Identity     `toml:"identity"`
+	Orchestrator Orchestrator `toml:"orchestrator"`
 	Executor     Executor     `toml:"executor"`
 	Access       Access       `toml:"access"`
 	Worktrees    Worktrees    `toml:"worktrees"`
@@ -97,6 +98,37 @@ type GitHubApp struct {
 	// of the project. It is optional: empty is not a mistake, and the installation
 	// is found through the repository the first time a run asks for a token.
 	InstallationID int64 `toml:"installation_id"`
+}
+
+// The modes of the orchestrator, the words the file of a project is written in and the
+// words the core of crewflow knows: the login of the person, which the owner works under
+// as well, or an account of the host of the project of its own (docs/DESIGN.md §7i).
+const (
+	// ModeShared is the login of the person for both of them, which is what a project
+	// gets without saying anything and what crewflow has always done.
+	ModeShared = "shared"
+	// ModeSeparate is an account of the host of the project of its own, which is what
+	// lets a gate tell a decision of the owner from a record of the orchestrator.
+	ModeSeparate = "separate"
+)
+
+// Orchestrator is whose name the orchestrator of a project works under, which is a
+// question of its own: the record of a review and the push of a merge are the
+// business of the orchestrator, and whether the gate may tell them from the records
+// of the owner depends on it (docs/DESIGN.md §7i).
+//
+// The words are the same for every host — "shared" or "separate" — and how an
+// account of a host is written down is the business of the adapter of that host, in
+// a table of its own, exactly as for the executor.
+type Orchestrator struct {
+	// Mode is "shared" or "separate": the login of the person, which is the same one
+	// the owner works under and which therefore cannot be told from it, or an account
+	// of the host of the project of its own, which is what separates them (§7i).
+	Mode string `toml:"mode"`
+	// GitHubApp is the app the orchestrator of a project on GitHub works as, and the
+	// second app of a project whose executor already has one. It is empty in the mode
+	// of the shared login.
+	GitHubApp GitHubApp `toml:"github_app"`
 }
 
 // Executor is the agent crewflow runs a task with, plus the ones to try in turn
@@ -185,10 +217,16 @@ type Merge struct {
 	// (docs/DESIGN.md §7h). An empty list is the owner of the repository, which is
 	// what a project gets without saying anything.
 	Reviewers []string `toml:"reviewers"`
-	// Owners are the logins whose record of acceptance counts, under the rules an
+	// Owners are the logins whose records are the owner's own, under the rules an
 	// approval is counted by: the owner of a project looks at the result of a task
-	// himself, and only his own `ACCEPTED <sha>` takes the result in (docs/DESIGN.md
-	// §7h). An empty list is the owner of the repository, as it is for reviewers.
+	// himself, and only his own `ACCEPTED <sha>` takes the result in; and only his
+	// own `SCOPE: ACCEPTED <sha>` takes a file outside the boundaries of the task
+	// into his hands (docs/DESIGN.md §7h). The list is one and the check of it is one,
+	// because both of those records are decisions of a person and not the work of the
+	// orchestrator: an orchestrator apart from the owner is in neither of them, however
+	// well it may review (§7i). An empty list is the owner of the repository, as it is
+	// for the reviewers — and the two lists are still two lists, because a review is
+	// the business of the orchestrator and a decision of the owner is not.
 	Owners []string `toml:"owners"`
 }
 

@@ -15,33 +15,53 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github"
+	"github.com/naghuale/crewflow/internal/forge/github/app"
 )
 
 // New returns the roles the settings of the project ask for, or an error that
 // names the kind crewflow has no adapter for. The settings are those of a file
 // that has been through [config.Load]: the pairs that contradict each other are
 // refused there.
+//
+// A run is the business of the executor alone, and it is given no account of the
+// orchestrator: a run that could write a record of a review in the name of the
+// orchestrator would be an executor with a pen in its hand (§7i).
 func New(cfg config.Config, env forge.Env) (forge.Set, error) {
-	return rolesOf(cfg, env, cfg.Identity.Mode)
+	return rolesOf(cfg, env, cfg.Identity.Mode, forge.ModeShared)
 }
 
 // AsOwner returns the roles of a project as the person who runs crewflow, whoever
 // the executor of the project works as.
 //
-// A review of a change is the business of the orchestrator, and the orchestrator is
-// the person: the record of a review is written in their name and counted only
-// because it is, and the rules of a branch are rights of a person and not of the App
-// of an executor, which has none of them (docs/DESIGN.md §7h, §7i). A project in the
+// A review of a change is the business of the orchestrator, and the owner is the
+// person: the rules of a branch are rights of a person and not of the App of an
+// executor, which has none of them (docs/DESIGN.md §7h, §7i). A project in the
 // mode of the owner gets the same roles either way, and `task run` asks for the ones
 // of [New].
 func AsOwner(cfg config.Config, env forge.Env) (forge.Set, error) {
-	return rolesOf(cfg, env, forge.ModeOwner)
+	return rolesOf(cfg, env, forge.ModeOwner, forge.ModeShared)
+}
+
+// AsOrchestrator returns the roles of a project as its orchestrator: the account the
+// record of a review is written in and the merge is pushed as. In the mode of a shared
+// login that is the person who runs crewflow, and in the mode of a separate one it is
+// the App of the project — which is what lets the gate tell a decision of the owner
+// from a record of the orchestrator (docs/DESIGN.md §7h, §7i).
+//
+// It is given no App of the executor and no opener: a review neither commits as the
+// executor nor opens a change request of its own, and an adapter that carried the App
+// of a run into a review is one command away from an executor writing a record (§7i).
+func AsOrchestrator(cfg config.Config, env forge.Env) (forge.Set, error) {
+	return rolesOf(cfg, env, forge.ModeOwner, cfg.Orchestrator.Mode)
 }
 
 // rolesOf is the roles of a project under the mode of the executor, which is what a
-// run works under and what a review deliberately does not.
-func rolesOf(cfg config.Config, env forge.Env, mode string) (forge.Set, error) {
-	hosting, err := hostOf(cfg, env, mode)
+// run works under, and under the mode of the orchestrator, which is what a review and
+// a merge work under. A run never has the second one and a review never the first:
+// that each of them has an account of its own, or the login of the person, is the
+// whole of §7i.
+func rolesOf(cfg config.Config, env forge.Env, mode, orchestration string) (forge.Set, error) {
+	hosting, err := hostOf(cfg, env, mode, orchestration)
 	if err != nil {
 		return forge.Set{}, err
 	}
@@ -79,11 +99,19 @@ func rolesOf(cfg config.Config, env forge.Env, mode string) (forge.Set, error) {
 // hostOf is the adapter of the host of the code, and nothing for a project that
 // is not hosted anywhere: its change requests are local branches, and reading
 // those is no adapter's work yet (§7g).
-func hostOf(cfg config.Config, env forge.Env, mode string) (*github.Adapter, error) {
+//
+// The two modes of §7i are two accounts of the host and not one: the App of the
+// executor, which a run works as, and the App of the orchestrator, which a review and
+// a merge work as. A caller asks for the roles of one subject and gets the adapter
+// built for that one, so that a review can never end up writing its record in the name
+// of the executor and a run can never write anything at all in the name of the
+// orchestrator.
+func hostOf(cfg config.Config, env forge.Env, mode, orchestration string) (*github.Adapter, error) {
 	switch cfg.Forge.Kind {
 	case "github":
 		adapter := github.New(cfg.Project.Repo, cfg.Forge.Host, env).
-			WithDefaultBranch(cfg.Project.DefaultBranch)
+			WithDefaultBranch(cfg.Project.DefaultBranch).
+			WithOrchestrator(orchestratorOf(cfg, env, orchestration))
 		if mode == forge.ModeBot {
 			// The numbers of the App are all the file of the project says about it:
 			// the key of the App is in the store of the machine and never in a file
@@ -99,6 +127,21 @@ func hostOf(cfg config.Config, env forge.Env, mode string) (*github.Adapter, err
 		return nil, nil
 	default:
 		return nil, &forge.ErrNotImplemented{Key: "forge.kind", Kind: cfg.Forge.Kind}
+	}
+}
+
+// orchestratorOf is the App of the orchestrator of the project, and nothing where the
+// orchestrator shares the login of the person: the zero AppID of [github.Orchestrator]
+// is the shared login, and that is what a project gets without saying anything
+// (docs/DESIGN.md §7i).
+func orchestratorOf(cfg config.Config, env forge.Env, orchestration string) github.Orchestrator {
+	if orchestration != forge.ModeSeparate {
+		return github.Orchestrator{}
+	}
+	return github.Orchestrator{
+		AppID:          cfg.Orchestrator.GitHubApp.AppID,
+		InstallationID: cfg.Orchestrator.GitHubApp.InstallationID,
+		API:            app.API(cfg.Forge.Host),
 	}
 }
 

@@ -1,0 +1,15 @@
+# The orchestrator works as an account of the host of its own, and the App of it
+# has a number in the file of the project (§7i).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[orchestrator]
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 5107053
+installation_id = 165781719

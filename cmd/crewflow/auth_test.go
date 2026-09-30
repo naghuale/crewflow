@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -452,7 +453,7 @@ func newAPIOfTheTest(t *testing.T) *apiOfTheTest {
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		answer, ok := api.answer[r.URL.Path]
+		answer, ok := api.answerFor(r)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Not Found: " + r.URL.Path})
@@ -470,6 +471,49 @@ type apiOfTheTest struct {
 	answer map[string]any
 	asked  []string
 	server *httptest.Server
+}
+
+// answerFor is the answer of the server to a request: the one of the app that asked, and
+// the answer every app gets otherwise.
+//
+// The endpoints of an App are the ones every App asks and every App gets its own answer
+// to, because the path of the request is the same for all of them and the token of it
+// names the App in `iss`. A project with two Apps asks one server both of those
+// questions, and a server of a test that answered them with one name would be a server
+// with one App on the repository (docs/DESIGN.md §7i).
+func (a *apiOfTheTest) answerFor(r *http.Request) (any, bool) {
+	if app := appOfTheRequest(r); app != "" {
+		if answer, found := a.answer[app+" "+r.URL.Path]; found {
+			return answer, true
+		}
+	}
+	answer, found := a.answer[r.URL.Path]
+	return answer, found
+}
+
+// appOfTheRequest is the app that made a request, out of the token of it: `iss` is the
+// number of the App, as the documentation of the endpoint writes it, and a request
+// without such a token is a request of a gh and not of an App.
+func appOfTheRequest(r *http.Request) string {
+	_, token, found := strings.Cut(r.Header.Get("Authorization"), "Bearer ")
+	if !found {
+		return ""
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Issuer
 }
 
 // installationOfTheTest answers for the installation of the App on the repository of
@@ -529,6 +573,10 @@ type storeOfTheTest struct {
 	key    []byte
 	writes int
 	said   []string
+	// account is the name the last write went under, which is how a test of a project
+	// with two Apps tells the two keys apart: a project with two apps has two keys, and
+	// one item under one name is one of them (§7i).
+	account string
 }
 
 // Get returns the key of the test, and the error of an empty store when it has none.
@@ -539,10 +587,10 @@ func (s *storeOfTheTest) Get(service, account string) ([]byte, error) {
 	return s.key, nil
 }
 
-// Set keeps the key the test is given.
+// Set keeps the key the test is given, under the name it was given for.
 func (s *storeOfTheTest) Set(service, account string, value []byte) error {
 	s.writes++
-	s.key = value
+	s.key, s.account = value, account
 	return nil
 }
 
@@ -566,4 +614,186 @@ func keyOfTheTest(t *testing.T) []byte {
 		t.Fatalf("marshal the key of the test: %v", err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+}
+
+// TestGitCredentialOfThePushOfAMergeSignsTheTokenOfTheOrchestrator: the push of a merge
+// is made as the account of the app of the orchestrator, and the helper git takes the
+// credentials of that push from signs the token of that app — the second one of the
+// project, with the rights of the orchestrator in it, and not the one of the executor a
+// run signs with (§7h, §7i).
+func TestGitCredentialOfThePushOfAMergeSignsTheTokenOfTheOrchestrator(t *testing.T) {
+	store := &storeOfTheTest{key: keyOfTheTest(t)}
+	api := useMachineOfTheTest(t, store, nil)
+	api.answer["/api/v3/app"] = map[string]any{"id": 5107053, "slug": "crewflow-orchestrator"}
+	api.installationOfTheOrchestratorOfTheTest()
+	project := writeConfig(t, projectConfig+botConfig+orchestratorConfig+
+		"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
+	authStdin = strings.NewReader("protocol=https\nhost=" + hostOfTest(api) + "\npath=naghuale/crewflow\n\n")
+	t.Cleanup(func() { authStdin = os.Stdin })
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "git-credential", "get", "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow auth git-credential -as orchestrator = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "password=ghs_token_of_the_orchestrator") {
+		t.Errorf("the helper wrote %q, want the token of the app of the orchestrator", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "ghs_token_of_the_run") {
+		t.Errorf("the helper wrote %q, want the token of the second app and not the one of a run", stdout.String())
+	}
+}
+
+// TestGitCredentialWithoutAnAccountToSignForSaysNothing: a project whose orchestrator
+// shares the login of the person has no app for it, and a helper in the way of the push
+// of a person would be a helper crewflow put there for nothing (§7i).
+func TestGitCredentialWithoutAnAccountToSignForSaysNothing(t *testing.T) {
+	store := &storeOfTheTest{key: keyOfTheTest(t)}
+	api := useMachineOfTheTest(t, store, nil)
+	project := writeConfig(t, projectConfig+botConfig+"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
+	authStdin = strings.NewReader("protocol=https\nhost=" + hostOfTest(api) + "\npath=naghuale/crewflow\n\n")
+	t.Cleanup(func() { authStdin = os.Stdin })
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "git-credential", "get", "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow auth git-credential -as orchestrator = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("the helper wrote %q, want nothing for a project whose orchestrator is the login of a person", stdout.String())
+	}
+}
+
+// TestGitCredentialCalledWithAnAccountCrewflowDoesNotHave: the helper signs a token for
+// the two subjects of a project and for no third, and a word it does not know is a wrong
+// call and says what the right one is (§6, §7i).
+func TestGitCredentialCalledWithAnAccountCrewflowDoesNotHave(t *testing.T) {
+	useMachineOfTheTest(t, &storeOfTheTest{key: keyOfTheTest(t)}, nil)
+	project := writeConfig(t, projectConfig+botConfig)
+	authStdin = strings.NewReader("\n")
+	t.Cleanup(func() { authStdin = os.Stdin })
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "git-credential", "get", "-as", "owner", "-config", project}, &stdout, &stderr)
+
+	if code != exitUsage {
+		t.Errorf("crewflow auth git-credential -as owner = %d, want %d", code, exitUsage)
+	}
+	if !strings.Contains(stderr.String(), "executor or orchestrator") {
+		t.Errorf("crewflow auth git-credential wrote %q, want it to say whose account it signs for", stderr.String())
+	}
+}
+
+// installationOfTheOrchestratorOfTheTest answers for the installation of the app of the
+// orchestrator on the repository of the project, with the rights of the orchestrator in
+// it, and hands out the token of the documentation for it: the same answer as for the app
+// of the executor with the issues in write (docs/DESIGN.md §7h, §7i).
+func (a *apiOfTheTest) installationOfTheOrchestratorOfTheTest() {
+	rights := map[string]any{
+		"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read",
+	}
+	answer := map[string]any{
+		"id": 12346, "app_id": 5107053,
+		"account":              map[string]any{"login": "naghuale", "id": 1, "type": "User", "site_admin": false},
+		"repository_selection": "selected",
+		"permissions":          rights,
+	}
+	a.answer["5107053 /api/v3/repos/naghuale/crewflow/installation"] = answer
+	a.answer["/api/v3/app/installations/12346"] = answer
+	a.answer["/api/v3/app/installations/12346/access_tokens"] = map[string]any{
+		"token":                "ghs_token_of_the_orchestrator",
+		"expires_at":           "2026-09-28T13:00:00Z",
+		"permissions":          rights,
+		"repository_selection": "selected",
+		"repositories": []map[string]any{{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "crewflow", "full_name": "naghuale/crewflow",
+		}},
+	}
+}
+
+// TestAuthAppImportOfTheSecondAppPutsItsOwnKeyAway: a project with two Apps has two
+// keys, and the store of the machine keeps each of them under the name of its own app —
+// `github-app-<app_id>`. One import of one key under one name is one of the two, and the
+// person who imported it has to know which (docs/DESIGN.md §7i).
+func TestAuthAppImportOfTheSecondAppPutsItsOwnKeyAway(t *testing.T) {
+	store := &storeOfTheTest{}
+	useMachineOfTheTest(t, store, nil)
+	path := filepath.Join(t.TempDir(), "crewflow-orchestrator.pem")
+	if err := os.WriteFile(path, keyOfTheTest(t), 0o600); err != nil {
+		t.Fatalf("write the key: %v", err)
+	}
+	project := writeConfig(t, projectConfig+botConfig+orchestratorConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "app", "import", path, "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow auth app import -as orchestrator = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	if want := secret.AppKey(5107053); store.account != want {
+		t.Errorf("the key was kept under %q, want %q", store.account, want)
+	}
+	if !strings.Contains(stdout.String(), "5107053") {
+		t.Errorf("crewflow auth app import wrote %q, want it to name the app the key is of", stdout.String())
+	}
+}
+
+// TestAuthAppImportOfAnAppTheProjectHasNotNamedSaysWhatToDo: a project in the shared mode
+// has no app of the orchestrator, and a key put away for one would be a key of nothing
+// (docs/DESIGN.md §7i).
+func TestAuthAppImportOfAnAppTheProjectHasNotNamedSaysWhatToDo(t *testing.T) {
+	store := &storeOfTheTest{}
+	useMachineOfTheTest(t, store, nil)
+	path := filepath.Join(t.TempDir(), "crewflow-orchestrator.pem")
+	if err := os.WriteFile(path, keyOfTheTest(t), 0o600); err != nil {
+		t.Fatalf("write the key: %v", err)
+	}
+	project := writeConfig(t, projectConfig+botConfig)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "app", "import", path, "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Errorf("crewflow auth app import -as orchestrator = %d, want %d for a project with no second app", code, exitFailure)
+	}
+	if !strings.Contains(stderr.String(), "orchestrator") {
+		t.Errorf("crewflow auth app import wrote %q, want it to name the mode of the orchestrator", stderr.String())
+	}
+	if store.writes != 0 {
+		t.Errorf("the store was written %d times, want nothing written for an app nobody named", store.writes)
+	}
+}
+
+// TestAuthAppCheckOfTheSecondAppNamesTheAccountOfTheOrchestrator: a check of the app of
+// the orchestrator says the orchestrator and not "executor", and it reads the rights of
+// the installation against the rights of the orchestrator — `issues write` is what that
+// account is asked for, and a report that called it too wide would send a person to
+// change a setting that is right (docs/DESIGN.md §7h, §7i).
+func TestAuthAppCheckOfTheSecondAppNamesTheAccountOfTheOrchestrator(t *testing.T) {
+	store := &storeOfTheTest{key: keyOfTheTest(t)}
+	api := useMachineOfTheTest(t, store, nil)
+	api.answer["/api/v3/app"] = map[string]any{"id": 5107053, "slug": "crewflow-orchestrator"}
+	api.installationOfTheOrchestratorOfTheTest()
+	project := writeConfig(t, projectConfig+botConfig+orchestratorConfig+
+		"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "app", "check", "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow auth app check -as orchestrator = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	for _, want := range []string{"orchestrator: separate — GitHub App crewflow-orchestrator", "12346", "issues write"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow auth app check wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+	// The token of the installation is asked for and thrown away, and nothing of it is
+	// shown: a report is read by people and pasted into issues (docs/DESIGN.md §7e).
+	if strings.Contains(stdout.String(), "ghs_token_of_the_orchestrator") {
+		t.Errorf("crewflow auth app check wrote:\n%s\nwant no token of the app in it", stdout.String())
+	}
 }

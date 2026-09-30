@@ -44,6 +44,11 @@ type Entry struct {
 	// shape a review shows them in: a merge is judged by the same gate and a person
 	// reads the same words of it in either place (docs/DESIGN.md §7h).
 	Gate *gate.Summary `json:"gate,omitempty"`
+	// Orchestrator is whose name the merge wrote and pushed as, the first line of the
+	// journal: a merge of a project whose owner and orchestrator are two accounts is
+	// two different things to read afterwards, and the journal is where that is said
+	// (docs/DESIGN.md §7h, §7i).
+	Orchestrator *Orchestrator `json:"orchestrator,omitempty"`
 	// Outcome is how the merge came out, TaskClosedBy who closed the task of the
 	// change behind it, and Left what is left of what was to be done around it.
 	Outcome      Outcome  `json:"outcome,omitempty"`
@@ -84,6 +89,19 @@ func (j *Journal) Close() error {
 // Gate is the facts of the change and the verdict the gate gave them.
 func (j *Journal) Gate(summary gate.Summary) error {
 	return j.write(Entry{Step: "gate", Gate: &summary})
+}
+
+// Orchestrator is whose name the merge worked under: the mode of §7i and the one line a
+// report shows, kept here as the first entry of the journal so that a person reading it
+// afterwards knows whose word and whose token the push of it was (docs/DESIGN.md §7h, §7i).
+//
+// A merge that was given no orchestrator says nothing: an older caller of this package
+// has no mode of its own, and a journal with an empty line in it is a line nobody reads.
+func (j *Journal) Orchestrator(who Orchestrator) error {
+	if who.Mode == "" && who.Description == "" {
+		return nil
+	}
+	return j.write(Entry{Step: "orchestrator", Orchestrator: &who})
 }
 
 // Outcome is how the merge came out, who closed the task of the change behind it, and

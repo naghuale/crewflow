@@ -48,6 +48,8 @@ Works today:
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
 - ✅ a run that stands is visible: `stalled` with the length of the silence in `task list`,
   an event in the journal of the attempt and one record under the task per episode
+- ✅ two identities for the orchestrator too, `shared` or a second GitHub App, and a gate that
+  counts the records of the owner apart from the records of the orchestrator
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
   one of the reasons of §7h says why it may not
 - ✅ the owner's acceptance: a task marked `owner-check` is not merged until the owner writes
@@ -111,7 +113,7 @@ again. Nothing is stored outside the keychain.
 Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml)), then:
 
 ```sh
-crewflow doctor            # tools, requirements, access, the identity of the executor
+crewflow doctor            # tools, requirements, access, the identity of the executor and of the orchestrator
 crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
 crewflow review 14         # may PR #14 be merged, and if not, why not
@@ -192,8 +194,13 @@ table of §7h — `approval-missing`, `approval-untrusted`, `approval-edited`, `
 `-untrusted`, `ci-sha-mismatch`, `not-fast-forward`, `forge-unavailable` — and says what to do
 about it.
 
-- an approval counts only from `[merge] reviewers` (the owner of the repository by default),
-  only unedited, and only of the current head of the change;
+- an approval counts only from `[merge] reviewers` (in the mode `separate`, the account of the
+  App of the orchestrator), only unedited, and only of the current head of the change;
+- a record of the owner — the acceptance of a result (`ACCEPTED <full sha>`) and a file
+  outside the boundaries of the task (`SCOPE: ACCEPTED <full sha> <why>`) — counts only from
+  `[merge] owners` (the owner of the repository by default), which is one list and a
+  different one from the reviewers: an orchestrator that works apart from the owner is not
+  among the owners;
 - the record of a review is a comment whose first line is `REVIEW: APPROVED <full sha>` or
   `REVIEW: CHANGES REQUESTED`; `-approve` and `-request-changes <file>` write it for you;
 - a task marked `owner-check` (the name is `[acceptance] label`) is not merged until one of
@@ -201,8 +208,6 @@ about it.
   that exact head under the change; the report says on its own line that the result is
   waiting for him. A commit after the acceptance is a commit nobody has looked at, so the
   acceptance has to be written again;
-- the files the change touches are checked against the boundaries of its task, and only a
-  reviewer may take a file outside them with `SCOPE: ACCEPTED <full sha> <why>`;
 - the required checks are the ones the rules of the branch demand, taken from GitHub Actions
   rather than from anybody's mark through the API of statuses;
 - anything the host did not answer is `forge-unavailable`, never a pass.
@@ -308,6 +313,45 @@ crewflow auth app check                          # key, installation, rights —
 
 The private key stays in the macOS keychain and never reaches the executor, a journal or a
 terminal. See §7i of the design.
+
+## Whose name the orchestrator works under
+
+A review of a change and the push of a merge are the orchestrator's work, and the record of an
+approval is only an approval because of the account it is written in. So the orchestrator has a
+mode of its own, exactly as the executor:
+
+- **`shared`** (default): the login of the person, together with the owner. `crewflow doctor`
+  warns — one login cannot tell an approval of the orchestrator apart from an acceptance of the
+  owner, and both are written by whoever runs crewflow.
+- **`separate`**: a second [GitHub App](https://docs.github.com/en/apps) of the project,
+  `crewflow-orchestrator`, with its own key in the keychain and its own token of an hour. Its
+  rights are the rights of the executor plus Issues — write, because a merge closes the task
+  behind the change that went in. `crewflow review` and `crewflow merge` then write and push as
+  `crewflow-orchestrator[bot]`, and the gate counts its approval while counting nothing it writes
+  as the owner: `[merge] owners` is a list of its own, and in this mode the App of the
+  orchestrator is not in it.
+
+```toml
+[orchestrator]
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 5107053
+installation_id = 0     # 0: found on the repository
+
+[merge]
+reviewers = ["crewflow-orchestrator[bot]"]   # empty: the account of the App itself
+owners = []                                  # empty: the owner of the repository
+```
+
+```sh
+crewflow auth app import ~/Downloads/<orchestrator>.pem -as orchestrator   # a key of its own
+crewflow doctor                                           # orchestrator: separate — GitHub App …
+```
+
+The branch rule on the default branch has to list the App of the orchestrator in its bypass list
+— it is the account crewflow pushes the approved commit as. The App of the executor is never in
+it. See §7i of the design.
 
 The keychain asks the owner of the machine before it lets a program read a secret of it, and it
 asks through a window of the system. crewflow says what it is waiting for before it asks — in the

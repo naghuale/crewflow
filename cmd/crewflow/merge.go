@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
@@ -8,21 +9,15 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
-	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/secret"
 )
 
-// The machine a merge works on: the roles of a project and the way git is started. They
-// are variables so that a test of the command runs against a host and a repository of
-// its own and reaches neither the network nor a checkout of the person who runs it
-// (docs/DESIGN.md §7h).
-var (
-	mergeRoles = roles.AsOwner
-	mergeGit   = runGit
-)
+// The machine a merge works on: the roles of a project as its orchestrator and the way
+// git is started. They are variables in orchestrator.go, together with the ones of a
+// review, because a review and a merge are made of the same machine (docs/DESIGN.md §7h).
 
 // runMerge is `crewflow merge <PR>`: it asks the gate again, in the moment of the merge,
 // whether the change may go in, and — only if it may — fast-forwards the default branch
@@ -34,6 +29,12 @@ var (
 // about it. What the merge came out as is worked out from the branch of the host and
 // not from the code `git push` exited with, and the whole of what git said is in the
 // journal of the merge.
+//
+// The push is made as the orchestrator of the project: the login of the person where the
+// orchestrator shares it with the owner, and the App of the project where it does not —
+// and in the second case git takes the credentials of that push from the helper of
+// crewflow, which signs a token of an hour for that one push and for nothing else
+// (§7h, §7i).
 func runMerge(args []string, stdout, stderr io.Writer) int {
 	flags := mergeFlags("merge", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
@@ -44,12 +45,12 @@ func runMerge(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	deps, _, err := depsOfChange(*configPath, *repoDir, change, stderr)
+	ctx, stop := stoppedBy()
+	defer stop()
+	deps, _, err := depsOfChange(ctx, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
-	ctx, stop := stoppedBy()
-	defer stop()
 	result, err := merge.Run(ctx, deps, change)
 	if err != nil {
 		return mergeFailed(stderr, err)
@@ -82,7 +83,9 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 		return code
 	}
 
-	deps, cfg, err := depsOfChange(*configPath, *repoDir, change, stderr)
+	ctx, stop := stoppedBy()
+	defer stop()
+	deps, cfg, err := depsOfChange(ctx, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -95,8 +98,6 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	deps.Timeout = limit
 
-	ctx, stop := stoppedBy()
-	defer stop()
 	result, err := merge.Verify(ctx, deps, change)
 	if err != nil {
 		return mergeFailed(stderr, err)
@@ -115,11 +116,11 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 }
 
 // depsOfChange is what a merge or a check of a change is made of: the roles of the
-// project, the checkout the branch of the host is read in and pushed from, the task the
-// change is of and the state of that task. The task comes out of what crewflow kept of
-// the runs of this project, and a change no run of it opened still says which task it is
-// of (docs/DESIGN.md §7, §7h).
-func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
+// project as its orchestrator, the checkout the branch of the host is read in and pushed
+// from, the task the change is of and the state of that task. The task comes out of what
+// crewflow kept of the runs of this project, and a change no run of it opened still says
+// which task it is of (docs/DESIGN.md §7, §7h).
+func depsOfChange(ctx context.Context, configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
@@ -132,6 +133,18 @@ func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (mer
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}
+	// Whose name the merge writes and pushes as is asked of the roles of the orchestrator
+	// and goes into the report and the journal of the merge: a merge that was pushed as
+	// the owner is a merge the person who reads the journal afterwards cannot tell from
+	// one that was pushed as the orchestrator (docs/DESIGN.md §7h, §7i).
+	orchestrator, err := orchestratorOf(ctx, set)
+	if err != nil {
+		return merge.Deps{}, config.Config{}, err
+	}
+	reviewers, err := reviewersOf(ctx, cfg, set)
+	if err != nil {
+		return merge.Deps{}, config.Config{}, err
+	}
 	number := taskOfChange(home, cfg, change)
 	state := stateOfTaskAt(home, cfg, number)
 	return merge.Deps{
@@ -140,7 +153,7 @@ func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (mer
 			CI:              set.CI,
 			Repository:      cfg.Project.Repo,
 			DefaultBranch:   cfg.Project.DefaultBranch,
-			Reviewers:       cfg.Merge.Reviewers,
+			Reviewers:       reviewers,
 			Owners:          cfg.Merge.Owners,
 			AcceptanceLabel: cfg.Acceptance.Label,
 			Task:            number,
@@ -151,13 +164,14 @@ func depsOfChange(configPath, repoDir string, change int, stderr io.Writer) (mer
 			Dir:     checkoutOf(repoDir),
 			Branch:  cfg.Project.DefaultBranch,
 			HeadRef: headRefOf(set.Forge, change),
-			Run:     mergeGit,
+			Run:     gitOf(gitEnvironment(ctx, set)),
 		},
-		Tracker:  set.Tracker,
-		Task:     number,
-		Worktree: state.Worktree,
-		Home:     home,
-		Repo:     cfg.RepoName(),
+		Tracker:      set.Tracker,
+		Task:         number,
+		Worktree:     state.Worktree,
+		Home:         home,
+		Repo:         cfg.RepoName(),
+		Orchestrator: merge.Orchestrator{Mode: orchestrator.Mode, Description: orchestrator.Description},
 	}, cfg, nil
 }
 
@@ -209,6 +223,9 @@ func printMerge(w io.Writer, result merge.Result) {
 		fmt.Fprintf(w, " %s", result.URL)
 	}
 	fmt.Fprintf(w, "\n")
+	if result.Orchestrator.Description != "" {
+		fmt.Fprintf(w, "  orchestrator: %s\n", result.Orchestrator.Description)
+	}
 	switch result.Outcome {
 	case merge.Merged:
 		fmt.Fprintf(w, "  merged: %s of the host is at %s\n", result.Branch, result.MergedSHA)

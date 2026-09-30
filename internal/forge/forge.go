@@ -316,6 +316,21 @@ const (
 	ModeBot = "bot"
 )
 
+// The two modes of the orchestrator, the words the core knows and nothing else: the
+// orchestrator works under the login of the person, together with the owner and
+// therefore not to be told from it, or as an account of the host of the project of
+// its own, which is what separates the two (§7i).
+const (
+	// ModeShared is the login of the person on both sides: what crewflow has always
+	// done, what needs nothing to be set up, and what makes the acceptance of the
+	// owner and the record of a review one signature.
+	ModeShared = "shared"
+	// ModeSeparate is an account of the host of its own, with rights of its own and a
+	// token of its own, which is what lets a gate tell a decision of the owner from
+	// a record of the orchestrator (§7i).
+	ModeSeparate = "separate"
+)
+
 // Identity is whose name the executor of a run works under, and everything the run
 // needs to work under it (docs/DESIGN.md §7i).
 //
@@ -325,12 +340,17 @@ const (
 // values of the account, and the run puts them through the redactor of package secret
 // with what it wrote (§7e).
 type Identity struct {
-	// Mode is ModeOwner or ModeBot: the two words a report and a state file hold.
+	// Mode is the mode of the subject the identity is of: ModeOwner or ModeBot for the
+	// executor of a run, ModeShared or ModeSeparate for the orchestrator of a project.
+	// The four words are what a report and a state file hold, and which two of them
+	// can stand together is the business of whoever asks (docs/DESIGN.md §7i).
 	Mode string
 	// Description is the one line a report shows and a journal keeps, as
 	// "bot — GitHub App crewflow-executor (installation 12345)" or
 	// "owner — the login gh naghuale (shared rights)": a person reading a run has to
-	// see whose name it went under without asking anything.
+	// see whose name it went under without asking anything. For the orchestrator it is
+	// "separate — GitHub App crewflow-orchestrator (installation 12346)" or
+	// "shared — the login gh naghuale (one login with the owner)".
 	Description string
 	// Env are the variables the executor of the run is started with on top of the
 	// ones of the person: a token of the host, and the name and the address its
@@ -403,6 +423,117 @@ func IdentityOf(ctx context.Context, role Forge) (Identity, error) {
 		}, nil
 	}
 	return identified.ExecutorIdentity(ctx)
+}
+
+// AppChecker is a role of the host of the code that can check the accounts of that host
+// it works as on this machine: the key of an App in the store of the machine, the
+// installation of it on the repository of the project, the rights it was given, and
+// whether it hands out a token at all.
+//
+// It is a question of its own because a project has as many accounts as it has
+// subjects: the App of the executor and the App of the orchestrator are two accounts,
+// and a report that answered for one of them under the name of the other would leave a
+// person with two lines and no way to tell which key is missing (docs/DESIGN.md §7i).
+type AppChecker interface {
+	// AppChecks returns the lines about the accounts of the host this role works as,
+	// and nothing about the program the host is read with: a report of a machine checks
+	// gh once and the accounts of the project once each.
+	AppChecks(ctx context.Context) []Check
+}
+
+// AppChecksOf are the lines about the accounts of the host a role works as, and nothing
+// where it has none to tell: a project that is not hosted anywhere, and a host crewflow
+// has no account of, are roles with no check of their own here (§7g, §7i).
+func AppChecksOf(ctx context.Context, role Forge) []Check {
+	checker, ok := role.(AppChecker)
+	if !ok {
+		return nil
+	}
+	return checker.AppChecks(ctx)
+}
+
+// Orchestrated is the role of the host of the code that knows whose name the
+// orchestrator of a project works under: an account of the host of its own with a
+// token of its own, which is what lets a gate tell its records from the records of
+// the owner (docs/DESIGN.md §7i).
+type Orchestrated interface {
+	// OrchestratorIdentity returns what the orchestrator of a project is given to
+	// work under the name of an account: the mode, the one line a report shows, the
+	// environment gh and git are started with, the settings git takes its
+	// credentials from, and the values that must not reach a journal (§7e, §7i).
+	OrchestratorIdentity(ctx context.Context) (Identity, error)
+}
+
+// OrchestratorDescribed is the same role asked without the rights of that name: a
+// report of a machine prints the line of the mode and needs no token of an hour to
+// print it, and a token it minted for that would be a token of an hour in the memory
+// of a command whose work is to print a report (docs/DESIGN.md §7e, §7i).
+type OrchestratorDescribed interface {
+	// DescribeOrchestrator returns the mode of the orchestrator, the one line a report
+	// shows and the settings git takes its credentials from — and no token anywhere
+	// in it.
+	DescribeOrchestrator(ctx context.Context) (Identity, error)
+}
+
+// OrchestratorOf is whose name the orchestrator of this project works under, asked of
+// the role of the host of the code.
+//
+// A project that is not hosted anywhere has no account of a host to be an
+// orchestrator apart from the owner in, and it is the person who runs crewflow: there
+// is nothing to write a record of a review in but that login. A host that cannot
+// answer — no App installed, no key imported, no network — is an error and not a
+// fallback, because a review written in the name of somebody else is a record the
+// gate will not count (docs/DESIGN.md §7h, §7i).
+func OrchestratorOf(ctx context.Context, role Forge) (Identity, error) {
+	if orchestrated, ok := role.(Orchestrated); ok {
+		return orchestrated.OrchestratorIdentity(ctx)
+	}
+	if role == nil {
+		return sharedIdentity(""), nil
+	}
+	return sharedIdentity(loginOf(role)), nil
+}
+
+// DescribeOrchestrator is the line a report shows about the orchestrator, asked the
+// way a role that can answer without a token of its own is asked, and the whole
+// identity of it where it cannot: a report of a machine is worth a token of an hour
+// that it throws away, but it is not worth a line it cannot print (§7e, §7i).
+func DescribeOrchestrator(ctx context.Context, role Forge) (Identity, error) {
+	if described, ok := role.(OrchestratorDescribed); ok {
+		return described.DescribeOrchestrator(ctx)
+	}
+	return OrchestratorOf(ctx, role)
+}
+
+// sharedIdentity is the orchestrator of a project that has no account of a host of
+// its own: the login of the person, named after the account gh is signed in as, and
+// the same login the owner works under (docs/DESIGN.md §7i).
+func sharedIdentity(account string) Identity {
+	if account == "" {
+		return Identity{
+			Mode:        ModeShared,
+			Description: "shared — the login of gh (one login with the owner)",
+		}
+	}
+	return Identity{
+		Mode:        ModeShared,
+		Description: "shared — the login gh " + account + " (one login with the owner)",
+	}
+}
+
+// loginOf is who the role speaks as, and an empty string where it cannot say: a line
+// of a report that names nobody is said as such rather than left blank, and `gh auth
+// status` is a check of doctor of its own (docs/DESIGN.md §7g).
+func loginOf(role Forge) string {
+	signed, ok := role.(SignedIn)
+	if !ok {
+		return ""
+	}
+	account, err := signed.SignedIn(context.Background())
+	if err != nil {
+		return ""
+	}
+	return account
 }
 
 // RequestOpener opens the change request of a branch on behalf of a run whose

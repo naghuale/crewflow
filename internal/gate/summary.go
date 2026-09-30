@@ -35,10 +35,18 @@ type Summary struct {
 	// than be told about it by a check that has not run.
 	Conflicted bool   `json:"conflicted,omitempty"`
 	MergeState string `json:"merge_state,omitempty"`
-	// Reviewers are the accounts whose record counts, and Review the last record
-	// of a review among those: what was decided, about which commit, and by whom.
+	// Reviewers are the accounts whose record of a review counts, and Review the last
+	// record of a review among those: what was decided, about which commit, and by
+	// whom.
 	Reviewers []string   `json:"reviewers,omitempty"`
 	Review    *DecidedOn `json:"review,omitempty"`
+	// Owners are the accounts whose records are the decision of a person, and they
+	// are named apart from the reviewers because they are a different list: a report
+	// of a change has to show whose acceptance would lift `out-of-scope` and whose
+	// `ACCEPTED` takes the result of the task in, and where the orchestrator works
+	// apart from the owner that is not the account the record of a review is written
+	// in (docs/DESIGN.md §7h, §7i).
+	Owners []string `json:"owners,omitempty"`
 	// AcceptanceRequired says that the task of the change is one the owner has to
 	// accept himself, under the label the project named, and OwnerAccept the record in
 	// which he took the result as it stands: a person reading a report has to see that
@@ -120,6 +128,7 @@ func Summarize(f Facts, v Verdict) Summary {
 		Conflicted: f.Conflicted,
 		MergeState: f.MergeState,
 		Reviewers:  f.reviewers(),
+		Owners:     f.owners(),
 		Files:      len(f.Files),
 		Rules:      f.Rules,
 		Verdict:    v,
@@ -284,6 +293,12 @@ func (s Summary) Write(out io.Writer) {
 	fmt.Fprintf(out, "  head: %s\n", s.Head)
 	fmt.Fprintf(out, "  base: %s of %s (%s)\n", s.Base, s.Repository, s.State)
 	fmt.Fprintf(out, "  reviewers: %s\n", listed(s.Reviewers))
+	// The owners are named where the reviewers are, and only where the two lists
+	// differ: a project that has set nobody apart has one list and a report that said
+	// it twice would be a report about a distinction the project does not make (§7i).
+	if !sameAccounts(s.Owners, s.Reviewers) {
+		fmt.Fprintf(out, "  owners: %s\n", listed(s.Owners))
+	}
 	s.writeReview(out)
 	s.writeOwnerAccept(out)
 	if s.State == "open" {
@@ -406,6 +421,18 @@ func (c CheckLine) String() string {
 		line += " for " + shortCommit(c.SHA)
 	}
 	return line
+}
+
+// sameAccounts is whether two lists of logins name the same accounts, whatever their
+// order: a report of a change shows the owners of the project only where they are not
+// the reviewers of it, because the list is shown to say who may do what (docs/DESIGN.md §7i).
+func sameAccounts(one, other []string) bool {
+	if len(one) != len(other) {
+		return false
+	}
+	return !slices.ContainsFunc(one, func(login string) bool {
+		return !isAmong(login, other)
+	})
 }
 
 // number is a number of a task as a report says it, and a task crewflow does not

@@ -152,6 +152,23 @@ var settings = []Setting{
 		Applies: "cfg.Identity.GitHubApp.InstallationID",
 	},
 
+	// [orchestrator] — whose name a review and a merge of this project are written
+	// and pushed as (§7i). Both modes are what crewflow does, for the same reason the
+	// executor has two: one login of the owner while the second App of the project is
+	// not set up, and an account of the host of its own when it is. The App is named
+	// by the same two numbers the App of the executor is, and `roles.AsOrchestrator`
+	// and `crewflow auth app … -as orchestrator` are where both are applied.
+	{
+		Key: "orchestrator.mode", Status: Supported,
+		Supported: []string{"shared", "separate"},
+		Applies:   "cfg.Orchestrator.Mode",
+	},
+	{Key: "orchestrator.github_app.app_id", Status: Supported, Applies: "cfg.Orchestrator.GitHubApp.AppID"},
+	{
+		Key: "orchestrator.github_app.installation_id", Status: Supported,
+		Applies: "cfg.Orchestrator.GitHubApp.InstallationID",
+	},
+
 	// [executor] — the agent a run works with (§7b). The command line, the model,
 	// the time limit and the silence after which a run is marked standing are what a
 	// run, a list and the probe of doctor use; a list of executors to try in turn is

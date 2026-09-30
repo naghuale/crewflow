@@ -11,27 +11,17 @@ import (
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/config"
-	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
-	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
-// The machine a review works on: the roles of a project and the way git is started.
-// They are variables so that a test of the command runs against a host and a
-// repository of its own and reaches neither the network nor a repository of the
+// The machine a review works on: the roles of a project as its orchestrator and the way
+// git is started. They are variables so that a test of the command runs against a host
+// and a repository of its own and reaches neither the network nor a repository of the
 // person who runs it (docs/DESIGN.md §7h).
-var (
-	reviewRoles = roles.AsOwner
-	reviewGit   = runGit
-)
-
-// rolesAsOwner is how a review command gets the roles of a project, named so that a
-// test can put the machine back the way it found it.
-var rolesAsOwner = roles.AsOwner
 
 // runReview is `crewflow review <PR>`: it gathers the facts of a change from the host
 // and from git, hands them to the gate, and says whether the change may be merged —
@@ -41,7 +31,7 @@ var rolesAsOwner = roles.AsOwner
 // answer is worked out in the moment it is asked for, out of the host and out of git,
 // so that it cannot go out of date and cannot disagree with GitHub. With -approve or
 // -request-changes the command writes the record of a review under the change, as the
-// person who runs crewflow: a record an executor could write is a record the gate
+// orchestrator of the project: a record an executor could write is a record the gate
 // would have to refuse (§7h, §7i).
 func runReview(args []string, stdout, stderr io.Writer) int {
 	flags := reviewFlags(stderr)
@@ -68,10 +58,10 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}
-	// A review is the business of the orchestrator, and the orchestrator is the
-	// person: the record of a review counts only because a reviewer of the project
-	// wrote it, and the rules of a branch are rights a person has and the App of an
-	// executor does not (§7h, §7i).
+	// A review is the business of the orchestrator, and the orchestrator is the account
+	// the project gives it: the record of a review counts only because a reviewer of the
+	// project wrote it, and the rules of a branch are rights a person has — and, in the
+	// mode of a separate login, rights the App of the orchestrator has (§7h, §7i).
 	set, err := reviewRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
 	if err != nil {
 		return reviewFailed(stderr, err)
@@ -79,7 +69,10 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	facts := gatherReview(ctx, set, cfg, home, *repoDir, change)
+	facts, err := gatherReview(ctx, set, cfg, home, *repoDir, change)
+	if err != nil {
+		return reviewFailed(stderr, err)
+	}
 	if *approve || *requestChanges != "" {
 		if code := writeReviewRecord(ctx, set, cfg, &facts, change, *approve, *requestChanges, stderr); code != exitOK {
 			return code
@@ -103,39 +96,42 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 // project and out of a checkout of the repository. The task of the change and the
 // paths it was to change come from what crewflow kept of a run of it and from the
 // tracker, and everything else from the host and from git (docs/DESIGN.md §7h).
-func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int) gate.Facts {
+//
+// The two lists of accounts come from the file of the project: the reviewers, whose
+// record of a review is an approval, and the owners, whose records are the decision of a
+// person — where the orchestrator works apart from the owner, the first of the two is
+// its account and the second is not it (§5, §7h, §7i).
+func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int) (gate.Facts, error) {
+	reviewers, err := reviewersOf(ctx, cfg, set)
+	if err != nil {
+		return gate.Facts{}, err
+	}
 	number := taskOfChange(home, cfg, change)
 	return gate.Collect(ctx, gate.Deps{
 		Forge:           set.Forge,
 		CI:              set.CI,
 		Repository:      cfg.Project.Repo,
 		DefaultBranch:   cfg.Project.DefaultBranch,
-		Reviewers:       cfg.Merge.Reviewers,
+		Reviewers:       reviewers,
 		Owners:          cfg.Merge.Owners,
 		AcceptanceLabel: cfg.Acceptance.Label,
 		Task:            number,
 		TaskOf:          taskFactsOf(set, cfg),
 		RequireChecks:   cfg.CI.Required,
-		Git:             historyOf(cfg, repoDir),
-	}, change)
+		Git:             historyOf(ctx, cfg, set, repoDir),
+	}, change), nil
 }
 
 // historyOf is the checkout the history of a change is asked in: the folder crewflow
 // was called in, or the one -repo named. A review is asked in a checkout of the
 // project and creates nothing in it: a fetch of the objects of the head is a fetch
 // like any other, and nothing else of the run writes there (§7h).
-func historyOf(cfg config.Config, repoDir string) gate.History {
+func historyOf(ctx context.Context, cfg config.Config, set forge.Set, repoDir string) gate.History {
 	dir := repoDir
 	if dir == "" {
 		dir = "."
 	}
-	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: reviewGit}
-}
-
-// runGit starts git the way doctor starts every program of a machine: with a closed
-// stdin and the environment of the process, in the folder it is told (§7a).
-func runGit(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
-	return doctor.Command(ctx, name, args, dir, nil)
+	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: gitOf(gitEnvironment(ctx, set))}
 }
 
 // taskFactsOf is what the gate asks the tracker about the task of a change: the paths
@@ -202,7 +198,7 @@ func writeReviewRecord(ctx context.Context, set forge.Set, cfg config.Config, fa
 			change, apart.Reason, apart.Detail)
 		return exitFailure
 	}
-	account, err := accountOfReview(set, cfg)
+	account, err := accountOfReview(ctx, set, cfg)
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}
@@ -213,6 +209,12 @@ func writeReviewRecord(ctx context.Context, set forge.Set, cfg config.Config, fa
 	writer, ok := set.Forge.(forge.CommentWriter)
 	if !ok {
 		return reviewFailed(stderr, fmt.Errorf("the host of the project has nowhere to write a record of a review to"))
+	}
+	// The line of the mode goes out before the record is written and not after: a person
+	// reading a terminal has to see which of the two accounts of the project the record
+	// under the change was written in (docs/DESIGN.md §7h, §7i).
+	if identity, err := orchestratorOf(ctx, set); err == nil {
+		fmt.Fprint(stderr, saidOrchestrator(identity))
 	}
 	if err := writer.WriteComment(ctx, change, body); err != nil {
 		return reviewFailed(stderr, fmt.Errorf("write the record of the review under #%d: %w", change, err))
@@ -228,19 +230,22 @@ func writeReviewRecord(ctx context.Context, set forge.Set, cfg config.Config, fa
 }
 
 // accountOfReview is the account a record of a review is written in, and whether it is
-// one the gate counts: the record of a review is a comment, and it is an approval
-// only because a reviewer of the project wrote it (docs/DESIGN.md §7h).
-func accountOfReview(set forge.Set, cfg config.Config) (string, error) {
+// one the gate counts: the record of a review is a comment, and it is an approval only
+// because an account the project reviews with wrote it (docs/DESIGN.md §7h).
+func accountOfReview(ctx context.Context, set forge.Set, cfg config.Config) (string, error) {
 	signed, ok := set.Forge.(forge.SignedIn)
 	if !ok {
 		return "", fmt.Errorf("the host of the project does not say which account it speaks as, " +
 			"so a record of a review would be written in the name of nobody")
 	}
-	account, err := signed.SignedIn(context.Background())
+	account, err := signed.SignedIn(ctx)
 	if err != nil {
 		return "", err
 	}
-	reviewers := cfg.Merge.Reviewers
+	reviewers, err := reviewersOf(ctx, cfg, set)
+	if err != nil {
+		return "", err
+	}
 	if len(reviewers) == 0 {
 		// The default of §5: a project that names no reviewers has the owner of its
 		// repository, and nobody else.

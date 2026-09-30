@@ -53,6 +53,12 @@
   причину. Состояние прогона теперь пишется до похода к машине за ключом, так что прогон в этом
   ожидании виден в `~/.crewflow/state`.
   ([#88](https://github.com/naghuale/crewflow/pull/88), задача [#67](https://github.com/naghuale/crewflow/issues/67))
+- Режим оркестратора: `[orchestrator] mode = "separate"` — второй GitHub App проекта, от его имени
+  пишется запись ревью и пушится одобренный коммит, а решение владельца (приёмка `ACCEPTED`, `SCOPE:
+  ACCEPTED`) gate считает только от `[merge] owners`, где оркестратора нет, — тем же списком, что и
+  приёмка сборки (#9). Пока App не настроен, режим `shared`, и `doctor` говорит, что это стоит
+  дисциплины.
+  ([#89](https://github.com/naghuale/crewflow/pull/89), задача [#31](https://github.com/naghuale/crewflow/issues/31))
 
 ### Изменено
 

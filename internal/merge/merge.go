@@ -113,12 +113,31 @@ type Deps struct {
 	// they are kept for (docs/DESIGN.md §7).
 	Home string
 	Repo string
+	// Orchestrator is whose name the merge wrote and pushed as: the mode of §7i and
+	// the one line a report of the merge shows and the journal of it keeps. A merge
+	// that was pushed as the owner and a merge that was pushed as the orchestrator are
+	// two different things to a person reading the journal afterwards, and the journal
+	// is the only place that can say which of them happened (§7h, §7i).
+	Orchestrator Orchestrator
 	// Timeout is how long the merge waits for the task of the change to be closed,
 	// Sleep how it waits between the questions about it, and Now the clock the
 	// journal and the state of the task are written with.
 	Timeout time.Duration
 	Sleep   func(ctx context.Context, d time.Duration) error
 	Now     func() time.Time
+}
+
+// Orchestrator is the mode the orchestrator of a project works under and the one line a
+// report shows for it: two words and a description, and never a token — a merge pushes
+// through the helper of the credentials of git, which signs a token of an hour for that
+// one push and nowhere else (docs/DESIGN.md §7h, §7i).
+type Orchestrator struct {
+	// Mode is "shared" or "separate", the two words of §7i, and Description the line
+	// the adapter of the host of the project gave for it: "shared — the login gh
+	// naghuale (one login with the owner)" or "separate — GitHub App
+	// crewflow-orchestrator (installation 12346)".
+	Mode        string `json:"mode,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // Result is everything a person and an orchestrator are told about a merge: which
@@ -148,6 +167,11 @@ type Result struct {
 	TaskClosed   bool     `json:"task_closed,omitempty"`
 	TaskClosedBy ClosedBy `json:"task_closed_by,omitempty"`
 	Left         []string `json:"left,omitempty"`
+	// Orchestrator is whose name the merge was written and pushed as: the same two
+	// words and the same line the journal of the merge keeps, and the first thing a
+	// person looks for in a merge of a project whose owner and orchestrator are two
+	// accounts (§7h, §7i).
+	Orchestrator Orchestrator `json:"orchestrator"`
 	// Journal is where the facts, every command of git and what it wrote are.
 	Journal string `json:"journal"`
 }
@@ -186,20 +210,27 @@ func Run(ctx context.Context, deps Deps, number int) (Result, error) {
 	d.Checkout.Run = journal.logging(d.Checkout.Run)
 	d.Gate.Git = d.Checkout.History()
 
+	// Whose name the merge writes and pushes as is the first line of the journal, before
+	// the facts and before the first command of git: a person who reads a journal of a
+	// merge afterwards has to see it there and not only in the report (docs/DESIGN.md §7h, §7i).
+	if err := journal.Orchestrator(d.Orchestrator); err != nil {
+		return Result{}, err
+	}
 	facts := gate.Collect(ctx, d.Gate, number)
 	verdict := gate.Evaluate(facts)
 	if err := journal.Gate(gate.Summarize(facts, verdict)); err != nil {
 		return Result{}, err
 	}
 	result := Result{
-		Task:    d.task(facts.Task),
-		Change:  number,
-		URL:     facts.URL,
-		Head:    facts.Head,
-		Branch:  d.Checkout.Branch,
-		Outcome: Refused,
-		Verdict: verdict,
-		Journal: journal.Path(),
+		Task:         d.task(facts.Task),
+		Change:       number,
+		URL:          facts.URL,
+		Head:         facts.Head,
+		Branch:       d.Checkout.Branch,
+		Outcome:      Refused,
+		Verdict:      verdict,
+		Orchestrator: d.Orchestrator,
+		Journal:      journal.Path(),
 	}
 
 	// A change that is in the default branch already is not refused, whatever the host

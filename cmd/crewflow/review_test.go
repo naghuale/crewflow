@@ -14,7 +14,9 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
+	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 )
 
@@ -606,9 +608,17 @@ type reviewHost struct {
 	// the state of them is what a repository on the free plan is judged by (§7h, §7k).
 	rules   forge.RuleState
 	written []record
+	// environment is what every command of git of a review or of a merge was started
+	// with, kept so that a test can see the settings of the account the push was made
+	// as (§7i).
+	environment []string
 	// signedIn is the account a record of a review is written in, and the owner of
 	// the repository unless a case says otherwise.
 	signedIn string
+	// orchestrator is the account the orchestrator of a project of a test works as:
+	// empty is the mode of the shared login, and a case that sets it is a project
+	// whose orchestrator is an account of the host of its own (§7i).
+	orchestrator string
 }
 
 // newReviewHost is a project of a test with a change that is green, inside the
@@ -705,13 +715,22 @@ func (h *reviewHost) comment(body string) {
 func (h *reviewHost) use(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
-		reviewRoles = rolesAsOwner
-		reviewGit = runGit
+		reviewRoles = roles.AsOrchestrator
+		gitOf = gitIn
 	})
 	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Forge: h, Tracker: h, CI: h}, nil
 	}
-	reviewGit = h.git
+	gitOf = h.gitIn
+}
+
+// gitIn is the git of this host, and the environment every command of it is started
+// with: the push of a merge and the fetch of a review are the commands whose account
+// matters, and a test of the separate mode has to see what they were started with
+// (docs/DESIGN.md §7i).
+func (h *reviewHost) gitIn(environment []string) merge.Runner {
+	h.environment = environment
+	return h.git
 }
 
 // git is the history of a change of a test: the head is where the host says it is, the
@@ -773,7 +792,12 @@ func (h *reviewHost) Doctor(context.Context) []forge.Check { return nil }
 // SignedIn is the account a record of a review of a test is written in, which is the
 // account gh is signed in as: the file of the project names it as its reviewer, and a
 // record written in the name of anybody else would not be an approval (§7h).
-func (h *reviewHost) SignedIn(context.Context) (string, error) { return h.signedIn, nil }
+func (h *reviewHost) SignedIn(context.Context) (string, error) {
+	if h.orchestrator != "" {
+		return h.orchestrator, nil
+	}
+	return h.signedIn, nil
+}
 
 func (h *reviewHost) WriteComment(_ context.Context, number int, body string) error {
 	h.written = append(h.written, record{number: number, body: body})

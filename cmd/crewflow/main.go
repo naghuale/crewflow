@@ -97,7 +97,7 @@ Subcommands:
   review <PR>    Say whether a change may be merged, and why it may not (§7h)
   merge <PR>     Merge a change the gate allows: fast-forward of the approved commit (§7h)
   verify <PR>    Check a merge: the branch of the host, the task and the CI of it (§7h)
-  auth app       The GitHub App a run works as: import its key, check it (§7i)
+  auth app       The GitHub Apps a run and an orchestrator work as: import a key, check it (§7i)
   help           Show this message
   version        Print the version, the commit and the build time
 
@@ -109,7 +109,8 @@ Subcommands:
   crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
   crewflow merge <PR> [-config path] [-repo path] [-json]
   crewflow verify <PR> [-config path] [-repo path] [-json]
-  crewflow auth app import <file.pem> [-config path]
-  crewflow auth app check [-config path] [-json]
+  crewflow auth app import <file.pem> [-config path] [-as executor|orchestrator]
+  crewflow auth app check [-config path] [-as executor|orchestrator] [-json]
+  crewflow auth git-credential [get] [-config path] [-as executor|orchestrator]
 `)
 }

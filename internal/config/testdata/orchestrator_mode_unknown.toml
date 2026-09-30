@@ -1,0 +1,11 @@
+# A mode the orchestrator has no meaning for: the two words of §7i are the login of
+# the person and an account of the host of its own.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[orchestrator]
+mode = "owner"

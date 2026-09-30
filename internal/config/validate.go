@@ -26,15 +26,16 @@ var placeholderPattern = regexp.MustCompile(`\{[^{}]*\}`)
 
 // The values crewflow knows for the keys that are a choice, not free text.
 var (
-	forgeKinds      = []string{"github", "gitlab", "bitbucket", "gitea", "azure", "none"}
-	trackerKinds    = []string{"forge", "jira", "linear", "files"}
-	ciKinds         = []string{"forge", "jenkins", "command", "none"}
-	identityModes   = []string{"owner", "bot"}
-	mergeBys        = []string{"orchestrator", "executor", "human"}
-	mergeStrategies = []string{"ff-only"}
-	mergeVias       = []string{"git-push", "forge"}
-	isolationModes  = []string{"host", "sandbox", "container"}
-	ownerApprovals  = []string{"all", "risky", "none"}
+	forgeKinds        = []string{"github", "gitlab", "bitbucket", "gitea", "azure", "none"}
+	trackerKinds      = []string{"forge", "jira", "linear", "files"}
+	ciKinds           = []string{"forge", "jenkins", "command", "none"}
+	identityModes     = []string{"owner", "bot"}
+	orchestratorModes = []string{"shared", "separate"}
+	mergeBys          = []string{"orchestrator", "executor", "human"}
+	mergeStrategies   = []string{"ff-only"}
+	mergeVias         = []string{"git-push", "forge"}
+	isolationModes    = []string{"host", "sandbox", "container"}
+	ownerApprovals    = []string{"all", "risky", "none"}
 )
 
 // Validate reports the first thing that is wrong with the config, naming the key
@@ -54,6 +55,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := validateIdentity(c); err != nil {
+		return err
+	}
+	if err := validateOrchestrator(c); err != nil {
 		return err
 	}
 	if err := validateRoles(c); err != nil {
@@ -119,17 +123,42 @@ func validateIdentity(c Config) error {
 	if c.Identity.Mode != "bot" {
 		return nil
 	}
-	if c.Forge.Kind != "github" {
-		return fmt.Errorf("identity.mode: the bot of a run is an account of the host of the code, "+
-			"and the only one crewflow has is the GitHub App; forge.kind is %q", c.Forge.Kind)
+	return validateGitHubApp("identity", c.Forge.Kind, c.Identity.GitHubApp,
+		"the bot of a run is an account of the host of the code")
+}
+
+// validateOrchestrator checks the mode of the orchestrator against the host of the
+// project and against the account it names, the way the mode of the executor is
+// checked: the two modes of §7i are the same for every host, and a file that asks
+// for a mode no host of the project has an account for is refused here, where the
+// owner reads the reason (docs/DESIGN.md §7i).
+func validateOrchestrator(c Config) error {
+	if err := oneOf("orchestrator.mode", c.Orchestrator.Mode, orchestratorModes); err != nil {
+		return err
 	}
-	if c.Identity.GitHubApp.AppID <= 0 {
-		return fmt.Errorf("identity.github_app.app_id: must be the number of the app as it stands in the settings of GitHub, got %d",
-			c.Identity.GitHubApp.AppID)
+	if c.Orchestrator.Mode != ModeSeparate {
+		return nil
 	}
-	if c.Identity.GitHubApp.InstallationID < 0 {
-		return fmt.Errorf("identity.github_app.installation_id: must be a number of an installation or 0 to find it, got %d",
-			c.Identity.GitHubApp.InstallationID)
+	return validateGitHubApp("orchestrator", c.Forge.Kind, c.Orchestrator.GitHubApp,
+		"an orchestrator apart from the owner is an account of the host of the code")
+}
+
+// validateGitHubApp is what an account of a host of its own needs in the file of the
+// project: a host that has such an account of its own, and the number of it as the
+// settings of the host hold it. The key of the account is not there and never is — it
+// is in the keychain of the machine (docs/DESIGN.md §7e, §7i).
+func validateGitHubApp(table, kind string, app GitHubApp, what string) error {
+	if kind != "github" {
+		return fmt.Errorf("%s.mode: %s, and the only one crewflow has is the GitHub App; forge.kind is %q",
+			table, what, kind)
+	}
+	if app.AppID <= 0 {
+		return fmt.Errorf("%s.github_app.app_id: must be the number of the app as it stands in the settings of GitHub, got %d",
+			table, app.AppID)
+	}
+	if app.InstallationID < 0 {
+		return fmt.Errorf("%s.github_app.installation_id: must be a number of an installation or 0 to find it, got %d",
+			table, app.InstallationID)
 	}
 	return nil
 }
@@ -145,6 +174,11 @@ func validateIdentity(c Config) error {
 // An empty list is not a mistake: the owner of the repository reviews the project and
 // accepts its results until it says otherwise, which is what a project that says
 // nothing gets.
+//
+// The list of the owners is one list and one check: the account whose record of an
+// acceptance of a result counts is the account whose record of a scope acceptance
+// counts, and an orchestrator that works apart from the owner is in neither of them
+// (docs/DESIGN.md §7h, §7i).
 func validateLogins(key string, logins []string) error {
 	seen := make(map[string]struct{}, len(logins))
 	for i, login := range logins {

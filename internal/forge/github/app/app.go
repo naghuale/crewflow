@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -18,26 +19,85 @@ import (
 	"github.com/naghuale/crewflow/internal/secret"
 )
 
-// The words of the mode of a run: the executor works as the App, or as the owner of
-// the project. The core knows these two and nothing else, and how a bot of a host is
-// written down is the business of the adapter of that host (docs/DESIGN.md §7i).
+// The words of the modes of the two subjects of a project, the way a report and a
+// state file hold them: the executor works as the App or as the login of the person,
+// and the orchestrator as the App of the project or as the login of the person, which
+// is the same one the owner works under. How an account of a host is written down is
+// the business of the adapter of that host (docs/DESIGN.md §7i).
 const (
 	// ModeOwner is the executor of the login of the person who runs crewflow.
 	ModeOwner = "owner"
-	// ModeBot is the executor of an account of the host of its own.
-	ModeBot = "bot"
+	// ModeShared is the orchestrator of the login of the person, together with the
+	// owner.
+	ModeShared = "shared"
+	// ModeSeparate is the orchestrator as an account of the host of its own.
+	ModeSeparate = "separate"
 )
 
-// The rights crewflow asks the token of an installation for, one by one, and no more:
-// contents and pull requests to write the work of a task, issues to read the task,
-// metadata to be read at all (docs/DESIGN.md §7i). There is no administration and no
-// workflow in it, and a token asked for with more of either is a token the executor
-// of a run may use on a day nobody wanted it.
-var rights = map[string]string{
+// ModeBot is the executor of a run as an account of the host of its own, the word a
+// report and a state file of a run are written in.
+const ModeBot = "bot"
+
+// The rights crewflow asks the token of the App of the executor for, one by one, and
+// no more: contents and pull requests to write the work of a task, issues to read the
+// task, metadata to be read at all (docs/DESIGN.md §7i). There is no administration
+// and no workflow in it, and a token asked for with more of either is a token the
+// executor of a run may use on a day nobody wanted it.
+var runRights = map[string]string{
 	"contents":      "write",
 	"pull_requests": "write",
 	"issues":        "read",
 	"metadata":      "read",
+}
+
+// The rights crewflow asks the token of the App of the orchestrator for: the same
+// four, and the issues in write, because the orchestrator closes the task of a change
+// and leaves a record under it — which is the business of a merge and not of a run
+// (docs/DESIGN.md §7h, §7i). Nothing wider is asked for and nothing wider is
+// accepted: an acceptance of a change is a record of the owner, and the App of the
+// orchestrator is not the owner.
+var orchestratorRights = map[string]string{
+	"contents":      "write",
+	"pull_requests": "write",
+	"issues":        "write",
+	"metadata":      "read",
+}
+
+// Role is whose work a token of an installation is asked for. The rights of a token
+// are the rights of that work, and the two works of a project are not the same work:
+// a run pushes the branch of its task and reads the task, and a review writes the
+// record of a decision and a merge closes the task behind the change (docs/DESIGN.md
+// §7h, §7i).
+type Role string
+
+const (
+	// Executor is the work of a run of the project, and the App of the executor.
+	Executor Role = "executor"
+	// Orchestrator is the work of a review and of a merge, and the App of the
+	// orchestrator.
+	Orchestrator Role = "orchestrator"
+)
+
+// RunRights are the rights of the token of the App of an executor, as a new map every
+// time they are asked for: a caller that checks what an installation may do against
+// them cannot change what crewflow asks for next (docs/DESIGN.md §7i).
+func RunRights() map[string]string { return rightsOf(Executor) }
+
+// OrchestratorRights are the rights of the token of the App of the orchestrator, and
+// the same kind of map: the report of a machine compares the rights of an
+// installation against them and says what is wider (docs/DESIGN.md §7i).
+func OrchestratorRights() map[string]string { return rightsOf(Orchestrator) }
+
+// rightsOf are the rights of a role, and the rights of the executor for a role crewflow
+// has no App for: an App that is not told what it is asked for is the one crewflow has
+// had since the executor was separated from the owner.
+func rightsOf(role Role) map[string]string {
+	switch role {
+	case Orchestrator:
+		return maps.Clone(orchestratorRights)
+	default:
+		return maps.Clone(runRights)
+	}
 }
 
 // Source is the App of one project: what it is, where its key is kept, and the server
@@ -51,6 +111,12 @@ type Source struct {
 	// project. Zero is not a mistake: the App is asked which installation the
 	// repository has, once per run.
 	InstallationID int64
+	// Role is whose work a token of this App is asked for — the executor of a run or
+	// the orchestrator of the project — because the rights of a token are the rights
+	// of that work. Empty is the executor: the App of a project that says nothing
+	// about it is the one crewflow has had since the executor was separated from the
+	// owner (docs/DESIGN.md §7i).
+	Role Role
 	// Repo is the repository as "owner/name", the one repository of the project. Every
 	// path of the API and every command of gh is told a repository this way; the one
 	// exception is the request of a token, which the API of GitHub wants by the name
@@ -128,15 +194,20 @@ func (i Installation) Granted() []string {
 	return namedRights(i.Permissions)
 }
 
-// BeyondARun are the rights an installation holds that a token of a run never asks
+// Beyond are the rights an installation holds that the token of it is never asked
 // for: a right crewflow did not ask for at all — workflows, administration and the
 // rest of what an App can be given — and a right asked for with a level wider than
-// the one of §7i, as `issues write` where a run reads the issues of a task and
-// `contents admin` where a run writes them. Both are the powers the executor of every
-// run of this project has, and a report that lists only the rights of the design is a
-// report of an intention and not of a machine (docs/DESIGN.md §7i).
-func (i Installation) BeyondARun() []string {
-	return beyondARun(i.Permissions)
+// the one of the role, as `issues write` where a run reads the issues of a task and
+// `contents admin` where a run writes them. Both are powers the account of the App
+// holds on every day of a project, and a report that lists only the rights of the
+// design is a report of an intention and not of a machine (docs/DESIGN.md §7i).
+//
+// It is asked of the rights of the installation and of the rights of a token of it
+// alike, against the rights of the role the App works as: the App of the executor and
+// the App of the orchestrator are asked for different rights, and one of them saying
+// "issues write" is no news while the other says it.
+func (i Installation) Beyond(asked map[string]string) []string {
+	return beyond(asked, i.Permissions)
 }
 
 // namedRights are a set of rights as a person reads them, sorted by name, and an empty
@@ -155,20 +226,20 @@ func namedRights(permissions map[string]string) []string {
 	return granted
 }
 
-// beyondARun is what in a set of rights is more than a run of this project is asked
-// for. It is asked of the rights of the installation and of the rights of a token of
-// it alike, and it is one question with one answer: the installation says what the
-// App may do here, and a token says what the executor of a run will be able to do
+// beyond is what in a set of rights is more than the token of a role is asked for. It
+// is asked of the rights of the installation and of the rights of a token of it alike,
+// and it is one question with one answer: the installation says what the App may do
+// here, and a token says what the account of it will be able to do
 // (docs/DESIGN.md §7i).
-func beyondARun(permissions map[string]string) []string {
-	var beyond []string
+func beyond(asked map[string]string, permissions map[string]string) []string {
+	var wider []string
 	for _, right := range namedRights(permissions) {
 		name, level, _ := strings.Cut(right, " ")
-		if asked, known := rights[name]; !known || asked != level {
-			beyond = append(beyond, right)
+		if wanted, known := asked[name]; !known || wanted != level {
+			wider = append(wider, right)
 		}
 	}
-	return beyond
+	return wider
 }
 
 // API is the address of the API of a host: the public one, and the one of a server of
@@ -339,10 +410,10 @@ func (r repository) whole() string {
 }
 
 // asAsked is whether the answer is the token crewflow asked for and nothing more: the
-// one repository of the project, and no right wider than the ones a run is given. A
-// token that came back wider than the request is a token the executor of a run would
-// hold on a day nobody wanted it, and it is refused here, before anybody has used it
-// for anything (docs/DESIGN.md §7i).
+// one repository of the project, and no right wider than the ones the role of the App
+// is given. A token that came back wider than the request is a token the account of
+// the App would hold on a day nobody wanted it, and it is refused here, before anybody
+// has used it for anything (docs/DESIGN.md §7i).
 func (g granted) asAsked(s *Source) error {
 	if len(g.Repositories) != 1 {
 		return fmt.Errorf("the answer of the API names the repositories %s, want only %s",
@@ -351,9 +422,10 @@ func (g granted) asAsked(s *Source) error {
 	if repository := g.Repositories[0].whole(); repository != s.Repo {
 		return fmt.Errorf("the answer of the API names the repository %s, want %s", repository, s.Repo)
 	}
-	if wider := beyondARun(g.Permissions); len(wider) > 0 {
-		return fmt.Errorf("the answer of the API gave the token the rights %s, which are wider than a run of this "+
-			"project asks for: change the rights of the app in the settings of GitHub", strings.Join(wider, ", "))
+	asked := rightsOf(s.role())
+	if wider := beyond(asked, g.Permissions); len(wider) > 0 {
+		return fmt.Errorf("the answer of the API gave the token the rights %s, which are wider than the %s of this "+
+			"project asks for: change the rights of the app in the settings of GitHub", strings.Join(wider, ", "), s.role())
 	}
 	return nil
 }
@@ -411,7 +483,7 @@ func (s *Source) token(ctx context.Context) (Token, int64, error) {
 	}
 	body := map[string]any{
 		"repositories": []string{s.name()},
-		"permissions":  rights,
+		"permissions":  rightsOf(s.role()),
 	}
 	var answer granted
 	path := fmt.Sprintf("/app/installations/%d/access_tokens", installation)
@@ -505,18 +577,97 @@ func (s *Source) Describe(ctx context.Context) (forge.Identity, error) {
 	if err != nil {
 		return forge.Identity{}, err
 	}
-	installation := s.InstallationID
-	if installation == 0 {
-		found, err := s.Installation(ctx)
-		if err != nil {
-			return forge.Identity{}, err
-		}
-		installation = found.ID
+	installation, err := s.installationOf(ctx)
+	if err != nil {
+		return forge.Identity{}, err
 	}
 	return forge.Identity{
 		Mode:        ModeBot,
 		Description: fmt.Sprintf("bot — GitHub App %s (installation %d)", app.Slug, installation),
 	}, nil
+}
+
+// installationOf is the number of the installation the tokens of this App are asked
+// of: the one the file of the project names, and the one the repository has where it
+// names none.
+func (s *Source) installationOf(ctx context.Context) (int64, error) {
+	if s.InstallationID != 0 {
+		return s.InstallationID, nil
+	}
+	found, err := s.Installation(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return found.ID, nil
+}
+
+// DescribeOrchestrator is whose name the orchestrator of a project works under, in one
+// line and without the rights of that name, exactly as [Source.Describe] does for the
+// executor: a report of a machine shows the line and mints no token of an hour for it
+// (docs/DESIGN.md §7e, §7i).
+func (s *Source) DescribeOrchestrator(ctx context.Context) (forge.Identity, error) {
+	app, err := s.App(ctx)
+	if err != nil {
+		return forge.Identity{}, err
+	}
+	installation, err := s.installationOf(ctx)
+	if err != nil {
+		return forge.Identity{}, err
+	}
+	return forge.Identity{
+		Mode:        ModeSeparate,
+		Description: fmt.Sprintf("separate — GitHub App %s (installation %d)", app.Slug, installation),
+		// The helper git takes the credentials of a push from is not a secret and is
+		// not a token: a merge pushes the approved commit through it, and a report of
+		// a machine that prints the mode of the orchestrator is expected to say how a
+		// push of it will be signed (§7h).
+		GitConfig: s.gitConfig(),
+	}, nil
+}
+
+// OrchestratorIdentity is what the orchestrator of a project is given to work under
+// the name of its App: the token gh speaks with, the helper git takes a fresh token
+// from for the push of a merge, and the values that must not reach a journal.
+//
+// The name and the address its commits would be made by are not here, and that is not
+// an omission: nobody commits as the orchestrator, and a merge pushes the very commit
+// the gate approved, made by the executor of the run (docs/DESIGN.md §7h, §7i).
+func (s *Source) OrchestratorIdentity(ctx context.Context) (forge.Identity, error) {
+	token, err := s.Token(ctx)
+	if err != nil {
+		return forge.Identity{}, err
+	}
+	described, err := s.DescribeOrchestrator(ctx)
+	if err != nil {
+		return forge.Identity{}, err
+	}
+	described.Env = []string{
+		// gh is the tool of the adapter, and the token is what makes the record of a
+		// review and the closing of a task the words of the App and not the words of
+		// the person: the gate has to be able to tell the two apart (§7i).
+		"GH_TOKEN=" + token.Value,
+	}
+	described.Secrets = []string{token.Value}
+	return described, nil
+}
+
+// gitConfig are the settings of git that point it at the helper of the credentials of
+// crewflow, and the helper is told which App to sign a token for: a project whose
+// executor and whose orchestrator have an App each has two of them, and a push of a
+// merge must be the one of the orchestrator (§7i).
+func (s *Source) gitConfig() map[string]string {
+	return map[string]string{
+		"credential.helper": "crewflow auth git-credential -as " + string(s.role()),
+	}
+}
+
+// role is whose work this App works as, and the executor where the App is not told: an
+// App of a project that says nothing about it is the App of the executor.
+func (s *Source) role() Role {
+	if s.Role == "" {
+		return Executor
+	}
+	return s.Role
 }
 
 // Identity is what a run in the mode of the bot is given: the token in the

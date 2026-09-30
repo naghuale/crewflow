@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/naghuale/crewflow/internal/forge/github"
+	"github.com/naghuale/crewflow/internal/forge/github/app"
 	"github.com/naghuale/crewflow/internal/secret"
 )
 
@@ -124,3 +125,95 @@ func (s *storeOfTheTest) Set(service, account string, value []byte) error {
 
 // Has says whether a key is in the store, as the keychain of macOS can.
 func (s *storeOfTheTest) Has(service, account string) (bool, error) { return s.key != nil, nil }
+
+// orchestratorConfig is the settings of a project whose orchestrator works as an App
+// of the host of its own, the second App of the project: the mode, and the numbers that
+// say which App it is (docs/DESIGN.md §7i).
+const orchestratorConfig = "\n[orchestrator]\nmode = \"separate\"\n\n[orchestrator.github_app]\napp_id = 5107053\ninstallation_id = 12346\n"
+
+// TestAsOrchestratorGivesTheHostTheNumbersOfTheSecondApp: the file of a project says
+// which App its orchestrator works as, and the adapter of GitHub is what a review and
+// a merge ask — the App of the orchestrator, and not the App of the executor, which is
+// the whole of §7i in two lines of settings.
+func TestAsOrchestratorGivesTheHostTheNumbersOfTheSecondApp(t *testing.T) {
+	m := newMachine()
+
+	set, err := AsOrchestrator(load(t, baseConfig+botConfig+orchestratorConfig), m.env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+	adapter, ok := set.Forge.(*github.Adapter)
+	if !ok {
+		t.Fatalf("the host is %T, want the adapter of GitHub", set.Forge)
+	}
+	if adapter.Orchestrator() == nil {
+		t.Fatal("the adapter of the orchestrator has no app, want the one the file of the project names")
+	}
+	if got := adapter.Orchestrator().AppID; got != 5107053 {
+		t.Errorf("the app of the orchestrator is %d, want 5107053", got)
+	}
+	if got := adapter.Orchestrator().InstallationID; got != 12346 {
+		t.Errorf("the installation of the app of the orchestrator is %d, want 12346", got)
+	}
+	if got := adapter.Orchestrator().Role; got != app.Orchestrator {
+		t.Errorf("the app of the orchestrator works as %q, want %q: its rights are not those of a run",
+			got, app.Orchestrator)
+	}
+}
+
+// TestAsOrchestratorOfAProjectInTheSharedModeHasNoSecondApp: a project that has not
+// set the second App up keeps one login for the orchestrator and the owner, and the
+// adapter it gets has no App of the orchestrator at all — a report of it must not look
+// for a key nobody asked for (§7i).
+func TestAsOrchestratorOfAProjectInTheSharedModeHasNoSecondApp(t *testing.T) {
+	set, err := AsOrchestrator(load(t, baseConfig+botConfig), newMachine().env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+	adapter, ok := set.Forge.(*github.Adapter)
+	if !ok {
+		t.Fatalf("the host is %T, want the adapter of GitHub", set.Forge)
+	}
+	if adapter.Orchestrator() != nil {
+		t.Error("the adapter of a project in the shared mode has an app of the orchestrator, want none")
+	}
+}
+
+// TestARunAndAReviewAreTwoSubjectsOfOneProject: the roles a run works under and the
+// roles a review works under are two asks of the same project, and each of them gets
+// the adapter of its own account: a run may push a branch and a review may not, and a
+// review writes its record in the name of the orchestrator while a run writes nothing
+// of the kind (§7i).
+func TestARunAndAReviewAreTwoSubjectsOfOneProject(t *testing.T) {
+	m := newMachine()
+	cfg := load(t, baseConfig+botConfig+orchestratorConfig)
+
+	asRun, err := New(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	asReview, err := AsOrchestrator(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+
+	run, ok := asRun.Forge.(*github.Adapter)
+	if !ok {
+		t.Fatalf("the host of a run is %T, want the adapter of GitHub", asRun.Forge)
+	}
+	review, ok := asReview.Forge.(*github.Adapter)
+	if !ok {
+		t.Fatalf("the host of a review is %T, want the adapter of GitHub", asReview.Forge)
+	}
+	if review.Orchestrator() == nil {
+		t.Error("a review of this project was given no app of the orchestrator, want the second one")
+	}
+	if run.Orchestrator() != nil {
+		t.Error("a run of this project was given the app of the orchestrator, want none: a run is not a review")
+	}
+	// A run opens the change request of its own work, and a review opens nothing: the
+	// work of a run is pushed by the executor and a review never pushes a branch.
+	if asRun.Opener == nil || asReview.Opener != nil {
+		t.Errorf("a run got the opener %v and a review %v, want them the other way round", asRun.Opener, asReview.Opener)
+	}
+}

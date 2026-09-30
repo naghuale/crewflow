@@ -1,0 +1,23 @@
+# An orchestrator separate from the owner on a project that is not hosted anywhere:
+# there is no host whose account it could work as (§7g, §7i).
+
+[project]
+repo = "naghuale/crewflow"
+
+[forge]
+kind = "none"
+
+[tracker]
+kind = "files"
+
+[ci]
+kind = "none"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[orchestrator]
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 5107053

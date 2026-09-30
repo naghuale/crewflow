@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/github/app"
 )
 
 // The names a report calls the checks of this adapter by: the program, and the
@@ -27,6 +28,23 @@ const (
 	permissionsW  = "the rights of the app are wider than a run of this project needs: "
 	tokenHint     = "a run of this project cannot start without a token of the repository of the project: " +
 		"install the app %d on it, or change project.repo and identity.github_app in %s"
+)
+
+// The names a report calls the same three checks of the App of the orchestrator by: it
+// is a second App of the project, and a report that called both of them "app" would
+// leave a person with two lines and no way to tell which key is missing.
+const (
+	orchestratorKeyCheck   = "orchestrator app key"
+	orchestratorAppCheck   = "orchestrator app"
+	orchestratorTokenCheck = "orchestrator token"
+	// orchestratorImportHint and the rest name the key of §7i of the orchestrator and
+	// not the key of the executor, and the hint says what to do about it.
+	orchestratorImportHint = "download the private key of the app of the orchestrator and run " +
+		"`crewflow auth app import <file.pem>`, then delete the file"
+	orchestratorPermissionsW = "the rights of the app of the orchestrator are wider than the orchestrator of this " +
+		"project needs: "
+	orchestratorTokenHint = "the orchestrator of this project cannot review or merge without a token of the " +
+		"repository of the project: install the app %d on it, or change project.repo and orchestrator.github_app in %s"
 )
 
 // Doctor checks that gh is installed and that somebody is signed in with it,
@@ -54,11 +72,108 @@ func (a *Adapter) Doctor(ctx context.Context) []forge.Check {
 	if version.Status == forge.Fail {
 		return []forge.Check{version}
 	}
-	checks := []forge.Check{version, a.login(ctx)}
-	if a.app == nil {
-		return checks
+	checks := []forge.Check{version}
+	// gh is given the token of the App of the orchestrator in every command where the
+	// orchestrator works apart from the owner, and a token needs no login of its own: a
+	// report that failed on "gh login" would refuse a project that is set up the way
+	// §7i tells it to be set up (§7i).
+	if a.orchestrator == nil {
+		checks = append(checks, a.login(ctx))
 	}
-	return append(checks, a.bot(ctx)...)
+	return append(checks, a.AppChecks(ctx)...)
+}
+
+// AppChecks are the checks of the accounts of the host this adapter works as: the App of
+// the executor under the names a report has always called them, and the App of the
+// orchestrator under its own. They are asked apart from the program of the host, because
+// a project has two accounts and gh is one (§7i).
+func (a *Adapter) AppChecks(ctx context.Context) []forge.Check {
+	var checks []forge.Check
+	if a.app != nil {
+		checks = append(checks, a.bot(ctx)...)
+	}
+	if a.orchestrator != nil {
+		checks = append(checks, a.orchestratorOf(ctx)...)
+	}
+	return checks
+}
+
+// orchestratorOf are the checks of the App of the orchestrator: the key is in the
+// store of the machine, the App is installed on the repository with no more rights than
+// the orchestrator asks for, and the App does hand out a token of that repository. They
+// are the checks of the App of the executor under other names and against other rights,
+// because a report of a machine that showed one App where there are two would be a
+// report of a project crewflow is not working on (§7h, §7i).
+func (a *Adapter) orchestratorOf(ctx context.Context) []forge.Check {
+	has, err := a.orchestrator.HasKey()
+	switch {
+	case err != nil:
+		return []forge.Check{{
+			Name:   orchestratorKeyCheck,
+			Status: forge.Fail,
+			Detail: err.Error(),
+			Hint:   orchestratorImportHint,
+		}}
+	case !has:
+		return []forge.Check{{
+			Name:   orchestratorKeyCheck,
+			Status: forge.Fail,
+			Detail: fmt.Sprintf("the store holds no key of the app %d of the orchestrator", a.orchestrator.AppID),
+			Hint:   orchestratorImportHint,
+		}}
+	}
+	key := forge.Check{
+		Name:   orchestratorKeyCheck,
+		Status: forge.OK,
+		Detail: fmt.Sprintf("the store holds the key of the app %d of the orchestrator", a.orchestrator.AppID),
+	}
+	installation, err := a.orchestrator.Installation(ctx)
+	if err != nil {
+		return []forge.Check{key, {
+			Name:   orchestratorAppCheck,
+			Status: forge.Fail,
+			Detail: err.Error(),
+			Hint: fmt.Sprintf("install the app %d on %s, or change orchestrator.github_app in %s",
+				a.orchestrator.AppID, a.repo, a.env.ConfigPath),
+		}}
+	}
+	check := forge.Check{
+		Name:   orchestratorAppCheck,
+		Status: forge.OK,
+		Detail: fmt.Sprintf("installation %d on %s, rights: %s",
+			installation.ID, a.repo, listed(installation.Granted())),
+	}
+	if extra := installation.Beyond(app.OrchestratorRights()); len(extra) > 0 {
+		check.Status = forge.Fail
+		check.Hint = orchestratorPermissionsW + listed(extra) +
+			"\nchange the permissions of the app in the settings of GitHub: the orchestrator reviews, merges and " +
+			"closes the task of a change, and it is not the owner"
+	}
+	return append([]forge.Check{key, check}, a.tokenOfOrchestrator(ctx))
+}
+
+// tokenOfOrchestrator is the check that the App of the orchestrator hands out a token of
+// the repository of the project: a review and a merge in the mode of a separate login
+// are written and pushed in the name of that App, and a refusal of the API here is a
+// refusal a person sees before a review and not in the middle of one. The token is asked
+// for and thrown away — nothing of it is shown, and nothing of it is used for anything
+// (docs/DESIGN.md §7e, §7i).
+func (a *Adapter) tokenOfOrchestrator(ctx context.Context) forge.Check {
+	token, err := a.orchestrator.Token(ctx)
+	if err != nil {
+		return forge.Check{
+			Name:   orchestratorTokenCheck,
+			Status: forge.Fail,
+			Detail: err.Error(),
+			Hint:   fmt.Sprintf(orchestratorTokenHint, a.orchestrator.AppID, a.env.ConfigPath),
+		}
+	}
+	return forge.Check{
+		Name:   orchestratorTokenCheck,
+		Status: forge.OK,
+		Detail: fmt.Sprintf("the api gave a token of the installation for %s, good until %s; it is not used and not shown",
+			a.repo, token.ExpiresAt.UTC().Format(time.RFC3339)),
+	}
 }
 
 // bot are the checks of a project whose executor works as the App: the key is in the
@@ -112,7 +227,7 @@ func (a *Adapter) bot(ctx context.Context) []forge.Check {
 	// right asked for with a wider level than §7i is the same thing said in another
 	// way. A report that says only what was asked for is a report of an intention and
 	// not of a machine (docs/DESIGN.md §7i).
-	if extra := installation.BeyondARun(); len(extra) > 0 {
+	if extra := installation.Beyond(app.RunRights()); len(extra) > 0 {
 		check.Status = forge.Fail
 		check.Hint = permissionsW + listed(extra) +
 			"\nchange the permissions of the app in the settings of GitHub: a run of this project only pushes its own branch"

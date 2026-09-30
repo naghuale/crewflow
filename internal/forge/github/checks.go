@@ -246,8 +246,12 @@ type apiAnswer struct {
 // which is enough while the question is one that always has one; a question about the
 // rules of a branch has three answers, and which of them came is in the status.
 func (a *Adapter) api(ctx context.Context, path string) (apiAnswer, error) {
+	environment, err := a.speaking(ctx)
+	if err != nil {
+		return apiAnswer{}, err
+	}
 	command := []string{"api", "--include", path}
-	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", a.environment())
+	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", environment)
 	if err != nil {
 		return apiAnswer{}, fmt.Errorf("gh api %s: %w", path, err)
 	}

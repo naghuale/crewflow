@@ -15,6 +15,14 @@ mode = "bot"
 app_id = 5107052
 installation_id = 165781718
 
+[orchestrator]
+# The orchestrator works under the login of the owner, the way it has since the pilot:
+# the second App (crewflow-orchestrator) is not set up on this machine yet, so `doctor`
+# warns that the acceptance of the owner, the label `approved` and every bypass of a rule
+# are held on the discipline of whoever writes them (§7i, crewflow#31). Switch to
+# `mode = "separate"` with its own `[orchestrator.github_app]` and import its key.
+mode = "shared"
+
 [executor]
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
 timeout = "120m"
@@ -68,8 +76,10 @@ strategy = "ff-only"
 # Логины, чья запись ревью считается одобрением (§7h). Пусто — владелец
 # репозитория, то есть naghuale. Запись исполнителя (App) одобрением не считается.
 reviewers = []
-# Логины, чья запись приёмки считается приёмкой (§7h). Пусто — владелец
-# репозитория. Принимает тот, кто смотрит результат своими глазами.
+# Логины, чьи записи считаются решением владельца (§7h): приёмка результата
+# (`ACCEPTED <sha>`) и `SCOPE: ACCEPTED` — файл вне границ задачи. Пусто — владелец
+# репозитория. Оркестратора в режиме separate (§7i) здесь нет: он пишет запись
+# ревью, а решение владельца — нет.
 owners = []
 
 [acceptance]

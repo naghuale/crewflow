@@ -150,7 +150,7 @@ func TestHostOfWithoutAHost(t *testing.T) {
 		CI:      config.CI{Kind: "none"},
 	}
 
-	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode)
+	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode, cfg.Orchestrator.Mode)
 	if err != nil {
 		t.Fatalf("hostOf returned an error: %v", err)
 	}

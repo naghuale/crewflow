@@ -92,9 +92,14 @@ func runAuthApp(args []string, stdout, stderr io.Writer) int {
 // and read back to be held as a key once more — a store that kept a part of it is a
 // store a run of this project cannot sign a token with, and a person has to find that
 // out here rather than in the middle of a task (docs/DESIGN.md §7e, §7i).
+//
+// `-as orchestrator` is the key of the second App of a project, and it goes into the store
+// under its own name: a project with two Apps has two keys, and one item under one name is
+// one of them (§7i).
 func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 	flags := authFlags("auth app import", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	as := subjectFlag(flags, stderr)
 	// The path of the key comes first, as a person writes it, and the flags of the
 	// command after it: the flag package of Go stops at the first word that is not a
 	// flag, so both orders have to mean the same thing.
@@ -113,10 +118,9 @@ func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return authFailed(stderr, err)
 	}
-	appID := cfg.Identity.GitHubApp.AppID
-	if appID == 0 {
-		return authFailed(stderr, fmt.Errorf("identity.github_app.app_id: the file of the project does not name an app, "+
-			"so there is no key to put away: set it in %s", *configPath))
+	appID, err := appIDOf(cfg, *configPath, *as)
+	if err != nil {
+		return authFailed(stderr, err)
 	}
 	downloaded, err := os.ReadFile(path)
 	if err != nil {
@@ -155,6 +159,7 @@ func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 	flags := authFlags("auth app check", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	as := subjectFlag(flags, stderr)
 	asJSON := flags.Bool("json", false, "print the check as JSON, for the orchestrator")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
@@ -169,7 +174,7 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return authFailed(stderr, err)
 	}
-	source, err := appOf(cfg, *configPath, secret.NewNotices(stderr))
+	source, err := appOf(cfg, *configPath, *as, secret.NewNotices(stderr))
 	if err != nil {
 		return authFailed(stderr, err)
 	}
@@ -184,12 +189,25 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 	answer := struct {
 		Mode         string            `json:"mode"`
 		Description  string            `json:"description"`
+		Subject      string            `json:"subject"`
 		AppID        int64             `json:"app_id"`
 		Key          bool              `json:"key"`
 		Installation *app.Installation `json:"installation,omitempty"`
-	}{Mode: app.ModeBot, AppID: source.AppID, Key: hasKey}
+	}{Mode: app.ModeBot, Subject: *as, AppID: source.AppID, Key: hasKey}
+	if *as == "orchestrator" {
+		// A check of the app of the orchestrator answers about the orchestrator, and a
+		// report that said "bot" about it would be a report about the wrong account of
+		// the host (§7i).
+		answer.Mode = app.ModeSeparate
+	}
 	if hasKey {
-		identity, err := source.Describe(ctx)
+		// The line of the subject the check is about: the executor of a run or the
+		// orchestrator of the project, in the words of §7i for each of them.
+		describe := source.Describe
+		if *as == "orchestrator" {
+			describe = source.DescribeOrchestrator
+		}
+		identity, err := describe(ctx)
 		if err != nil {
 			return authFailed(stderr, err)
 		}
@@ -209,7 +227,7 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	if !*asJSON {
-		fmt.Fprintf(stdout, "executor: %s\n", answer.Description)
+		fmt.Fprintf(stdout, "%s: %s\n", *as, answer.Description)
 		fmt.Fprintf(stdout, "key: there in the store of this machine, as %q\n", secret.AppKey(answer.AppID))
 	}
 	installation, err := source.Installation(ctx)
@@ -229,13 +247,17 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "installation: %d on %s\n", installation.ID, source.Repo)
 		fmt.Fprintf(stdout, "rights: %s\n", strings.Join(installation.Granted(), ", "))
 	}
-	// The rights of an app wider than a run needs are said and are a failure of the
-	// check: they are the powers of the executor of every run of this project, and §7i
+	// The rights of an app wider than its work needs are said and are a failure of the
+	// check: they are the powers of that account on every day of this project, and §7i
 	// is about exactly those powers. They go to the error in both shapes of the answer,
 	// because a person has to change them and a script has to fail on them.
-	if extra := installation.BeyondARun(); len(extra) > 0 {
-		fmt.Fprintf(stderr, "crewflow auth app check: the app %d may do more than a run of this project needs: %s; "+
-			"change its permissions in the settings of GitHub\n", source.AppID, strings.Join(extra, ", "))
+	asked := app.RunRights()
+	if *as == "orchestrator" {
+		asked = app.OrchestratorRights()
+	}
+	if extra := installation.Beyond(asked); len(extra) > 0 {
+		fmt.Fprintf(stderr, "crewflow auth app check: the app %d may do more than the %s of this project needs: %s; "+
+			"change its permissions in the settings of GitHub\n", source.AppID, *as, strings.Join(extra, ", "))
 		return exitFailure
 	}
 	return exitOK
@@ -251,19 +273,33 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 // not be handed one twice. The helper answers for the mode of the bot alone — a project
 // in the mode of the owner pushes with the login of the person, and a helper that had
 // something to say about that would be a helper in the way of the login of a person.
+//
+// `-as orchestrator` is the helper of the push of a merge in the mode of a separate
+// login: a project has two Apps then, and the push of the approved commit has to be
+// signed by the one of the orchestrator and not by the one of the executor (§7h, §7i).
 func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	flags := authFlags("auth git-credential", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
-	// Git says what it wants with the operation alone, and it comes first because that
-	// is how git writes the command line: `crewflow auth git-credential get`. A person
-	// who runs it by hand may put the flags before the operation, and both orders mean
-	// the same thing.
+	// Whom the helper signs a token for: the executor of a run by default, and the
+	// orchestrator of the project where it is asked. The two are one word each because
+	// they are the two subjects of a project and crewflow knows no third (§7i).
+	as := flags.String("as", "executor", "whose account the token is for: executor | orchestrator")
+	// The path of the key comes first, as a person writes it, and the flags of the
+	// command after it: the flag package of Go stops at the first word that is not a
+	// flag, so both orders have to mean the same thing.
 	operation, rest := takeFirst(args)
 	if err := flags.Parse(rest); err != nil {
 		return exitUsage
 	}
 	if flags.NArg() > 0 {
 		fmt.Fprintf(stderr, "crewflow auth git-credential: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+	switch *as {
+	case "executor", "orchestrator":
+	default:
+		fmt.Fprintf(stderr, "crewflow auth git-credential: whose account is %q? executor or orchestrator\n\n", *as)
 		usage(stderr)
 		return exitUsage
 	}
@@ -280,14 +316,16 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return authFailed(stderr, err)
 	}
-	if cfg.Identity.Mode != "bot" || request["protocol"] != "https" ||
+	if !worksAsAnAccountOfItsOwn(cfg, *as) ||
+		request["protocol"] != "https" ||
 		request["host"] != hostOfProject(cfg) || request["path"] != cfg.Project.Repo {
 		// Nothing said is the right answer for anything that is not a push of this
-		// project to this host: git then asks whoever else can answer, which is what
-		// it did before crewflow had a helper to ask.
+		// project to this host, and for a push in a mode with no account of its own to
+		// sign it: git then asks whoever else can answer, which is what it did before
+		// crewflow had a helper to ask (§7i).
 		return exitOK
 	}
-	source, err := appOf(cfg, *configPath, secret.NewNotices(stderr))
+	source, err := appOf(cfg, *configPath, *as, secret.NewNotices(stderr))
 	if err != nil {
 		return authFailed(stderr, err)
 	}
@@ -332,31 +370,105 @@ func readRequest(in io.Reader) (map[string]string, error) {
 	return request, nil
 }
 
-// appOf is the app of a project as the commands about it see it: the settings of the
-// project, the store of the machine where its key is, the HTTP to the host and the
-// clock. Every field is a plain value, which is what makes a test of these commands a
-// test of a store and a server of its own (docs/DESIGN.md §7i).
+// subjectFlag is the flag every command about an app of a project has: whose account it
+// is about, `executor` or `orchestrator`, the two subjects of §7i. The help is one line and
+// the same everywhere, so that a person who has read it once knows it in the next command.
+func subjectFlag(flags *flag.FlagSet, stderr io.Writer) *string {
+	return flags.String("as", "executor", "whose account this is about: executor | orchestrator")
+}
+
+// appIDOf is the number of the App a subject of the project works as, and why there is
+// none where the project names none: the keys of two Apps go into the store under two
+// names, and a key put away for an app nobody named is a key of nothing (§7i).
+func appIDOf(cfg config.Config, configPath, subject string) (int64, error) {
+	switch subject {
+	case "executor":
+		if cfg.Identity.GitHubApp.AppID == 0 {
+			return 0, fmt.Errorf("identity.github_app.app_id: the file of the project does not name an app: set it in %s", configPath)
+		}
+		return cfg.Identity.GitHubApp.AppID, nil
+	case "orchestrator":
+		if cfg.Orchestrator.GitHubApp.AppID == 0 {
+			return 0, fmt.Errorf("orchestrator.github_app.app_id: the file of the project does not name an app: set it in %s", configPath)
+		}
+		return cfg.Orchestrator.GitHubApp.AppID, nil
+	default:
+		return 0, fmt.Errorf("whose account is %q? executor or orchestrator", subject)
+	}
+}
+
+// worksAsAnAccountOfItsOwn is whether the subject works as an account of the host of
+// the project at all: the executor in the mode of the bot and the orchestrator in the
+// mode of a separate login, and nobody else. A project in the mode of the owner pushes
+// with the login of the person, and a helper of an App in the way of that login would
+// be a helper crewflow put there for nothing (§7i).
+func worksAsAnAccountOfItsOwn(cfg config.Config, subject string) bool {
+	switch subject {
+	case "executor":
+		return cfg.Identity.Mode == "bot"
+	case "orchestrator":
+		return cfg.Orchestrator.Mode == config.ModeSeparate
+	default:
+		return false
+	}
+}
+
+// appOf is the app a subject of a project works as, as the commands about it see it:
+// the settings of the project, the store of the machine where its key is, the HTTP to
+// the host and the clock. Every field is a plain value, which is what makes a test of
+// these commands a test of a store and a server of its own (docs/DESIGN.md §7i).
+//
+// The subject is "executor" or "orchestrator", the two of §7i: a project in the mode of
+// the shared login has no app for the orchestrator, and a project that asks for the
+// separate one has to name its second app.
 //
 // The store is behind the wait of the keychain of macOS and says what it is about to
 // wait for to the notices of the command: a check that stands in front of a window of
 // the system in silence for ever is a check that looks like a machine that hangs (§7i).
-func appOf(cfg config.Config, configPath string, notices *secret.Notices) (*app.Source, error) {
-	if cfg.Identity.Mode != "bot" {
-		return nil, fmt.Errorf("identity.mode: the executor of this project works as %q, "+
-			"so there is no app of its own: set [identity] mode = %q in %s", cfg.Identity.Mode, "bot", configPath)
+func appOf(cfg config.Config, configPath, subject string, notices *secret.Notices) (*app.Source, error) {
+	switch subject {
+	case "executor":
+		if cfg.Identity.Mode != "bot" {
+			return nil, fmt.Errorf("identity.mode: the executor of this project works as %q, "+
+				"so there is no app of its own: set [identity] mode = %q in %s", cfg.Identity.Mode, "bot", configPath)
+		}
+		if cfg.Identity.GitHubApp.AppID == 0 {
+			return nil, fmt.Errorf("identity.github_app.app_id: the file of the project does not name an app: set it in %s", configPath)
+		}
+		return sourceOfApp(cfg, configPath, notices, app.Executor,
+			cfg.Identity.GitHubApp.AppID, cfg.Identity.GitHubApp.InstallationID), nil
+	case "orchestrator":
+		if cfg.Orchestrator.Mode != config.ModeSeparate {
+			return nil, fmt.Errorf("orchestrator.mode: the orchestrator of this project works as %q, "+
+				"so there is no app of its own: set [orchestrator] mode = %q in %s",
+				cfg.Orchestrator.Mode, config.ModeSeparate, configPath)
+		}
+		if cfg.Orchestrator.GitHubApp.AppID == 0 {
+			return nil, fmt.Errorf("orchestrator.github_app.app_id: the file of the project does not name an app: set it in %s", configPath)
+		}
+		return sourceOfApp(cfg, configPath, notices, app.Orchestrator,
+			cfg.Orchestrator.GitHubApp.AppID, cfg.Orchestrator.GitHubApp.InstallationID), nil
+	default:
+		return nil, fmt.Errorf("whose account is %q? executor or orchestrator", subject)
 	}
-	if cfg.Identity.GitHubApp.AppID == 0 {
-		return nil, fmt.Errorf("identity.github_app.app_id: the file of the project does not name an app: set it in %s", configPath)
-	}
+}
+
+// sourceOfApp is the App of a subject of the project as a command signs a token with it:
+// the numbers the file of the project names, the repository it is for, the address of
+// the API of the host, the store of the machine where its key is, and the clock the
+// token is signed with (docs/DESIGN.md §7i).
+func sourceOfApp(cfg config.Config, configPath string, notices *secret.Notices,
+	role app.Role, appID, installationID int64) *app.Source {
 	return &app.Source{
-		AppID:          cfg.Identity.GitHubApp.AppID,
-		InstallationID: cfg.Identity.GitHubApp.InstallationID,
+		AppID:          appID,
+		InstallationID: installationID,
+		Role:           role,
 		Repo:           cfg.Project.Repo,
 		BaseURL:        app.API(cfg.Forge.Host),
 		Store:          storeOfSecrets(notices),
 		HTTP:           httpOfMachine,
 		Now:            clockOfMachine,
-	}, nil
+	}
 }
 
 // takeFirst is the first word of the arguments that is not a flag, and the rest of them

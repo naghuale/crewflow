@@ -1,0 +1,11 @@
+# The mode of an account of its own without the account: there is nothing to be
+# separate from the owner with (§7i).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[orchestrator]
+mode = "separate"

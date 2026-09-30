@@ -49,6 +49,16 @@ func TestLoadRoleKinds(t *testing.T) {
 			"forge": "", "jenkins": noTask, "command": "#59", "none": "",
 		}},
 		{table: "merge", key: "via", kinds: map[string]string{"git-push": "", "forge": "#58"}},
+		// The mode of each of the two subjects is a choice crewflow does in every
+		// one of its values: the login of the owner or an account of the host for
+		// the executor, one login for both or an account of its own for the
+		// orchestrator (docs/DESIGN.md §7i).
+		{table: "identity", key: "mode", kinds: map[string]string{"owner": ""}},
+		{table: "identity", key: "mode", kinds: map[string]string{"bot": ""},
+			besides: "\n[identity.github_app]\napp_id = 5107052\n"},
+		{table: "orchestrator", key: "mode", kinds: map[string]string{"shared": ""}},
+		{table: "orchestrator", key: "mode", kinds: map[string]string{"separate": ""},
+			besides: "\n[orchestrator.github_app]\napp_id = 5107053\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.table+"."+tc.key, func(t *testing.T) {
@@ -108,6 +118,10 @@ func TestLoadRoleDefaults(t *testing.T) {
 		{"tracker.project", cfg.Tracker.Project, ""},
 		{"ci.kind", cfg.CI.Kind, "forge"},
 		{"merge.via", cfg.Merge.Via, "git-push"},
+		// Both subjects of a project work under the login of the person until it
+		// says otherwise (§7i).
+		{"identity.mode", cfg.Identity.Mode, "owner"},
+		{"orchestrator.mode", cfg.Orchestrator.Mode, "shared"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {

@@ -202,11 +202,17 @@ type Facts struct {
 	// task without that label is merged as it always was (docs/DESIGN.md §5, §7f, §7h).
 	Labels          []string
 	AcceptanceLabel string
-	// Owners are the logins whose record of an acceptance counts, with the default of
-	// §5 filled in, and OwnerAccepts the records in which the owner of the project says
-	// that they have taken the result of the task as it stands: under the same rules of
-	// the author and of the editing as an approval, because an acceptance anybody can
-	// rewrite is not one (docs/DESIGN.md §7h).
+	// Owners are the logins whose records are the decision of a person and not the work
+	// of the orchestrator, with the default of §5 filled in: the acceptance of a result
+	// of a task, the taking of a file outside the boundaries of that task, and every
+	// other record only an owner may write. The list is one and it is separate from the
+	// reviewers because the subjects are separate: where the orchestrator of a project
+	// works apart from the owner, its record of a review is counted and its acceptance
+	// is not (docs.DESIGN.md §7h, §7i). An empty list is the owner of the repository, as
+	// the empty list of reviewers is. OwnerAccepts are the records in which the owner of
+	// the project says that they have taken the result of the task as it stands: under
+	// the same rules of the author and of the editing as an approval, because an
+	// acceptance anybody can rewrite is not one (docs/DESIGN.md §7h).
 	Owners       []string
 	OwnerAccepts []OwnerAccept
 	// Task is the number of the task the change is of, which a report names.
@@ -473,7 +479,7 @@ func (f Facts) boundaries() (Verdict, bool) {
 	}
 	return refused(OutOfScope, fmt.Sprintf("the change touches %s, which task %d was not to change; "+
 		"only %s may take a file into their own hands, with a record `SCOPE: ACCEPTED %s <why>` under the change",
-		listed(outside), f.Task, listed(f.reviewers()), f.Head)), true
+		listed(outside), f.Task, listed(f.owners()), f.Head)), true
 }
 
 // Outside are the files the change touches that the task of it was not to change,
@@ -485,12 +491,18 @@ func (f Facts) Outside() ([]string, error) {
 	return task.Boundaries(f.Boundaries).Outside(f.Files)
 }
 
-// accepted is the last record of acceptance that counts: of a reviewer, not edited,
-// and written for the head as it stands.
+// accepted is the last record of acceptance that counts: of an owner of the project,
+// not edited, and written for the head as it stands.
+//
+// The list is the owners and not the reviewers: an acceptance is a person taking a file
+// into their own hands, and where the orchestrator of a project works apart from the
+// owner it is a reviewer of the project whose record of a review counts and whose
+// acceptance does not — the two records are as different as the two subjects that write
+// them (§7h, §7i).
 func (f Facts) accepted() (Acceptance, bool) {
 	records := make([]Acceptance, 0, len(f.Accepted))
 	for _, record := range f.Accepted {
-		if !f.isReviewer(record.Author) || record.Edited {
+		if !f.isOwner(record.Author) || record.Edited {
 			continue
 		}
 		records = append(records, record)
@@ -648,17 +660,24 @@ func (f Facts) approvedCommit() (string, bool) {
 // ones the file of the project names, or the owner of the repository when it names
 // none (docs/DESIGN.md §5, §7h).
 func (f Facts) isReviewer(author string) bool {
-	return slices.ContainsFunc(f.reviewers(), func(reviewer string) bool {
-		return strings.EqualFold(reviewer, author)
-	})
+	return isAmong(author, f.reviewers())
 }
 
-// isOwner is whether the account may accept the result of a task: the ones the file of
-// the project names as its owners, or the owner of the repository when it names none
-// (docs/DESIGN.md §5, §7h).
+// isOwner is whether the account may take a result in: the ones the file of the project
+// names as its owners, or the owner of the repository when it names none. Every record
+// that is a decision of a person and not the work of the orchestrator is counted from
+// this list and from no other — the `ACCEPTED <sha>` of a result and the
+// `SCOPE: ACCEPTED` of a file alike — and an orchestrator that works apart from the
+// owner is in neither of them unless a project says so (docs/DESIGN.md §5, §7h, §7i).
 func (f Facts) isOwner(author string) bool {
-	return slices.ContainsFunc(f.owners(), func(owner string) bool {
-		return strings.EqualFold(owner, author)
+	return isAmong(author, f.owners())
+}
+
+// isAmong is whether the account is named in the list, as the host writes a login and
+// as a person writes it: the letters of a login are its letters whatever their case.
+func isAmong(author string, logins []string) bool {
+	return slices.ContainsFunc(logins, func(login string) bool {
+		return strings.EqualFold(login, author)
 	})
 }
 
@@ -674,11 +693,14 @@ func (f Facts) reviewers() []string {
 	return nil
 }
 
-// owners are the accounts who may accept the result of a task, with the default of §5
-// filled in: a project that names none has the owner of its repository, and nothing
-// else. A project whose repository names no owner has nobody who may accept, and a task
-// of it marked `owner-check` is then refused for a missing acceptance — a record of one
-// is a record nobody could write.
+// owners are the accounts whose records are the decision of a person — the one who
+// takes the result of a task in, the one who takes a file outside the boundaries of it
+// into their own hands — with the default of §5 filled in the same way as the reviewers:
+// a project that names none has the owner of its repository, and nothing else. A project
+// whose repository names no owner has nobody who may accept, and a task of it marked
+// `owner-check` is then refused for a missing acceptance — a record of one is a record
+// nobody could write. An orchestrator that works apart from the owner is in neither list
+// of §5 unless a project puts it there (docs/DESIGN.md §7h, §7i).
 func (f Facts) owners() []string {
 	if len(f.Owners) > 0 {
 		return f.Owners

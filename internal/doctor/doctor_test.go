@@ -58,7 +58,7 @@ run = ["golangci-lint", "run", "./..."]
 	report := runOn(t, m, config)
 
 	want := []string{
-		"config", "git", "gh", "gh login", "executor identity", "executor",
+		"config", "git", "gh", "gh login", "executor identity", "orchestrator identity", "executor",
 		"access read", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {

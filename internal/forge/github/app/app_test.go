@@ -104,7 +104,7 @@ func TestInstallationHoldsTheRightsOfTheAnswerOfTheDocumentation(t *testing.T) {
 			break
 		}
 	}
-	if beyond := installation.BeyondARun(); len(beyond) > 0 {
+	if beyond := installation.Beyond(RunRights()); len(beyond) > 0 {
 		t.Errorf("the rights beyond a run are %v, want none: these are the rights of §7i", beyond)
 	}
 }
@@ -223,7 +223,7 @@ func TestInstallationBeyondARunIsEveryRightThatIsNotTheOneOfARun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			installation := Installation{Permissions: tc.rights}
 
-			beyond := installation.BeyondARun()
+			beyond := installation.Beyond(RunRights())
 
 			if len(beyond) != len(tc.want) {
 				t.Fatalf("the rights beyond a run are %v, want %v", beyond, tc.want)
@@ -252,7 +252,7 @@ func TestTheAnswerOfTheDocumentationWithARightTooManyNamesIt(t *testing.T) {
 		t.Fatalf("Installation: %v", err)
 	}
 
-	beyond := installation.BeyondARun()
+	beyond := installation.Beyond(RunRights())
 	if len(beyond) != 1 || beyond[0] != "workflows write" {
 		t.Errorf("the rights beyond a run are %v, want the one that is too wide", beyond)
 	}

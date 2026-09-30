@@ -57,6 +57,16 @@ func TestLoadRejects(t *testing.T) {
 			"identity_bot_without_a_forge.toml",
 			[]string{"identity.mode", "GitHub App", `"none"`},
 		},
+		{"orchestrator_mode_unknown.toml", []string{"orchestrator.mode", "owner", "shared, separate"}},
+		{
+			"orchestrator_separate_without_app.toml",
+			[]string{"orchestrator.github_app.app_id", "settings of GitHub"},
+		},
+		{"orchestrator_separate_app_id_zero.toml", []string{"orchestrator.github_app.app_id"}},
+		{
+			"orchestrator_separate_without_a_forge.toml",
+			[]string{"orchestrator.mode", "GitHub App", `"none"`},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.file, func(t *testing.T) {
@@ -76,7 +86,7 @@ func TestLoadRejects(t *testing.T) {
 // TestLoadAccepts checks that the two valid files pass Load, which validates.
 func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
-		"example.toml", "minimal.toml", "identity_bot.toml",
+		"example.toml", "minimal.toml", "identity_bot.toml", "orchestrator_separate.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

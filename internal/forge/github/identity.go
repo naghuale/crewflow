@@ -30,6 +30,21 @@ type Bot struct {
 	API string
 }
 
+// Orchestrator is the App the orchestrator of a project on GitHub works as, which is a
+// second App of a project whose executor already has one: the numbers that say which
+// App it is, which is all the file of a project says (docs/DESIGN.md §7i).
+//
+// A zero AppID is the mode of the shared login, and not a mistake: the orchestrator is
+// then the person who runs crewflow, and the owner is that person too.
+type Orchestrator struct {
+	// AppID and InstallationID are the numbers of the App and of its installation on
+	// the repository of the project.
+	AppID          int64
+	InstallationID int64
+	// API is the address of the API of the host, as in [Bot].
+	API string
+}
+
 // WithBot returns the adapter with the App of the project as the account the executor
 // of it works as, and with the default branch of the project as the one a change
 // request of it is meant for. Without it the adapter is the login of the owner, which
@@ -54,10 +69,98 @@ func (a *Adapter) WithBot(bot Bot) *Adapter {
 	return a
 }
 
+// WithOrchestrator returns the adapter as the account the orchestrator of the project
+// works as: the App of the project, its own token, and every command of gh and git in
+// the name of that App. Without it, or with a zero AppID, the orchestrator is the login
+// of the person who runs crewflow, which is what a project that has not set the second
+// App up gets — and what `crewflow doctor` says is the weaker of the two (§7i).
+func (a *Adapter) WithOrchestrator(who Orchestrator) *Adapter {
+	if who.AppID <= 0 {
+		return a
+	}
+	address := who.API
+	if address == "" {
+		address = app.API(a.host)
+	}
+	a.orchestrator = &app.Source{
+		AppID:          who.AppID,
+		InstallationID: who.InstallationID,
+		Role:           app.Orchestrator,
+		Repo:           a.repo,
+		BaseURL:        address,
+		Store:          a.env.Secrets,
+		HTTP:           a.env.HTTP,
+		Now:            a.env.Now,
+	}
+	return a
+}
+
+// OrchestratorIdentity is whose name the orchestrator of this project works under: the
+// App of the project in the mode of a separate login, and the login of the person in
+// the mode of a shared one, named after the account gh is signed in as (docs/DESIGN.md §7i).
+func (a *Adapter) OrchestratorIdentity(ctx context.Context) (forge.Identity, error) {
+	if a.orchestrator == nil {
+		return a.sharedOrchestrator(), nil
+	}
+	return a.orchestrator.OrchestratorIdentity(ctx)
+}
+
+// DescribeOrchestrator is the line a report shows about the orchestrator of this
+// project, without the rights of that name: a report of a machine prints a line and
+// mints no token of an hour for it (§7e, §7i).
+func (a *Adapter) DescribeOrchestrator(ctx context.Context) (forge.Identity, error) {
+	if a.orchestrator == nil {
+		return a.sharedOrchestrator(), nil
+	}
+	return a.orchestrator.DescribeOrchestrator(ctx)
+}
+
+// sharedOrchestrator is the orchestrator of a project that has no account of the host
+// of its own: the login of the person, and with it the owner — the one thing the mode
+// of the shared login cannot do is to tell the two apart, which is what `doctor` says
+// (docs/DESIGN.md §7i).
+func (a *Adapter) sharedOrchestrator() forge.Identity {
+	account := a.account()
+	if account == "" {
+		return forge.Identity{
+			Mode:        forge.ModeShared,
+			Description: "shared — the login of gh (one login with the owner)",
+		}
+	}
+	return forge.Identity{
+		Mode:        forge.ModeShared,
+		Description: "shared — the login gh " + account + " (one login with the owner)",
+	}
+}
+
+// orchestratorToken is the token of the App of the orchestrator, signed once for as
+// long as the adapter lives: a review and a merge ask gh a handful of times each, and a
+// token of an hour for every question would be a token an hour for every question. The
+// push of a merge does not go through it at all — that is what the helper of the
+// credentials of git is for, and it signs a token of its own for that one push (§7i).
+func (a *Adapter) orchestratorToken(ctx context.Context) (string, error) {
+	a.signing.Lock()
+	defer a.signing.Unlock()
+	if a.signed != "" {
+		return a.signed, nil
+	}
+	token, err := a.orchestrator.Token(ctx)
+	if err != nil {
+		return "", err
+	}
+	a.signed = token.Value
+	return a.signed, nil
+}
+
 // App is the App of the project as a report and a command about it see it: where its
 // key is kept, what it may do on the repository, and never a token of it. It is nil
 // for a project whose executor works as the person who runs crewflow.
 func (a *Adapter) App() *app.Source { return a.app }
+
+// Orchestrator is the App of the orchestrator of the project, as a report and a
+// command about it see it, and nil for a project whose orchestrator shares the login of
+// the person (docs/DESIGN.md §7i).
+func (a *Adapter) Orchestrator() *app.Source { return a.orchestrator }
 
 // ExecutorIdentity is whose name the executor of a run of this project works under
 // (docs/DESIGN.md §7i).
@@ -117,11 +220,22 @@ func (a *Adapter) account() string {
 	return ""
 }
 
-// SignedIn is the account gh speaks as, and an error when gh does not say: a record
-// of a review is a comment, and it is an approval only because of the account it was
-// written in, so an account nobody can name is a record crewflow cannot count and
+// SignedIn is the account the adapter speaks as, and an error when it cannot say: a
+// record of a review is a comment, and it is an approval only because of the account it
+// was written in, so an account nobody can name is a record crewflow cannot count and
 // should not write in the name of (docs/DESIGN.md §7h).
-func (a *Adapter) SignedIn(context.Context) (string, error) {
+//
+// Where the orchestrator of the project has an account of its own, that account is the
+// one — gh is given the token of the App in every command, so the login it happens to
+// be signed in as is not what a record of a review is written in (§7i).
+func (a *Adapter) SignedIn(ctx context.Context) (string, error) {
+	if a.orchestrator != nil {
+		bot, err := a.orchestrator.Bot(ctx)
+		if err != nil {
+			return "", err
+		}
+		return bot.Login, nil
+	}
 	if account := a.account(); account != "" {
 		return account, nil
 	}
@@ -196,12 +310,19 @@ func (a *Adapter) HeadRef(number int) string {
 
 // WriteComment writes a record of a review under the change request.
 //
-// It writes as the person who runs crewflow and never as the App of the executor:
-// the record of a review is the word of the orchestrator, and a record the
-// executor could write is a record the gate would have to refuse (docs/DESIGN.md §7h, §7i).
+// It writes as the orchestrator of the project and never as the App of the executor:
+// the record of a review is the word of the orchestrator, and a record the executor
+// could write is a record the gate would have to refuse. Which account the
+// orchestrator is depends on the mode of §7i — the App of the project where the
+// orchestrator works apart from the owner, and the login of the person where it does
+// not (docs/DESIGN.md §7h, §7i).
 func (a *Adapter) WriteComment(ctx context.Context, number int, body string) error {
+	environment, err := a.speaking(ctx)
+	if err != nil {
+		return err
+	}
 	arguments := []string{"pr", "comment", strconv.Itoa(number), "-R", a.repo, "--body", body}
-	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
+	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", environment)
 	switch {
 	case err != nil:
 		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
@@ -218,12 +339,15 @@ func (a *Adapter) WriteComment(ctx context.Context, number int, body string) err
 // for the mode of the bot it is neither of the first two, and a project with such an
 // app is given both.
 var (
-	_ forge.Identified    = (*Adapter)(nil)
-	_ forge.Described     = (*Adapter)(nil)
-	_ forge.RequestOpener = (*Adapter)(nil)
-	_ forge.SignedIn      = (*Adapter)(nil)
+	_ forge.Identified            = (*Adapter)(nil)
+	_ forge.Described             = (*Adapter)(nil)
+	_ forge.Orchestrated          = (*Adapter)(nil)
+	_ forge.OrchestratorDescribed = (*Adapter)(nil)
+	_ forge.RequestOpener         = (*Adapter)(nil)
+	_ forge.SignedIn              = (*Adapter)(nil)
 	// A review of a project on GitHub is gathered out of these four, and without
 	// one of them the gate of §7h has nothing to judge.
+	_ forge.AppChecker    = (*Adapter)(nil)
 	_ forge.FileLister    = (*Adapter)(nil)
 	_ forge.CheckLister   = (*Adapter)(nil)
 	_ forge.RuleLister    = (*Adapter)(nil)

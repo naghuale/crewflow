@@ -43,6 +43,11 @@ func TestLoadExample(t *testing.T) {
 		// (docs/DESIGN.md §7i).
 		{"identity.mode", cfg.Identity.Mode, "owner"},
 		{"identity.github_app.app_id", cfg.Identity.GitHubApp.AppID, int64(0)},
+		// The orchestrator shares the login of the owner until a project sets up a
+		// second app for it, and the example of §5 says so where a project reads it
+		// (docs/DESIGN.md §7i).
+		{"orchestrator.mode", cfg.Orchestrator.Mode, "shared"},
+		{"orchestrator.github_app.app_id", cfg.Orchestrator.GitHubApp.AppID, int64(0)},
 		{
 			"executor.command",
 			cfg.Executor.Command,
@@ -94,6 +99,8 @@ func TestLoadExample(t *testing.T) {
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
 		{"merge.via", cfg.Merge.Via, "git-push"},
 		{"acceptance.label", cfg.Acceptance.Label, "owner-check"},
+		{"merge.reviewers", cfg.Merge.Reviewers, []string{}},
+		{"merge.owners", cfg.Merge.Owners, []string{}},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 	}
@@ -131,7 +138,14 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"ci.timeout", cfg.CI.Timeout, "30m"},
 		{"merge.by", cfg.Merge.By, "orchestrator"},
 		{"merge.strategy", cfg.Merge.Strategy, "ff-only"},
+		{"merge.via", cfg.Merge.Via, "git-push"},
+		// The mode of the orchestrator is the shared login until a project says
+		// otherwise, and the owners of a project are the owner of its repository
+		// until it names them (docs/DESIGN.md §7i).
+		{"orchestrator.mode", cfg.Orchestrator.Mode, "shared"},
+		{"orchestrator.github_app.app_id", cfg.Orchestrator.GitHubApp.AppID, int64(0)},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
+
 		{"isolation.mode", cfg.Isolation.Mode, "host"},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
 		// A project that says nothing about the acceptance of the owner gets the label

@@ -1,0 +1,13 @@
+# The account of the host of the orchestrator named by a number that is no number.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[orchestrator]
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 0

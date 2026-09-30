@@ -458,27 +458,50 @@ func machineWithAnApp(t *testing.T) (*machine, *serverOfTheTest) {
 
 // storeOfTheTest holds the key a test generated and nothing else: the keychain of
 // macOS is never in a test (docs/DESIGN.md §7i).
+//
+// A project whose executor and whose orchestrator have an App each has two keys, and a
+// test that leaves one of them out has to be able to say which: `keys` holds a key per
+// app, and where it is there the one `key` holds is the key of every app — which is
+// what a test of a project with one App needs.
 type storeOfTheTest struct {
-	key []byte
+	key  []byte
+	keys map[string][]byte
 }
 
-// Get returns the key of the test, and the error of an empty store when it has none.
+// Get returns the key of the app, and the error of a store that holds no key of it.
 func (s *storeOfTheTest) Get(service, account string) ([]byte, error) {
+	if s.keys != nil {
+		key, found := s.keys[account]
+		if !found {
+			return nil, secret.ErrNotFound
+		}
+		return key, nil
+	}
 	if s.key == nil {
 		return nil, secret.ErrNotFound
 	}
 	return s.key, nil
 }
 
-// Set keeps the key the test is given.
+// Set keeps the key the test is given, under the app it belongs to.
 func (s *storeOfTheTest) Set(service, account string, value []byte) error {
+	if s.keys != nil {
+		s.keys[account] = value
+		return nil
+	}
 	s.key = value
 	return nil
 }
 
-// Has says whether a key is in the store, as the keychain of macOS can: a report asks
-// for that and not for a value.
-func (s *storeOfTheTest) Has(service, account string) (bool, error) { return s.key != nil, nil }
+// Has says whether a key of that app is in the store, as the keychain of macOS can: a
+// report asks for that and not for a value.
+func (s *storeOfTheTest) Has(service, account string) (bool, error) {
+	if s.keys != nil {
+		_, found := s.keys[account]
+		return found, nil
+	}
+	return s.key != nil, nil
+}
 
 // keyOfTheTest is a private key of a test, in the PEM a person downloads from GitHub:
 // no test of crewflow signs a token with the key of a real App.

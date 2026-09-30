@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
@@ -68,10 +69,17 @@ type Adapter struct {
 	// env is the machine the adapter talks to.
 	env forge.Env
 	// defaultBranch is the branch the change requests of the project are meant for,
-	// and app is the App the executor of the project works as. There is no App until
-	// a project asks for the mode of the bot (docs/DESIGN.md §7i).
+	// app is the App the executor of the project works as and orchestrator the App
+	// the orchestrator of it works as. There is no App of either until a project
+	// asks for the mode of the bot (§7i).
 	defaultBranch string
 	app           *app.Source
+	orchestrator  *app.Source
+	// signed is the token of the App of the orchestrator, once it has been signed for
+	// this adapter, and signing the lock that keeps one gh and the next out of each
+	// other's way.
+	signed  string
+	signing sync.Mutex
 }
 
 // The adapter is all three roles of the core at once, and each of them may check
@@ -112,7 +120,11 @@ func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 // the machine that closed it (docs/DESIGN.md §7h).
 func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) error {
 	arguments := []string{"issue", "close", strconv.Itoa(number), "-R", a.repo, "--comment", comment}
-	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
+	environment, err := a.speaking(ctx)
+	if err != nil {
+		return err
+	}
+	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", environment)
 	switch {
 	case err != nil:
 		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
@@ -452,9 +464,13 @@ func (a *Adapter) json(ctx context.Context, args ...string) ([]byte, error) {
 // jsonIn is gh in the environment of the project plus the one of an identity of a
 // run, and nothing else: a token of a run is added to what gh is started with and is
 // not kept anywhere else (docs/DESIGN.md §7i).
-func (a *Adapter) jsonIn(env []string, ctx context.Context, args ...string) ([]byte, error) {
+func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([]byte, error) {
+	environment, err := a.speaking(ctx)
+	if err != nil {
+		return nil, err
+	}
 	command := append([]string{}, args...)
-	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(a.environment(), env...))
+	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(environment, extra...))
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %w", strings.Join(command, " "), err)
 	}
@@ -468,15 +484,35 @@ func (a *Adapter) jsonIn(env []string, ctx context.Context, args ...string) ([]b
 	return stdout, nil
 }
 
-// environment is what the project adds to the environment of gh: its own server,
-// and nothing when it is on github.com. It is a slice of its own every time, because
-// the environment of an identity of a run is added to it and a slice that another call
+// environment is what the project adds to the environment of gh: its own server, and
+// nothing when it is on github.com. It is a slice of its own every time, because the
+// environment of an identity of a run is added to it and a slice that another call
 // grows is a slice two calls share (docs/DESIGN.md §7i).
 func (a *Adapter) environment() []string {
 	if a.host == "" {
 		return nil
 	}
 	return []string{"GH_HOST=" + a.host}
+}
+
+// speaking is the environment of a gh that talks to the host for the orchestrator of
+// the project: its own server, and — where the orchestrator has an account of the host
+// of its own — the token that makes gh speak as that account and not as the person
+// (docs/DESIGN.md §7i).
+//
+// A command that does not talk to the host is not given the token: `gh --version` and
+// the report of a machine are not the business of the App, and a token in the
+// environment of a command is a token in whatever that command writes (§7e).
+func (a *Adapter) speaking(ctx context.Context) ([]string, error) {
+	environment := a.environment()
+	if a.orchestrator == nil {
+		return environment, nil
+	}
+	token, err := a.orchestratorToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(environment, "GH_TOKEN="+token), nil
 }
 
 // decode is json.Unmarshal with the command in the error, because a JSON of a

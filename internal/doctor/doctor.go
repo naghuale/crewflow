@@ -32,6 +32,12 @@ const identityCheck = "executor identity"
 // code has not written, which is why the file did not load (docs/DESIGN.md §5).
 const specifiedCheck = "specified settings"
 
+// orchestratorCheck is the name a report calls the mode of the orchestrator by, and it
+// is a check of its own: the powers of a review and of a merge are not the powers of a
+// run, and a report that showed one line about both would hide the very thing a person
+// has to see before approving a task (docs/DESIGN.md §7h, §7i).
+const orchestratorCheck = "orchestrator identity"
+
 // Status is how one check ended.
 type Status string
 
@@ -66,6 +72,11 @@ type Report struct {
 	// it is in every report and not only in the ones about a bot: a person who reads a
 	// report has to see whose powers a run has without asking anything (docs/DESIGN.md §7i).
 	Identity Identity `json:"identity"`
+	// Orchestrator is whose name the review and the merge of this project work under.
+	// It is in every report for the same reason and because the record of a review and
+	// the acceptance of the owner are two different signatures exactly when this line
+	// says they are (docs/DESIGN.md §7h, §7i).
+	Orchestrator Identity `json:"orchestrator"`
 	// Access is what the executor of the project may read outside the worktree of a
 	// task on this machine, and the paths crewflow would not open, because a refusal
 	// of the next run is about a permission that was given here (docs/DESIGN.md §7d).
@@ -77,12 +88,17 @@ type Report struct {
 	Specified []config.Asked `json:"specified"`
 }
 
-// Identity is the mode of a run of the project and the one line a report shows for it.
+// Identity is the mode of one of the two subjects of a project and the one line a
+// report shows for it: of a run it is "owner" or "bot" and of the orchestrator it is
+// "shared" or "separate" (docs/DESIGN.md §7i).
 type Identity struct {
-	// Mode is "owner" or "bot", the two words the core knows.
+	// Mode is "owner" or "bot" for the executor of a run, and "shared" or "separate"
+	// for the orchestrator of the project: the two words the core knows for each of
+	// them.
 	Mode string `json:"mode"`
 	// Description is the one line a person reads: "owner — the login gh naghuale
-	// (shared rights)" or "bot — GitHub App crewflow-executor (installation 12345)".
+	// (shared rights)" or "separate — GitHub App crewflow-orchestrator (installation
+	// 12346)".
 	Description string `json:"description"`
 }
 
@@ -208,11 +224,12 @@ func (c *checker) step(name string) {
 // reading policy of the project, which is not a check but a part of what a run is
 // about to be given.
 type checker struct {
-	env       Env
-	checks    []Check
-	identity  Identity
-	access    Access
-	specified []config.Asked
+	env          Env
+	checks       []Check
+	identity     Identity
+	orchestrator Identity
+	access       Access
+	specified    []config.Asked
 }
 
 // add puts a check into the report.
@@ -232,7 +249,7 @@ func (c *checker) report() Report {
 	if c.specified == nil {
 		c.specified = []config.Asked{}
 	}
-	return Report{Checks: c.checks, Identity: c.identity, Access: c.access, Specified: c.specified}
+	return Report{Checks: c.checks, Identity: c.identity, Orchestrator: c.orchestrator, Access: c.access, Specified: c.specified}
 }
 
 // config reads the project file, which every check below needs: which executor
@@ -314,7 +331,10 @@ func (c *checker) git(ctx context.Context) {
 //
 // The mode of the executor comes with them and is the line every report of a run
 // shows: whose powers a run has is the first thing a person reads of it
-// (docs/DESIGN.md §7i).
+// (docs/DESIGN.md §7i). The mode of the orchestrator is asked after them, under the
+// roles of the orchestrator and not of a run: a report that showed the mode of a run
+// and said nothing about the mode of a review would say nothing about the account the
+// record of a review is written in (§7h, §7i).
 func (c *checker) roles(ctx context.Context, cfg config.Config) {
 	set, err := roles.New(cfg, c.rolesEnv())
 	if err != nil {
@@ -327,6 +347,60 @@ func (c *checker) roles(ctx context.Context, cfg config.Config) {
 		}
 	}
 	c.executorIdentity(ctx, set)
+	c.orchestratorIdentity(ctx, cfg)
+}
+
+// orchestratorIdentity is the line of the mode of the orchestrator, which is the one
+// thing a report of a machine has to say about the account a review is written in and a
+// merge is pushed as (docs/DESIGN.md §7h, §7i).
+//
+// The mode of the shared login is a warning and not a failure: everything a review needs
+// is there, and a project that has not set the second App up is a project crewflow has
+// to work for. It is said anyway, because in that mode the acceptance of the owner and
+// the record of the review are one signature — and the gate cannot tell them apart,
+// which is the one thing §7i is about.
+func (c *checker) orchestratorIdentity(ctx context.Context, cfg config.Config) {
+	set, err := roles.AsOrchestrator(cfg, c.rolesEnv())
+	if err != nil {
+		c.add(c.noRole(err))
+		return
+	}
+	if set.Forge == nil {
+		return
+	}
+	// The accounts of the host the orchestrator works as are checked before the line of
+	// the mode, the way the accounts of a run are: a report that said "separate" and
+	// then found no key of the second app is a report whose first line was a promise
+	// and not a fact (§7i).
+	for _, check := range forge.AppChecksOf(ctx, set.Forge) {
+		c.add(asLine(check))
+	}
+	identity, err := forge.DescribeOrchestrator(ctx, set.Forge)
+	if err != nil {
+		c.add(Check{
+			Name:   orchestratorCheck,
+			Status: Fail,
+			Detail: err.Error(),
+			Hint: fmt.Sprintf("a review and a merge are written as the account of the host of the project, "+
+				"and the file names one: check orchestrator.mode and orchestrator.github_app in %s, and the key of "+
+				"that app with `crewflow auth app import <file.pem>`", c.env.ConfigPath),
+		})
+		return
+	}
+	c.orchestrator = Identity{Mode: identity.Mode, Description: identity.Description}
+	if identity.Mode != forge.ModeSeparate {
+		c.add(Check{
+			Name:   orchestratorCheck,
+			Status: Warn,
+			Detail: identity.Description,
+			Hint: fmt.Sprintf("the orchestrator and the owner are one login, so the acceptance of the owner, the label "+
+				"`approved` and every bypass of a rule are held on the discipline of the one who writes them and the code "+
+				"cannot tell: set [orchestrator] mode = %q in %s, install a second app with the rights of §7i and import "+
+				"its key with `crewflow auth app import <file.pem>`", forge.ModeSeparate, c.env.ConfigPath),
+		})
+		return
+	}
+	c.add(Check{Name: orchestratorCheck, Status: OK, Detail: identity.Description})
 }
 
 // executorIdentity is the line of the mode of the executor, which is the one thing a

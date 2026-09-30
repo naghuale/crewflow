@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -262,7 +263,7 @@ func machineWithAnApp(t *testing.T) *machine {
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		answer, ok := api.answer[r.URL.Path]
+		answer, ok := api.answerFor(r)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
 			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Not Found: " + r.URL.Path})
@@ -299,6 +300,49 @@ type apiOfTheTest struct {
 // refuses a request it does not want to grant.
 func (a *apiOfTheTest) refusesAt(path string, code int) {
 	a.status[path] = code
+}
+
+// answerFor is the answer of the server to a request: the one of the app that asked, and
+// the answer every app gets otherwise.
+//
+// The endpoint of the App itself is the one every App asks and every App gets its own
+// answer to, because the path of the request is the same for all of them and the token
+// of it names the App in `iss`. A server of a test that answered that path with one
+// name would be a server with one App on the repository, and a report of a project with
+// two of them would be a report of a project crewflow is not working on (§7i).
+func (a *apiOfTheTest) answerFor(r *http.Request) (any, bool) {
+	if issuer := appOfTheRequest(r); issuer != "" {
+		if answer, found := a.answer[issuer+" "+r.URL.Path]; found {
+			return answer, true
+		}
+	}
+	answer, found := a.answer[r.URL.Path]
+	return answer, found
+}
+
+// appOfTheRequest is the app that made a request, out of the token of it: `iss` is the
+// number of the App, written as the documentation of the endpoint writes it, and a
+// request without such a token is a request of a gh and not of an App.
+func appOfTheRequest(r *http.Request) string {
+	_, token, found := strings.Cut(r.Header.Get("Authorization"), "Bearer ")
+	if !found {
+		return ""
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Issuer string `json:"iss"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return ""
+	}
+	return claims.Issuer
 }
 
 // installationOfTheTest answers for the installation of the App on the repository of

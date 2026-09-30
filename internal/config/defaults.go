@@ -6,24 +6,25 @@ import "github.com/BurntSushi/toml"
 // model or a language of the host: a project says all of that itself, and
 // crewflow only fills in the parts that mean the same everywhere.
 const (
-	defaultBranch          = "main"
-	defaultLanguage        = "en"
-	defaultWorktreesRoot   = "~/.crewflow/worktrees/{repo}"
-	defaultExecutorTimeout = "90m"
-	defaultStallAfter      = "10m"
-	defaultForgeKind       = "github"
-	defaultTrackerKind     = "forge"
-	defaultIdentityMode    = "owner"
-	defaultCIKind          = "forge"
-	defaultCIRequired      = true
-	defaultCITimeout       = "30m"
-	defaultMergeBy         = "orchestrator"
-	defaultMergeStrategy   = "ff-only"
-	defaultMergeVia        = "git-push"
-	defaultMaxTasks        = 1
-	defaultIsolationMode   = "host"
-	defaultOwnerApproval   = "risky"
-	defaultAcceptanceLabel = "owner-check"
+	defaultBranch           = "main"
+	defaultLanguage         = "en"
+	defaultWorktreesRoot    = "~/.crewflow/worktrees/{repo}"
+	defaultExecutorTimeout  = "90m"
+	defaultStallAfter       = "10m"
+	defaultForgeKind        = "github"
+	defaultTrackerKind      = "forge"
+	defaultIdentityMode     = "owner"
+	defaultOrchestratorMode = ModeShared
+	defaultCIKind           = "forge"
+	defaultCIRequired       = true
+	defaultCITimeout        = "30m"
+	defaultMergeBy          = "orchestrator"
+	defaultMergeStrategy    = "ff-only"
+	defaultMergeVia         = "git-push"
+	defaultMaxTasks         = 1
+	defaultIsolationMode    = "host"
+	defaultOwnerApproval    = "risky"
+	defaultAcceptanceLabel  = "owner-check"
 )
 
 // DefaultWorktreesRoot is where the worktree of a task is made when the file of
@@ -54,6 +55,13 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	// app of its own and a key of its own (docs/DESIGN.md §7i).
 	if c.Identity.Mode == "" {
 		c.Identity.Mode = defaultIdentityMode
+	}
+	// The orchestrator shares the login of the person until a project sets up an
+	// account of the host for it: a second app and a second key are work, and a
+	// project that has not done it keeps the way crewflow has always worked — with
+	// `doctor` saying what that costs (docs/DESIGN.md §7i).
+	if c.Orchestrator.Mode == "" {
+		c.Orchestrator.Mode = defaultOrchestratorMode
 	}
 	if c.Executor.Timeout == "" {
 		c.Executor.Timeout = defaultExecutorTimeout
