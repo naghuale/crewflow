@@ -57,7 +57,9 @@ In progress:
 - ⏳ the owner's acceptance of a review build before a merge
 - ⏳ `crewflow init` and recovery of an interrupted task
 
-The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian).
+The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian). The steps of the
+process itself, in order, are in [CREWFLOW_CHECKLIST.md](CREWFLOW_CHECKLIST.md) (in Russian): every
+item links to the rule it comes from.
 
 ## Install
 
