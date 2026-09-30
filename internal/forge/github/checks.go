@@ -240,20 +240,39 @@ const protectionHint = "the rules of such a protection are read with the right A
 // for has the protection of a branch itself on, as the summary of the branch says it.
 // It is one field of an answer that a token with the right Metadata may read, and it is
 // the answer that keeps crewflow from asking a question it has no right to ask.
+//
+// The answer may name it in two ways, and both are read as what they are: the object of
+// the protection of the branch (`protection.enabled`), and the fact that the host protects
+// the branch at all (`protected`), which for a branch it protects with nothing at all is
+// false. An answer that holds neither says nothing about the protection of the branch, and
+// it is an error and not "the protection of the branch is off": a gate that cannot tell
+// that apart from a protection that is not there lets a change through on a silence, and
+// the whole of this question is that a silence is not an answer (docs/DESIGN.md §7h).
 func (a *Adapter) classicProtection(ctx context.Context) (bool, error) {
 	out, err := a.json(ctx, "api", "repos/"+a.repo+"/branches/"+a.base())
 	if err != nil {
 		return false, err
 	}
 	var branch struct {
-		Protection struct {
-			Enabled bool `json:"enabled"`
+		// Both are pointers: a field the host did not write is nil, and nil is not
+		// false — that difference is the whole of the next switch.
+		Protected  *bool `json:"protected"`
+		Protection *struct {
+			Enabled *bool `json:"enabled"`
 		} `json:"protection"`
 	}
 	if err := decode(out, &branch); err != nil {
 		return false, err
 	}
-	return branch.Protection.Enabled, nil
+	switch {
+	case branch.Protection != nil && branch.Protection.Enabled != nil:
+		return *branch.Protection.Enabled, nil
+	case branch.Protected != nil && !*branch.Protected:
+		return false, nil
+	default:
+		return false, fmt.Errorf("the host did not say what protects the branch %s: the answer of `branches/%s` "+
+			"holds neither `protected` nor `protection.enabled`", a.base(), a.base())
+	}
 }
 
 // apiAnswer is one answer of the API of the host with the status of it, which is the

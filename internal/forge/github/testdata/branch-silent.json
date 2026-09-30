@@ -1,0 +1,5 @@
+{
+  "message": "Branch not found",
+  "documentation_url": "https://docs.github.com/rest/branches/branch#get-branch",
+  "status": "404"
+}

@@ -219,6 +219,50 @@ func TestTheRulesOfABranchThatIsProtectedByRulesetsAlone(t *testing.T) {
 	}
 }
 
+// TestTheRulesOfABranchNobodySaysIsProtected: the summary of the branch may come back
+// without saying what protects it — a token that is not shown it, a changed answer of the
+// host, a body of an error decoded as JSON. Reading that as "the branch is not protected"
+// is a change let through on a silence, and the gate is not allowed to do it: the rules of
+// the branch are then unknown and `forge-unavailable` is the answer (docs/DESIGN.md §7h).
+func TestTheRulesOfABranchNobodySaysIsProtected(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer string
+	}{
+		{
+			name:   "the branch says it is protected and does not say by what",
+			answer: "branch-unnamed.json",
+		},
+		{
+			name:   "the answer is not about a branch at all",
+			answer: "branch-silent.json",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine().
+				prints("api repos/"+repo+"/branches/main", fixture(t, tc.answer)).
+				prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw"))
+			a := New(repo, "", m.env(t))
+
+			got, err := a.Rules(t.Context())
+
+			if err == nil {
+				t.Fatalf("Rules = %+v, want an error: the host did not say what protects the branch", got)
+			}
+			if !strings.Contains(err.Error(), "did not say what protects the branch main") {
+				t.Errorf("the error %q does not say what the answer of the host was missing", err)
+			}
+			// The question about the rules of the branch is not asked either: a gate
+			// that cannot tell the rules of a branch from their absence must not read
+			// them as a fact about the branch.
+			if _, asked := m.commandOf("api --include repos/" + repo + "/rules/branches/main"); asked {
+				t.Error("the adapter asked for the rules of a branch whose protection it does not know")
+			}
+		})
+	}
+}
+
 // TestRequiredChecksOfTheRulesOfTheBranch: the rules of a branch of GitHub are of
 // two kinds and both are asked about, because a project may have either or both.
 // Here the branch is protected with two contexts and a ruleset demands the same two,
