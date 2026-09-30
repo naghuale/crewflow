@@ -246,13 +246,6 @@ func accountOfReview(ctx context.Context, set forge.Set, cfg config.Config) (str
 	if err != nil {
 		return "", err
 	}
-	if len(reviewers) == 0 {
-		// The default of §5: a project that names no reviewers has the owner of its
-		// repository, and nobody else.
-		if owner, _, of := strings.Cut(cfg.Project.Repo, "/"); of {
-			reviewers = []string{owner}
-		}
-	}
 	if !slices.Contains(reviewers, account) {
 		return "", fmt.Errorf("a record of a review would be written as %s, which is not one of the reviewers of the project (%s): "+
 			"the gate would not count it, and a record nobody counts is a comment", account, strings.Join(reviewers, ", "))

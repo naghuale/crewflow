@@ -96,6 +96,9 @@ func (c Config) Validate() error {
 	if err := validateLogins("merge.owners", c.Merge.Owners); err != nil {
 		return err
 	}
+	if err := Separation(c.Orchestrator.Mode, c.Merge.Owners, c.Merge.Reviewers, c.Project.Repo); err != nil {
+		return err
+	}
 	if c.Parallel.MaxTasks < 1 {
 		return fmt.Errorf("parallel.max_tasks: must be at least 1, got %d", c.Parallel.MaxTasks)
 	}
@@ -161,6 +164,85 @@ func validateGitHubApp(table, kind string, app GitHubApp, what string) error {
 			table, app.InstallationID)
 	}
 	return nil
+}
+
+// OwnersOf are the logins whose records are the decision of a person and not the work
+// of the orchestrator: the list the file of the project names, and the owner of its
+// repository when it names none. The record of an acceptance of a result and the record
+// of a scope acceptance are counted from this one list and from no other
+// (docs/DESIGN.md §5, §7h).
+func OwnersOf(list []string, repository string) []string {
+	return loginsOf(list, repository)
+}
+
+// ReviewersOf are the logins whose record of a review is an approval: the list the
+// file of the project names, and the owner of its repository when it names none
+// (docs/DESIGN.md §5, §7h).
+func ReviewersOf(list []string, repository string) []string {
+	return loginsOf(list, repository)
+}
+
+// loginsOf is the default of §5 behind both lists: a project that names no account
+// has the owner of its repository, and nothing else.
+func loginsOf(list []string, repository string) []string {
+	if len(list) > 0 {
+		return list
+	}
+	if owner, _, of := strings.Cut(repository, "/"); of {
+		return []string{owner}
+	}
+	return nil
+}
+
+// Separation is what the mode of an orchestrator apart from the owner demands of the
+// accounts of the project, checked against the accounts it is given: the logins whose
+// records are decisions of the owner, the logins whose records of a review are
+// approvals, and the repository the project belongs to. An empty mode, or any mode but
+// the separate one, is a nil answer: one login is both subjects in the mode of a shared
+// login by definition, and the overlap there is a debt of trust that `crewflow doctor`
+// shows instead of hiding (docs/DESIGN.md §7i, §7k).
+//
+// In the mode of a separate login two things are refused:
+//
+//   - an account of the reviewers is an account of the owners (OR-008): the same login
+//     would approve a change and accept its result, which is the one subject doing both
+//     parts of the work the mode exists to divide;
+//   - the owner of the repository is an account of the reviewers (OR-005): a record of
+//     a review would be written under the login of the owner, and the mode would promise
+//     a separation the file makes impossible.
+//
+// The accounts are the ones the caller resolved, and the two callers see different
+// ones: the load of the file sees the lists as they are written, because the account of
+// an App of the orchestrator is not in the file, and a command of a review or of a merge
+// sees the account the App answers with. The rule is the same for both; what the load
+// cannot see, the command and a report of `doctor` say.
+func Separation(mode string, owners, reviewers []string, repository string) error {
+	if mode != ModeSeparate {
+		return nil
+	}
+	for _, login := range reviewers {
+		if contains(owners, login) {
+			return fmt.Errorf("separate mode requires role separation: %q is among the accounts of the reviewers "+
+				"and among the accounts of the owners, and the gate would count the record of the orchestrator as a "+
+				"decision of the owner; overlap: %s; fix: remove overlapping identities or switch to shared mode",
+				login, login)
+		}
+	}
+	if owner, _, of := strings.Cut(repository, "/"); of && contains(reviewers, owner) {
+		return fmt.Errorf("separate mode requires an account of its own: the owner of the repository %q is among "+
+			"the accounts whose record of a review counts, and a review would be written under the login of the "+
+			"owner; fix: name the account of the app of the orchestrator among merge.reviewers, "+
+			"or switch to shared mode", owner)
+	}
+	return nil
+}
+
+// contains is whether the login is in the list, as the host writes a login and as a
+// person writes it: the letters of a login are its letters whatever their case.
+func contains(logins []string, login string) bool {
+	return slices.ContainsFunc(logins, func(one string) bool {
+		return strings.EqualFold(one, login)
+	})
 }
 
 // validateLogins checks the accounts whose record counts, under the key that names

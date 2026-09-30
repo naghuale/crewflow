@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/task"
 )
@@ -684,13 +685,7 @@ func isAmong(author string, logins []string) bool {
 // reviewers are the accounts whose records count, with the default of §5 filled in:
 // a project that names none has the owner of its repository, and nothing else.
 func (f Facts) reviewers() []string {
-	if len(f.Reviewers) > 0 {
-		return f.Reviewers
-	}
-	if owner, _, of := strings.Cut(f.WantRepository, "/"); of {
-		return []string{owner}
-	}
-	return nil
+	return config.ReviewersOf(f.Reviewers, f.WantRepository)
 }
 
 // owners are the accounts whose records are the decision of a person — the one who
@@ -702,13 +697,7 @@ func (f Facts) reviewers() []string {
 // nobody could write. An orchestrator that works apart from the owner is in neither list
 // of §5 unless a project puts it there (docs/DESIGN.md §7h, §7i).
 func (f Facts) owners() []string {
-	if len(f.Owners) > 0 {
-		return f.Owners
-	}
-	if owner, _, of := strings.Cut(f.WantRepository, "/"); of {
-		return []string{owner}
-	}
-	return nil
+	return config.OwnersOf(f.Owners, f.WantRepository)
 }
 
 // sameCommit is whether two names of a commit are the same commit: the host and

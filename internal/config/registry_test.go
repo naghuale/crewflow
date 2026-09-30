@@ -24,6 +24,7 @@ var choices = map[string][]string{
 	"tracker.kind":         trackerKinds,
 	"ci.kind":              ciKinds,
 	"identity.mode":        identityModes,
+	"orchestrator.mode":    orchestratorModes,
 	"isolation.mode":       isolationModes,
 	"merge.by":             mergeBys,
 	"merge.strategy":       mergeStrategies,

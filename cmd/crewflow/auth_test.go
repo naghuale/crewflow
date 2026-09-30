@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -738,6 +739,61 @@ func TestAuthAppImportOfTheSecondAppPutsItsOwnKeyAway(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "5107053") {
 		t.Errorf("crewflow auth app import wrote %q, want it to name the app the key is of", stdout.String())
+	}
+}
+
+// TestAuthAppCheckOfTheSecondAppWithoutItsInstallationInTheFile: the number of the
+// installation is the one thing a person does not have to write down, and the shape the
+// file of a project takes for it — `installation_id = 0`, meaning the installation of that
+// app on this repository — is the one the owner of the project will run `crewflow auth
+// app check -as orchestrator` in. The check finds the installation through the repository
+// of the project and answers in the words of the orchestrator (docs.DESIGN.md §5, §7i).
+func TestAuthAppCheckOfTheSecondAppWithoutItsInstallationInTheFile(t *testing.T) {
+	store := &storeOfTheTest{key: keyOfTheTest(t)}
+	api := useMachineOfTheTest(t, store, nil)
+	api.answer["/api/v3/app"] = map[string]any{"id": 5140522, "slug": "crewflow-orchestrator"}
+	api.installationOfTheAppOfTheTest(5140522, 12346, map[string]any{
+		"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read",
+	})
+	project := writeConfig(t, projectConfig+botConfig+
+		"\n[orchestrator]\nmode = \"separate\"\n\n[orchestrator.github_app]\napp_id = 5140522\ninstallation_id = 0\n"+
+		"\n[forge]\nkind = \"github\"\nhost = \""+hostOfTest(api)+"\"\n")
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"auth", "app", "check", "-as", "orchestrator", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow auth app check -as orchestrator = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	for _, want := range []string{"5140522", "12346", "issues write"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow auth app check wrote:\n%s\nwant it to mention %q", stdout.String(), want)
+		}
+	}
+}
+
+// installationOfTheAppOfTheTest answers for the installation of whichever app asked
+// through the repository of the project, in the words of the documentation of the API of
+// GitHub, so that a test of the app of the orchestrator can name an app id of its own and
+// leave the installation out of the file of the project (docs.DESIGN.md §7i).
+func (a *apiOfTheTest) installationOfTheAppOfTheTest(appID, installationID int64, rights map[string]any) {
+	answer := map[string]any{
+		"id": installationID, "app_id": appID,
+		"account":              map[string]any{"login": "naghuale", "id": 1, "type": "User", "site_admin": false},
+		"repository_selection": "selected",
+		"permissions":          rights,
+	}
+	a.answer[fmt.Sprintf("%d /api/v3/repos/naghuale/crewflow/installation", appID)] = answer
+	a.answer[fmt.Sprintf("/api/v3/app/installations/%d", installationID)] = answer
+	a.answer[fmt.Sprintf("/api/v3/app/installations/%d/access_tokens", installationID)] = map[string]any{
+		"token":                "ghs_token_of_the_orchestrator",
+		"expires_at":           "2026-09-28T13:00:00Z",
+		"permissions":          rights,
+		"repository_selection": "selected",
+		"repositories": []map[string]any{{
+			"id": 1296269, "node_id": "MDEwOlJlcG9zaXRvcnkxMjk2MjY5",
+			"name": "crewflow", "full_name": "naghuale/crewflow",
+		}},
 	}
 }
 

@@ -42,6 +42,19 @@ command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{promp
 timeout = "1h"
 ` + orchestratorConfig
 
+// reviewSharedConfig is the file of a project of the shared mode: the orchestrator works
+// under the login of the owner, which is what a project gets without saying anything
+// about the second app, and what `crewflow doctor` calls a debt of trust (§7i, §7k).
+const reviewSharedConfig = `
+[project]
+repo = "naghuale/crewflow"
+language = "en"
+
+[executor]
+command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
+timeout = "1h"
+`
+
 // mergeApartConfig is the same for a merge, which is judged by the same gate and reads
 // the same two lists of accounts out of the file of the project (§7h, §7i).
 const mergeApartConfig = `
@@ -202,16 +215,20 @@ func TestTheAcceptanceOfTheOwnerLiftsTheRefusalOfTheFile(t *testing.T) {
 	}
 }
 
-// TestTheApprovalOfTheOwnerCountsWhereTheProjectNamesHim: in the mode of a separate
-// login the file of the project may still name the owner among the reviewers, and then
-// his approval is one. The mode says which account the orchestrator works as; this list
-// says whose word approves a change (§7h, §7i).
+// TestTheApprovalOfTheOwnerCountsWhereTheProjectNamesHim: the file of the project may
+// name the owner among the reviewers, and then his approval is one. The mode says which
+// account the orchestrator works as; this list says whose word approves a change
+// (§7h, §7i).
+//
+// It is the shared mode and not the separate one that can name the owner among the
+// reviewers: in the separate mode the login of the orchestrator is not the login of the
+// owner, and a file that says the opposite is refused before a review is written — see
+// TestOR005 (docs/DESIGN.md §7i, §7k).
 func TestTheApprovalOfTheOwnerCountsWhereTheProjectNamesHim(t *testing.T) {
 	host := newReviewHost(t)
-	host.useSeparate(t)
 	host.comments = nil
 	host.comment(gate.ApproveOf(reviewHead, 7))
-	project := writeConfig(t, reviewApartConfig+"\n[merge]\nreviewers = [\"crewflow-orchestrator[bot]\", \"naghuale\"]\n")
+	project := writeConfig(t, reviewSharedConfig+"\n[merge]\nreviewers = [\"naghuale\"]\n")
 	var stdout, stderr bytes.Buffer
 
 	code := run([]string{"review", "7", "-config", project}, &stdout, &stderr)
@@ -402,17 +419,23 @@ func TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothin
 		t.Errorf("the reviewers are %v, want the account of the orchestrator", reviewers)
 	}
 	// The file of the project says otherwise, and what it says stands: the gate counts
-	// the records of the reviewers, whoever they are (§5).
-	cfg.Merge.Reviewers = []string{"naghuale"}
+	// the records of the reviewers, whoever they are (§5). A login of the separate mode
+	// has to be an account of its own, though: naming the owner among the reviewers of a
+	// separate project is refused before a review is written (OR-005).
+	cfg.Merge.Reviewers = []string{"maintainer"}
 	reviewers, err = reviewersOf(t.Context(), cfg, set)
-	if err != nil || len(reviewers) != 1 || reviewers[0] != "naghuale" {
+	if err != nil || len(reviewers) != 1 || reviewers[0] != "maintainer" {
 		t.Errorf("the reviewers are %v (%v), want the ones the file of the project names", reviewers, err)
+	}
+	cfg.Merge.Reviewers = []string{"naghuale"}
+	if _, err := reviewersOf(t.Context(), cfg, set); err == nil {
+		t.Error("reviewersOf with the owner among the reviewers of a separate project returned no error, want the refusal of OR-005")
 	}
 	// The shared mode asks the host nothing: the owner of the repository is the reviewer
 	// until the file says otherwise, and that is what the gate does with an empty list.
 	cfg.Orchestrator.Mode, cfg.Merge.Reviewers = config.ModeShared, nil
 	reviewers, err = reviewersOf(t.Context(), cfg, set)
-	if err != nil || reviewers != nil {
+	if err != nil || len(reviewers) != 1 || reviewers[0] != "naghuale" {
 		t.Errorf("the reviewers are %v (%v), want the default of §5 and nothing asked of the host", reviewers, err)
 	}
 	// A host that names no account cannot be the reviewer of a project, and saying so is

@@ -72,30 +72,21 @@ func orchestratorOf(ctx context.Context, set forge.Set) (forge.Identity, error) 
 // under its own account would count nothing, and would say so as though the owner had
 // not approved anything.
 func reviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]string, error) {
-	if len(cfg.Merge.Reviewers) > 0 {
-		return cfg.Merge.Reviewers, nil
-	}
-	if cfg.Orchestrator.Mode != config.ModeSeparate {
-		return nil, nil
-	}
-	if set.Forge == nil {
-		return nil, fmt.Errorf("orchestrator.mode: this project has no host of its own, so there is no account " +
-			"to be the orchestrator apart from the owner in")
-	}
-	signed, ok := set.Forge.(forge.SignedIn)
-	if !ok {
-		return nil, fmt.Errorf("the host of the project does not say which account it speaks as, " +
-			"so the gate cannot be told whose record of a review counts")
-	}
-	account, err := signed.SignedIn(ctx)
+	reviewers, err := roles.ReviewersOf(ctx, cfg, set)
 	if err != nil {
-		return nil, fmt.Errorf("the account the orchestrator of this project works as: %w", err)
+		return nil, err
 	}
-	if account == "" {
-		return nil, fmt.Errorf("the host of the project named no account for the orchestrator of this project, " +
-			"so the gate cannot be told whose record of a review counts")
+	// The accounts of the owner and the accounts of the reviewers are told apart by the
+	// mode of the orchestrator, and the mode of a separate login refuses a file that
+	// makes them one: a record of a review that the gate would count as a decision of
+	// the owner is not a review, it is the owner accepting his own work (docs/DESIGN.md
+	// §7i, §7k). The load of the file sees the lists as they are written; here they are
+	// the ones a review is written and counted under, and the account of an App is in no
+	// file — so the rule is asked again with what the host answered.
+	if err := config.Separation(cfg.Orchestrator.Mode, roles.OwnersOf(cfg), reviewers, cfg.Project.Repo); err != nil {
+		return nil, err
 	}
-	return []string{account}, nil
+	return reviewers, nil
 }
 
 // gitEnvironment is what the commands of git of a review and of a merge are started

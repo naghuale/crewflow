@@ -145,6 +145,50 @@ func orchestratorOf(cfg config.Config, env forge.Env, orchestration string) gith
 	}
 }
 
+// ReviewersOf are the accounts whose record of a review of a change of this project is
+// an approval, in the order the rules of §5 and §7h give them: the list the file names,
+// the account the App of the orchestrator works as where the file names none and the
+// orchestrator has an account of its own, and the owner of the repository where neither
+// of the two says anything.
+//
+// The second of the three is why this question is asked of the host and not read out of
+// the file: the account of an App is not in the file of the project, and a gate that
+// was told a different one would count nothing (docs/DESIGN.md §7h, §7i).
+func ReviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]string, error) {
+	if len(cfg.Merge.Reviewers) > 0 {
+		return cfg.Merge.Reviewers, nil
+	}
+	if cfg.Orchestrator.Mode != config.ModeSeparate {
+		return config.ReviewersOf(nil, cfg.Project.Repo), nil
+	}
+	if set.Forge == nil {
+		return nil, fmt.Errorf("orchestrator.mode: this project has no host of its own, so there is no account " +
+			"to be the orchestrator apart from the owner in")
+	}
+	signed, ok := set.Forge.(forge.SignedIn)
+	if !ok {
+		return nil, fmt.Errorf("the host of the project does not say which account it speaks as, " +
+			"so the gate cannot be told whose record of a review counts")
+	}
+	account, err := signed.SignedIn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("the account the orchestrator of this project works as: %w", err)
+	}
+	if account == "" {
+		return nil, fmt.Errorf("the host of the project named no account for the orchestrator of this project, " +
+			"so the gate cannot be told whose record of a review counts")
+	}
+	return []string{account}, nil
+}
+
+// OwnersOf are the accounts whose records are the decisions of a person and not the
+// work of the orchestrator: the list the file names, and the owner of the repository
+// where it names none. The record of an acceptance of a result and the record of a
+// scope acceptance are counted from this one list (docs/DESIGN.md §5, §7h).
+func OwnersOf(cfg config.Config) []string {
+	return config.OwnersOf(cfg.Merge.Owners, cfg.Project.Repo)
+}
+
 // asksTheForge is the check for a project that takes its tasks or its checks
 // from a host it does not have. [config.Load] refuses such a file already; this
 // is the same refusal for settings that were built by hand, and it is a mistake
