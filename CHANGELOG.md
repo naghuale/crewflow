@@ -158,7 +158,7 @@
   включена и прочитать её нельзя, отказ остаётся и говорит, что делать: перенести правила в набор
   правил или выдать App `administration: read` (решение владельца). `crewflow doctor` говорит о
   таком раньше первого слияния, строкой `orchestrator branch protection`.
-  ([#103](https://github.com/naghuale/crewflow/pull/103), задача [#102](https://github.com/naghuale/crewflow/issues/102))
+  ([#107](https://github.com/naghuale/crewflow/pull/107), задача [#102](https://github.com/naghuale/crewflow/issues/102))
 
 ### Безопасность
 
