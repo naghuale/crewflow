@@ -182,6 +182,38 @@ host at the commit that was merged, is the task closed, is the CI of that branch
 waits for the checks while they are going on, up to `[ci] timeout`, and records the moment
 of the check in the state of the task.
 
+## Releases
+
+What changed in every version — added, changed, fixed, security — is in
+[CHANGELOG.md](CHANGELOG.md), written in the language of the project. The format is
+[Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), the versions are
+[SemVer](https://semver.org/spec/v2.0.0.html), and the first release is `v0.1.0`, at the
+closing of the `v1` milestone. Every task that changes what a person sees or can do writes
+a line under `## [Не выпущено]` in its own pull request — rule 3 of
+[PROJECT_RULES.md](PROJECT_RULES.md).
+
+To cut a version:
+
+1. In `CHANGELOG.md`, give the `## [Не выпущено]` section the number and the date of the
+   release (`## [v0.1.0] - 2026-10-01`), put a fresh empty `## [Не выпущено]` above it, and
+   merge that change as any other.
+2. `scripts/release.sh v0.1.0` — it refuses, and says which part is missing, until that
+   section is there with its date and the unreleased one is empty, the tree is clean and
+   the branch is the default one. It builds `dist/crewflow` with the version, the commit
+   and the moment stamped into it (`-ldflags -X …/buildinfo.Version`) instead of `dev`,
+   prints what `crewflow version` answers, and puts an annotated tag on the commit.
+3. Push and cut the release on the host — the script prints both commands and pushes
+   nothing itself:
+
+   ```sh
+   git push origin main
+   git push origin refs/tags/v0.1.0
+   gh release create v0.1.0 --title "crewflow v0.1.0"
+   ```
+
+A build from a tag answers `crewflow version` with that version; a build from a worktree
+answers `dev`, because a build from a worktree is no release.
+
 ## Executors
 
 Any command-line agent that can run without a window. [OpenCode](https://opencode.ai) is tested
