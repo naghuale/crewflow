@@ -179,6 +179,46 @@ func TestChecksOfACommitWithNoMarks(t *testing.T) {
 	}
 }
 
+// TestTheRulesOfABranchThatIsProtectedByRulesetsAlone is the case F-079 (01.10.2026):
+// a branch whose rules are rulesets says of itself that it is protected, and the rules
+// of the protection of the branch itself are a right of an administrator that the App of
+// the orchestrator has not and is not to be given (§7i). Reading the rules of such a
+// branch is asking the host which rules apply to that branch, and nothing else — so the
+// question that needs administration is not asked at all (docs/DESIGN.md §7h).
+func TestTheRulesOfABranchThatIsProtectedByRulesetsAlone(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-rulesets.json")).
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw")).
+		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection-refused.raw"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.RequiredChecks(t.Context())
+
+	if err != nil {
+		t.Fatalf("RequiredChecks returned an error: %v", err)
+	}
+	want := []forge.RequiredCheck{
+		{Name: "test (ubuntu-latest)", App: actionsApp},
+		{Name: "lint", App: actionsApp},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("RequiredChecks = %+v,\nwant %+v", got, want)
+	}
+	// The refusal is registered in the machine on purpose: were the rules of the
+	// protection of the branch asked for, this would be the answer they would get, and
+	// the whole point of the change is that it never is.
+	if _, asked := m.commandOf("api --include repos/" + repo + "/branches/main/protection"); asked {
+		t.Error("the adapter asked for the rules of the protection of the branch: " +
+			"only an administrator may read them, and this branch has no protection of its own")
+	}
+	for i := range m.ran {
+		if line := m.commandLine(i); strings.HasSuffix(line, "/rulesets?includes_parents=true") {
+			t.Errorf("the adapter asked for the rulesets of the repository: %q, "+
+				"which is a question about Administration, while the rules of the branch are not", line)
+		}
+	}
+}
+
 // TestRequiredChecksOfTheRulesOfTheBranch: the rules of a branch of GitHub are of
 // two kinds and both are asked about, because a project may have either or both.
 // Here the branch is protected with two contexts and a ruleset demands the same two,
@@ -187,9 +227,7 @@ func TestRequiredChecksOfTheRulesOfTheBranch(t *testing.T) {
 	m := newMachine().
 		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
 		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection.raw")).
-		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
-		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
-		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw"))
 	a := New(repo, "", m.env(t))
 
 	got, err := a.RequiredChecks(t.Context())
@@ -206,16 +244,40 @@ func TestRequiredChecksOfTheRulesOfTheBranch(t *testing.T) {
 	}
 }
 
+// TestTheChecksTheRulesOfTheBranchDemandAreTakenFromTheRulesOfThatBranch is what a
+// gate has to be able to read where the rules of a branch are rulesets: the rule that
+// demands checks says which checks, and the host gives it for the branch it applies to
+// without anybody naming the ruleset it is in (docs/DESIGN.md §7h).
+func TestTheChecksTheRulesOfTheBranchDemandAreTakenFromTheRulesOfThatBranch(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-rulesets.json")).
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw"))
+	a := New(repo, "", m.env(t))
+
+	rules, err := a.Rules(t.Context())
+	if err != nil {
+		t.Fatalf("Rules returned an error: %v", err)
+	}
+
+	if rules.State != forge.RulesNamed {
+		t.Errorf("Rules = %+v, want the rules of the branch to be said to be there", rules)
+	}
+	want := []forge.RequiredCheck{
+		{Name: "test (ubuntu-latest)", App: actionsApp},
+		{Name: "lint", App: actionsApp},
+	}
+	if !reflect.DeepEqual(rules.Required, want) {
+		t.Errorf("Rules.Required = %+v,\nwant %+v", rules.Required, want)
+	}
+}
+
 // TestRulesOfTheBranchOfAPublicRepository: a repository whose plan has rules has them
 // named, and what it named is what stands — the answer of a repository with rules and
 // the answer of one without them are told apart by the state of the rules (docs/DESIGN.md §7h, §7k).
 func TestRulesOfTheBranchOfAPublicRepository(t *testing.T) {
 	m := newMachine().
-		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
-		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection.raw")).
-		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
-		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
-		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-rulesets.json")).
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw"))
 	a := New(repo, "", m.env(t))
 
 	got, err := a.Rules(t.Context())
@@ -227,12 +289,57 @@ func TestRulesOfTheBranchOfAPublicRepository(t *testing.T) {
 		t.Errorf("Rules = %+v, want the rules of the branch to be said to be there", got)
 	}
 	if len(got.Required) != 2 {
-		t.Errorf("Rules = %+v, want the two checks of the rules of the branch", got)
+		t.Errorf("Rules = %+v, want the two checks the rules of the branch demand", got)
 	}
 }
 
-// TestRulesOfARepositoryWithoutRulesOnItsPlan is the answer GitHub gives the rulesets
-// of a private repository on the free plan (F-043 of 30.09.2026): it has none, it says
+// TestRulesOfABranchNobodyProtected: a branch of a project that protects nothing has
+// no rules to ask about, and the host says so with an absence rather than a refusal —
+// which is an answer, and not a gap in what crewflow knows about the branch
+// (docs/DESIGN.md §7h).
+func TestRulesOfABranchNobodyProtected(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch-none.raw"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.Rules(t.Context())
+	if err != nil {
+		t.Fatalf("Rules returned an error: %v", err)
+	}
+
+	if got.State != forge.RulesNamed {
+		t.Errorf("Rules = %+v, want the rules of the branch to be said to be there and name no check", got)
+	}
+	if len(got.Required) != 0 {
+		t.Errorf("Rules = %+v, want no checks: nobody demands any", got)
+	}
+}
+
+// TestRulesOfABranchWhoseProtectionTheHostDoesNotFind: the summary of the branch says
+// the protection of a branch is on and the rules of that protection are not there to be
+// found. That is a fact about the branch and not a gap — the host names no protection of
+// the branch itself — so the rules of the branch are the ones of its rulesets, and
+// nobody is refused over a protection that is not there (docs/DESIGN.md §7h).
+func TestRulesOfABranchWhoseProtectionTheHostDoesNotFind(t *testing.T) {
+	m := newMachine().
+		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
+		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection-none.raw")).
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch.raw"))
+	a := New(repo, "", m.env(t))
+
+	got, err := a.RequiredChecks(t.Context())
+
+	if err != nil {
+		t.Fatalf("RequiredChecks returned an error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("RequiredChecks = %+v, want the two checks the rules of the branch demand", got)
+	}
+}
+
+// TestRulesOfARepositoryWithoutRulesOnItsPlan is the answer GitHub gives the rules of
+// a private repository on the free plan (F-043 of 30.09.2026): it has none, it says
 // which plan it is about, and that is a fact about the repository rather than a
 // silence of the host. Read as a silence it made a review refuse every change of such
 // a repository with `forge-unavailable`, and a gate nobody may merge through
@@ -240,7 +347,7 @@ func TestRulesOfTheBranchOfAPublicRepository(t *testing.T) {
 func TestRulesOfARepositoryWithoutRulesOnItsPlan(t *testing.T) {
 	m := newMachine().
 		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
-		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets-on-plan.raw"))
+		prints("api --include repos/"+repo+"/rules/branches/main", fixture(t, "rules-of-branch-on-plan.raw"))
 	a := New(repo, "", m.env(t))
 
 	got, err := a.Rules(t.Context())
@@ -278,12 +385,12 @@ func TestRulesOfARepositoryNobodyMayRead(t *testing.T) {
 	}{
 		{
 			name:   "the host refuses and says nothing of a plan",
-			answer: fixture(t, "rulesets-refused.raw"),
+			answer: fixture(t, "rules-of-branch-refused.raw"),
 			want:   "403",
 		},
 		{
 			name:   "the host did not answer",
-			answer: fixture(t, "rulesets-silent.raw"),
+			answer: fixture(t, "rules-of-branch-silent.raw"),
 			want:   "500",
 		},
 	}
@@ -291,7 +398,7 @@ func TestRulesOfARepositoryNobodyMayRead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newMachine().
 				prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
-				prints("api --include repos/"+repo+"/rulesets?includes_parents=true", tc.answer)
+				prints("api --include repos/"+repo+"/rules/branches/main", tc.answer)
 			a := New(repo, "", m.env(t))
 
 			got, err := a.Rules(t.Context())
@@ -306,52 +413,10 @@ func TestRulesOfARepositoryNobodyMayRead(t *testing.T) {
 	}
 }
 
-// TestRequiredChecksOfARulesetOnly is a branch that is protected by rulesets rather
-// than by the protection of the branch: the protection of it is not there (404) and
-// the ruleset of the default branch is what names the checks.
-func TestRequiredChecksOfARulesetOnly(t *testing.T) {
-	m := newMachine().
-		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-protected.json")).
-		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection-none.raw")).
-		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets.raw")).
-		prints("api repos/"+repo+"/rulesets/24112591", fixture(t, "ruleset.json")).
-		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
-	a := New(repo, "", m.env(t))
-
-	got, err := a.RequiredChecks(t.Context())
-	if err != nil {
-		t.Fatalf("RequiredChecks returned an error: %v", err)
-	}
-
-	if len(got) != 2 {
-		t.Errorf("RequiredChecks = %+v, want the two checks of the ruleset of the branch", got)
-	}
-}
-
-// TestRequiredChecksOfARulesetAboutOtherBranches: a ruleset of the branches of the
-// work says nothing about the checks a change of the default branch has to pass, and
-// crewflow does not read it as if it did (docs/DESIGN.md §7h).
-func TestRequiredChecksOfARulesetAboutOtherBranches(t *testing.T) {
-	m := newMachine().
-		prints("api repos/"+repo+"/branches/main", fixture(t, "branch-unprotected.json")).
-		prints("api --include repos/"+repo+"/rulesets?includes_parents=true", fixture(t, "rulesets-work.raw")).
-		prints("api repos/"+repo+"/rulesets/24115315", fixture(t, "ruleset-work-branches.json"))
-	a := New(repo, "", m.env(t))
-
-	got, err := a.RequiredChecks(t.Context())
-	if err != nil {
-		t.Fatalf("RequiredChecks returned an error: %v", err)
-	}
-
-	if len(got) != 0 {
-		t.Errorf("RequiredChecks = %+v, want none: the only ruleset is about the branches of the work", got)
-	}
-}
-
 // TestRequiredChecksOfABranchNobodyMayRead is the case a gate has to tell apart from
-// a branch without rules: the branch says it is protected and the API will not tell
-// which checks it demands. That is not an answer, and an answer that is not there is
-// `forge-unavailable` and not "every check of the head has to be green"
+// a branch without rules: the branch says its protection of a branch is on and the API
+// will not tell which checks it demands. That is not an answer, and an answer that is
+// not there is `forge-unavailable` and not "every check of the head has to be green"
 // (docs/DESIGN.md §7h).
 func TestRequiredChecksOfABranchNobodyMayRead(t *testing.T) {
 	m := newMachine().
@@ -359,10 +424,18 @@ func TestRequiredChecksOfABranchNobodyMayRead(t *testing.T) {
 		prints("api --include repos/"+repo+"/branches/main/protection", fixture(t, "protection-refused.raw"))
 	a := New(repo, "", m.env(t))
 
-	if _, err := a.RequiredChecks(t.Context()); err == nil {
-		t.Fatal("RequiredChecks read the rules of a branch the host would not show")
-	} else if !strings.Contains(err.Error(), "403") {
-		t.Errorf("the error %q does not say that the host refused to answer", err)
+	got, err := a.RequiredChecks(t.Context())
+
+	if err == nil {
+		t.Fatalf("RequiredChecks = %+v, want a refusal: the rules of the branch are not there to be read", got)
+	}
+	// The refusal is right and stays: an App of the orchestrator has no right of an
+	// administrator and must not get one, and what is to be done about it is said in
+	// the same words (docs/DESIGN.md §7h, §7i).
+	for _, want := range []string{"403", "administration", "ruleset"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error %q does not say %q: a person has to be told what to do about it", err, want)
+		}
 	}
 }
 

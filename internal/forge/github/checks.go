@@ -132,31 +132,29 @@ func (a *Adapter) statuses(ctx context.Context, sha string) ([]statusJSON, error
 //
 // The rules of a branch of GitHub are of two kinds and both of them are asked about,
 // because a project may have either or both: the protection of the branch itself, and
-// the rulesets of the repository, of its organization or of its enterprise. Both may
-// be there at once, and neither may be there at all: a private repository on the free
-// plan has no rulesets, GitHub says which plan it is about, and that is an answer
-// about the repository rather than a silence of the host (docs/DESIGN.md §7h, §7k).
+// the rules of every ruleset that applies to it. Neither may be there at all: a private
+// repository on the free plan has no rulesets, GitHub says which plan it is about, and
+// that is an answer about the repository rather than a silence of the host
+// (docs/DESIGN.md §7h, §7k).
 func (a *Adapter) Rules(ctx context.Context) (forge.BranchRules, error) {
 	protected, err := a.protection(ctx)
 	if err != nil {
 		return forge.BranchRules{}, err
 	}
-	fromRulesets, state, err := a.rulesetChecks(ctx)
+	fromRules, state, err := a.ruleChecks(ctx)
 	if err != nil {
 		return forge.BranchRules{}, err
 	}
 	// The plan of the repository has no rules of a branch to demand anything with,
-	// and what it names no more than the rulesets do: an answer with nothing in it
+	// and what it names no more than the rules do: an answer with nothing in it
 	// is an answer, and what the project says about its CI is what stands (§7h, §7k).
 	if state == forge.RulesUnavailableOnPlan {
 		return forge.BranchRules{State: state}, nil
 	}
 	var required []forge.RequiredCheck
-	for _, contexts := range [][]string{protected, fromRulesets} {
-		for _, context := range contexts {
-			if !slices.ContainsFunc(required, func(want forge.RequiredCheck) bool { return want.Name == context }) {
-				required = append(required, forge.RequiredCheck{Name: context, App: actionsApp})
-			}
+	for _, context := range slices.Concat(protected, fromRules) {
+		if !slices.ContainsFunc(required, func(want forge.RequiredCheck) bool { return want.Name == context }) {
+			required = append(required, forge.RequiredCheck{Name: context, App: actionsApp})
 		}
 	}
 	return forge.BranchRules{Required: required, State: forge.RulesNamed}, nil
@@ -175,26 +173,26 @@ func (a *Adapter) RequiredChecks(ctx context.Context) ([]forge.RequiredCheck, er
 }
 
 // protection are the checks the protection of the default branch of the project
-// demands, and nothing when the branch is not protected: a branch of a project that
-// protects nothing is a project that has left this to its CI and not to the host
+// demands, and nothing when that protection is not on: a branch of a project that
+// protects nothing is a project that has left this to its CI and not to the host, and
+// a branch whose rules are rulesets has its rules among the rules of the branch
 // (docs/DESIGN.md §7h).
+//
+// The rules of the protection of a branch are the one question of §7h that is a right
+// of an administrator, and the App of the orchestrator has no such right and is not to
+// be given one (§7i). So it is asked only where it is there to be asked: the summary
+// of the branch says whether the protection of the branch itself is on, and that
+// summary is an answer anybody with a token of the repository may read. A branch
+// protected by rulesets alone is the ordinary case of a project that has moved its
+// rules into rulesets, and there the question is not asked at all (F-079, 01.10.2026).
 func (a *Adapter) protection(ctx context.Context) ([]string, error) {
-	out, err := a.json(ctx, "api", "repos/"+a.repo+"/branches/"+a.base())
-	if err != nil {
+	enabled, err := a.classicProtection(ctx)
+	if err != nil || !enabled {
 		return nil, err
 	}
-	var branch struct {
-		Protected bool `json:"protected"`
-	}
-	if err := decode(out, &branch); err != nil {
-		return nil, err
-	}
-	if !branch.Protected {
-		return nil, nil
-	}
-	// The branch is protected and the rules of that protection are asked for
-	// separately, with the status of the answer, because "this branch is not
-	// protected" and "you may not read the rules of this branch" look the same to
+	// The branch has the protection of a branch itself and its rules are asked for
+	// separately, with the status of the answer, because "this branch has no such
+	// protection" and "you may not read the rules of this branch" look the same to
 	// a program that only reads what a command said: the first is an answer and the
 	// second is the absence of one, and a gate that cannot tell them apart is a gate
 	// that passes a change on a silence (docs/DESIGN.md §7h).
@@ -203,12 +201,10 @@ func (a *Adapter) protection(ctx context.Context) ([]string, error) {
 	case err != nil:
 		return nil, err
 	case answer.Status == http.StatusNotFound:
-		// The branch is protected by rulesets rather than by the protection of the
-		// branch itself, and the rulesets below are where its checks are.
 		return nil, nil
 	case answer.Status != http.StatusOK:
-		return nil, fmt.Errorf("the branch %s is protected and the rules of it cannot be read: the API answered %d",
-			a.base(), answer.Status)
+		return nil, fmt.Errorf("the protection of the branch is on and the rules of it cannot be read: "+
+			"the API answered %d (%s): %s", answer.Status, said(answer.Body), protectionHint)
 	}
 	var protection struct {
 		RequiredStatusChecks struct {
@@ -228,6 +224,36 @@ func (a *Adapter) protection(ctx context.Context) ([]string, error) {
 		}
 	}
 	return required, nil
+}
+
+// protectionHint is what a refusal of the rules of the protection of a branch says to
+// do about it. The refusal itself is right and stays: a gate that cannot read the rules
+// of a branch must not pass a change on a silence (§7h). What a refusal has to say is
+// that it is about the rights of the App and not about the rules, and that the rights
+// of an App are a decision of a person — nothing here widens them on its own (§7i).
+const protectionHint = "the rules of such a protection are read with the right Administration, " +
+	"which the app of the orchestrator has not and is not to be given: either move the rules of the branch " +
+	"into a ruleset, where the rules of a branch are readable without it, or give the app administration: read — " +
+	"a decision of the owner"
+
+// classicProtection is whether the branch the change requests of the project are meant
+// for has the protection of a branch itself on, as the summary of the branch says it.
+// It is one field of an answer that a token with the right Metadata may read, and it is
+// the answer that keeps crewflow from asking a question it has no right to ask.
+func (a *Adapter) classicProtection(ctx context.Context) (bool, error) {
+	out, err := a.json(ctx, "api", "repos/"+a.repo+"/branches/"+a.base())
+	if err != nil {
+		return false, err
+	}
+	var branch struct {
+		Protection struct {
+			Enabled bool `json:"enabled"`
+		} `json:"protection"`
+	}
+	if err := decode(out, &branch); err != nil {
+		return false, err
+	}
+	return branch.Protection.Enabled, nil
 }
 
 // apiAnswer is one answer of the API of the host with the status of it, which is the
@@ -291,77 +317,58 @@ func answerIn(out []byte) (int, []byte, bool) {
 	return status, []byte(body), true
 }
 
-// rulesetChecks are the checks the rulesets of the repository, of its organization
-// and of its enterprise demand of its default branch, and what the host said about the
-// rulesets themselves. A ruleset is asked for one by one, because the list of them
-// holds no rules: a ruleset is a document of its own and the checks are in it.
+// ruleChecks are the checks the rules that are in force for the default branch of the
+// project demand of a change, and what the host said about the rules themselves.
 //
-// The list is asked for with the status of the answer in it, because it has three
-// answers and which of them came is the whole of what a ruleset question asks: a list
-// of rulesets, a refusal that names the plan of the repository, and a host that could
-// not answer (docs/DESIGN.md §7h, §7k).
-func (a *Adapter) rulesetChecks(ctx context.Context) ([]string, forge.RuleState, error) {
-	path := "repos/" + a.repo + "/rulesets?includes_parents=true"
-	answer, err := a.api(ctx, path)
+// They are asked for as the rules of that branch and not as the rulesets of the
+// repository: `rules/branches/{branch}` names every rule of every level that applies to
+// the branch, with the checks in it, and reading it takes the right Metadata. The list
+// of the rulesets of a repository takes the right Administration and holds no rules —
+// every ruleset is a document of its own and has to be read one by one — which is a
+// question the App of the orchestrator may not ask (§7h, §7i).
+//
+// It is asked with the status of the answer in it, because it has three answers and
+// which of them came is the whole of what the question asks: the rules of the branch, a
+// branch no rules apply to, and a refusal that names the plan of the repository.
+func (a *Adapter) ruleChecks(ctx context.Context) ([]string, forge.RuleState, error) {
+	answer, err := a.api(ctx, "repos/"+a.repo+"/rules/branches/"+a.base())
 	switch {
 	case err != nil:
 		return nil, "", err
 	case answer.Status == http.StatusForbidden && mentionsThePlan.Match(answer.Body):
-		// The plan of the repository has no rulesets to ask about: GitHub has them
-		// in public repositories and in the paid ones, and it names the plan rather
-		// than sending an empty list. It answered — there are none — and a gate that
-		// read this as a silence would refuse every change of such a repository for
-		// ever (docs/DESIGN.md §7h, §7k).
+		// The plan of the repository has no rules of a branch to ask about: GitHub has
+		// rulesets in public repositories and in the paid ones, and it names the plan
+		// rather than sending an empty list. It answered — there are none — and a gate
+		// that read this as a silence would refuse every change of such a repository
+		// for ever (docs/DESIGN.md §7h, §7k).
 		return nil, forge.RulesUnavailableOnPlan, nil
+	case answer.Status == http.StatusNotFound:
+		// No rules apply to the branch, and that is an answer about the branch: a
+		// project that protects nothing has left it to its CI (§7h).
+		return nil, forge.RulesNamed, nil
 	case answer.Status != http.StatusOK:
-		return nil, "", fmt.Errorf("the rulesets of %s cannot be read: the API answered %d: %s",
-			a.repo, answer.Status, said(answer.Body))
+		return nil, "", fmt.Errorf("the rules of the branch %s cannot be read: the API answered %d: %s",
+			a.base(), answer.Status, said(answer.Body))
 	}
-	var rulesets []struct {
-		ID     int64  `json:"id"`
-		Target string `json:"target"`
+	var rules []struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			RequiredStatusChecks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+		} `json:"parameters"`
 	}
-	if err := decode(answer.Body, &rulesets); err != nil {
+	if err := decode(answer.Body, &rules); err != nil {
 		return nil, "", err
 	}
 	var required []string
-	for _, ruleset := range rulesets {
-		if ruleset.Target != "branch" {
+	for _, rule := range rules {
+		if rule.Type != "required_status_checks" {
 			continue
 		}
-		out, err := a.json(ctx, "api", fmt.Sprintf("repos/%s/rulesets/%d", a.repo, ruleset.ID))
-		if err != nil {
-			return nil, "", err
-		}
-		var full struct {
-			Conditions struct {
-				RefName struct {
-					Include []string `json:"include"`
-				} `json:"ref_name"`
-			} `json:"conditions"`
-			Rules []struct {
-				Type       string `json:"type"`
-				Parameters struct {
-					RequiredStatusChecks []struct {
-						Context string `json:"context"`
-					} `json:"required_status_checks"`
-				} `json:"parameters"`
-			} `json:"rules"`
-		}
-		if err := decode(out, &full); err != nil {
-			return nil, "", err
-		}
-		if !covers(full.Conditions.RefName.Include, a.base()) {
-			continue
-		}
-		for _, rule := range full.Rules {
-			if rule.Type != "required_status_checks" {
-				continue
-			}
-			for _, check := range rule.Parameters.RequiredStatusChecks {
-				if check.Context != "" && !slices.Contains(required, check.Context) {
-					required = append(required, check.Context)
-				}
+		for _, check := range rule.Parameters.RequiredStatusChecks {
+			if check.Context != "" && !slices.Contains(required, check.Context) {
+				required = append(required, check.Context)
 			}
 		}
 	}
@@ -391,16 +398,4 @@ func said(body []byte) string {
 		return refusal.Message
 	}
 	return firstLine(body)
-}
-
-// defaultBranchPattern is how a ruleset names the default branch of a repository
-// that names no branch: the name of the branch is not in the conditions, the word
-// for "whichever it is" is.
-const defaultBranchPattern = "~DEFAULT_BRANCH"
-
-// covers is whether the conditions of a ruleset are about the branch, which is what
-// a ruleset that is not about it cannot be asked for. The conditions are the words
-// of the host: a pattern, or the name of the branch.
-func covers(patterns []string, branch string) bool {
-	return slices.Contains(patterns, branch) || slices.Contains(patterns, defaultBranchPattern)
 }
