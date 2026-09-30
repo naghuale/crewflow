@@ -351,7 +351,7 @@ func registry() []promise {
 		{number: 4, its: []string{
 			"IT-012", "IT-013", "IT-014", "IT-015", "IT-016", "IT-017", "IT-018",
 		}},
-		{number: promiseOfMerge, its: []string{"IT-019", "IT-020", "IT-021", "IT-022", "IT-023"}},
+		{number: promiseOfMerge, its: []string{"IT-019", "IT-020", "IT-021", "IT-022", "IT-023", "IT-030"}},
 		{number: 7, its: []string{"MT-001", "MT-002", "MT-003"}},
 	}
 }
@@ -489,6 +489,10 @@ type caseOfTable struct {
 	// on is the one case where a push is made and refused, and a merge that found the
 	// change in the branch already makes none.
 	pushes bool
+	// closedBy is who closed the task of the change behind the merge: the host, which
+	// closes an issue on its own, or crewflow, which closes a task the host left open
+	// in the time the merge waited for it (docs/DESIGN.md §7h).
+	closedBy ClosedBy
 }
 
 // tableOfTheSpecification is every case of §7h as a merge meets it: a set of facts of a
@@ -681,11 +685,12 @@ func tableOfTheSpecification() []caseOfTable {
 			want: gate.ForgeUnavailable,
 		},
 		{
-			it:      "IT-019",
-			name:    "everything is in order",
-			given:   approvesHead,
-			outcome: Merged,
-			pushes:  true,
+			it:       "IT-019",
+			name:     "everything is in order",
+			given:    approvesHead,
+			outcome:  Merged,
+			pushes:   true,
+			closedBy: ClosedByHost,
 		},
 		{
 			it:   "IT-020",
@@ -730,6 +735,22 @@ func tableOfTheSpecification() []caseOfTable {
 			},
 			want:   gate.VerifyMismatch,
 			pushes: true,
+		},
+		{
+			it:   "IT-030",
+			name: "the host did not close the task in the time the merge waited for it",
+			// A host that closed the task behind a change it merged does not do it
+			// every time: it closed neither the task of #48 nor of #47 on 30.09, and a
+			// check after such a merge answers «not verified» about a merge that did go
+			// in. The merge waits the whole time it was given and closes the task itself
+			// then, with a record under it.
+			given: func(s *scenario) {
+				approvesHead(s)
+				s.closedAfter = -1
+			},
+			outcome:  Merged,
+			pushes:   true,
+			closedBy: ClosedByCrewflow,
 		},
 	}
 }
@@ -923,6 +944,10 @@ func (s *scenario) assertRefused(t *testing.T, result Result, tc caseOfTable) {
 	if result.MergedSHA != "" {
 		t.Errorf("the merge holds the commit %q, want none: nothing was merged", result.MergedSHA)
 	}
+	if len(s.closings) > 0 {
+		t.Errorf("the merge that was refused closed %v, want no task closed: only a merge that went in closes one",
+			s.closings)
+	}
 	s.assertPushes(t, tc)
 }
 
@@ -961,6 +986,7 @@ func (s *scenario) assertMerged(t *testing.T, result Result, tc caseOfTable) {
 	if at := s.remoteMain(t); !sameCommit(at, s.change.HeadSHA) {
 		t.Errorf("%s of the host is at %s, want the approved %s", s.change.BaseBranch, at, s.change.HeadSHA)
 	}
+	s.assertClosed(t, result, tc)
 	if tc.outcome == MergedWithCleanupWarning {
 		if len(result.Left) == 0 {
 			t.Error("the merge says nothing is left to do by hand, want the worktree of the task named")
@@ -975,6 +1001,48 @@ func (s *scenario) assertMerged(t *testing.T, result Result, tc caseOfTable) {
 	}
 	if _, err := os.Stat(s.worktree); !os.IsNotExist(err) {
 		t.Errorf("the worktree of the task is still there after the merge: %v", err)
+	}
+}
+
+// assertClosed is what became of the task of the change behind a merge that went in:
+// who closed it, whether the host was asked to close it at all, and whether the fact is
+// written down in the outcome of the merge and in its journal — a report that does not
+// say who closed the task leaves a person guessing (docs/DESIGN.md §6, §7h).
+func (s *scenario) assertClosed(t *testing.T, result Result, tc caseOfTable) {
+	t.Helper()
+	if tc.closedBy == "" {
+		return
+	}
+	if !result.TaskClosed || result.TaskClosedBy != tc.closedBy {
+		t.Fatalf("the merge holds the task closed %v by %q, want it closed by %q",
+			result.TaskClosed, result.TaskClosedBy, tc.closedBy)
+	}
+	if want := `"task_closed_by":"` + string(tc.closedBy) + `"`; !strings.Contains(read(t, result.Journal), want) {
+		t.Errorf("the journal of the merge holds no %s:\n%s", want, read(t, result.Journal))
+	}
+	switch tc.closedBy {
+	case ClosedByHost:
+		if len(s.closings) > 0 {
+			t.Errorf("the host closed the task behind the change and crewflow closed it a second time: %v", s.closings)
+		}
+	case ClosedByCrewflow:
+		if s.reads < 2 {
+			t.Errorf("the merge read the task %d times and closed it, want it to have waited for the host first", s.reads)
+		}
+		if len(s.closings) != 1 {
+			t.Fatalf("crewflow closed %d tasks, want the one of the change: %v", len(s.closings), s.closings)
+		}
+		if got := s.closings[0].task; got != result.Task {
+			t.Errorf("crewflow closed the task #%d, want #%d: the task closed is the one the change names",
+				got, result.Task)
+		}
+		// The record under the task is what a person reads when they ask why the task is
+		// closed: it has to name the change that went in and the commit it went in with.
+		for _, want := range []string{"#" + strconv.Itoa(changeNumber), short(s.change.HeadSHA)} {
+			if !strings.Contains(s.closings[0].comment, want) {
+				t.Errorf("the record under the task is %q, want it to name %q", s.closings[0].comment, want)
+			}
+		}
 	}
 }
 

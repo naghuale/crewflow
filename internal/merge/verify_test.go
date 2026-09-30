@@ -357,6 +357,36 @@ func TestVerifyOfAMergedChangeWhoseHeadMovedOnAndWhoseBranchMovedOn(t *testing.T
 	}
 }
 
+// TestVerifyOfATaskCrewflowClosedBehindTheMerge: a host that does not close the task
+// behind a change it merged, and a merge that closes it itself — the check after such a
+// merge asks the tracker and finds the task closed, which is what the whole of it is
+// for: a merge that went through is a merge a check may confirm (docs/DESIGN.md §6, §7h).
+func TestVerifyOfATaskCrewflowClosedBehindTheMerge(t *testing.T) {
+	s := newScenario(t, nil)
+	s.closedAfter = -1
+
+	merged, err := Run(t.Context(), s.deps(), changeNumber)
+	if err != nil {
+		t.Fatalf("the merge returned an error: %v", err)
+	}
+	if merged.TaskClosedBy != ClosedByCrewflow {
+		t.Fatalf("the merge came to %q with the task closed by %q, want the task closed by crewflow",
+			merged.Outcome, merged.TaskClosedBy)
+	}
+
+	result, err := Verify(t.Context(), s.deps(), changeNumber)
+	if err != nil {
+		t.Fatalf("Verify returned an error: %v", err)
+	}
+
+	if !result.Verified {
+		t.Fatalf("the check says %+v, want the merge of a task crewflow closed to be verified", result)
+	}
+	if result.TaskState != "closed" {
+		t.Errorf("the check reads the task as %q, want it closed: the merge closed it", result.TaskState)
+	}
+}
+
 // merged is a change that has been merged: the merge is run first, the way a person runs
 // it, and the case is about what the check after it finds (docs/DESIGN.md §6).
 func (s *scenario) merged(t *testing.T) {

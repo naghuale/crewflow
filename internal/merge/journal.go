@@ -44,10 +44,11 @@ type Entry struct {
 	// shape a review shows them in: a merge is judged by the same gate and a person
 	// reads the same words of it in either place (docs/DESIGN.md §7h).
 	Gate *gate.Summary `json:"gate,omitempty"`
-	// Outcome is how the merge came out, and Left what is left of what was to be done
-	// around it.
-	Outcome Outcome  `json:"outcome,omitempty"`
-	Left    []string `json:"left,omitempty"`
+	// Outcome is how the merge came out, TaskClosedBy who closed the task of the
+	// change behind it, and Left what is left of what was to be done around it.
+	Outcome      Outcome  `json:"outcome,omitempty"`
+	TaskClosedBy ClosedBy `json:"task_closed_by,omitempty"`
+	Left         []string `json:"left,omitempty"`
 }
 
 // OpenJournal opens the journal of a merge, and empties it: the journal of a merge is
@@ -85,9 +86,15 @@ func (j *Journal) Gate(summary gate.Summary) error {
 	return j.write(Entry{Step: "gate", Gate: &summary})
 }
 
-// Outcome is how the merge came out, with what is left to do by hand.
+// Outcome is how the merge came out, who closed the task of the change behind it, and
+// what is left to do by hand.
 func (j *Journal) Outcome(result Result) error {
-	return j.write(Entry{Step: "outcome", Outcome: result.Outcome, Left: result.Left})
+	return j.write(Entry{
+		Step:         "outcome",
+		Outcome:      result.Outcome,
+		TaskClosedBy: result.TaskClosedBy,
+		Left:         result.Left,
+	})
 }
 
 // Note is something that happened around the merge and is not the outcome of it: a

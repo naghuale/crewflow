@@ -51,6 +51,49 @@ func TestTask(t *testing.T) {
 	}
 }
 
+// closingOfAMerge is the record a merge leaves under a task it closed because the
+// host left it open behind the change that went in: the change, the commit and
+// the hand that closed it, and a person reads it on the task and not in a report
+// crewflow printed an hour ago.
+const closingOfAMerge = "влита #48, 897a445, закрыта crewflow"
+
+// TestCloseTask closes a task and leaves the record of it under the task in the
+// same command: GitHub has no way to close an issue and write under it but
+// `gh issue close --comment`, and a task closed without a word under it is a task
+// a person reads as closed by somebody (docs/DESIGN.md §7h).
+func TestCloseTask(t *testing.T) {
+	m := newMachine().prints("issue close", "")
+	a := New(repo, "", m.env(t))
+
+	if err := a.CloseTask(t.Context(), 48, closingOfAMerge); err != nil {
+		t.Fatalf("CloseTask(48) returned an error: %v", err)
+	}
+
+	wantCommand := "issue close 48 -R " + repo + " --comment " + closingOfAMerge
+	if got := m.commandLine(0); got != wantCommand {
+		t.Errorf("the adapter ran %q, want %q", got, wantCommand)
+	}
+}
+
+// TestCloseTaskThatFailed says what to do about a task nobody closed: a merge
+// that went through and left the task open is a merge, and the person who reads
+// it is to be told what the host said instead of a silence.
+func TestCloseTaskThatFailed(t *testing.T) {
+	m := newMachine().fails("issue close", "issue #48 is not in the repository naghuale/crewflow\n")
+	a := New(repo, "", m.env(t))
+
+	err := a.CloseTask(t.Context(), 48, closingOfAMerge)
+	if err == nil {
+		t.Fatal("CloseTask said nothing about a task it could not close")
+	}
+	if !strings.Contains(err.Error(), "not in the repository") {
+		t.Errorf("the error %q does not say what the host answered", err)
+	}
+	if strings.Contains(err.Error(), closingOfAMerge) {
+		t.Errorf("the error %q holds the record of the closing, want the command that failed", err)
+	}
+}
+
 // TestFindChangeRequest reads the answer of "gh pr list" of a branch with a
 // request and checks that it is found by the branch, with the head the review
 // and the merge are about.

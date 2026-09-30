@@ -36,6 +36,17 @@ type host struct {
 	// waiting for that must not wait for it (docs/DESIGN.md §7h).
 	closedAfter int
 	reads       int
+	// closings is every task crewflow asked the host to close, with the record it left
+	// under it: a host that closes a task on its own is not asked to, and a test that
+	// cannot see the closings cannot tell one merge from another (docs/DESIGN.md §7h).
+	closings []closing
+}
+
+// closing is one task a merge closed through the tracker: which task, and the record
+// that goes under it.
+type closing struct {
+	task    int
+	comment string
 }
 
 // comment is a record under the change of a test: what is written, by whom, and whether
@@ -72,6 +83,18 @@ func (h *host) Task(_ context.Context, number int) (forge.Task, error) {
 		found.State = "closed"
 	}
 	return found, nil
+}
+
+// CloseTask is a task crewflow closed because the host left it open behind a change
+// that went in: the host keeps the record of it, and a task that is closed twice is a
+// task two of them wrote about (docs/DESIGN.md §7h).
+func (h *host) CloseTask(_ context.Context, number int, comment string) error {
+	if h.task.Number != number {
+		return fmt.Errorf("could not find issue %d", number)
+	}
+	h.closings = append(h.closings, closing{task: number, comment: comment})
+	h.task.State = "closed"
+	return nil
 }
 
 // ChangeRequest is the change as the host holds it, or the answer it did not give.
@@ -146,4 +169,5 @@ var (
 	_ forge.FileLister  = (*host)(nil)
 	_ forge.HeadRef     = (*host)(nil)
 	_ forge.SignedIn    = (*host)(nil)
+	_ forge.TaskCloser  = (*host)(nil)
 )

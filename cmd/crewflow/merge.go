@@ -223,7 +223,7 @@ func printMerge(w io.Writer, result merge.Result) {
 		fmt.Fprintf(w, "  nothing was pushed\n")
 	}
 	if result.Task > 0 {
-		fmt.Fprintf(w, "  task #%d: %s\n", result.Task, closedOrOpen(result.TaskClosed))
+		fmt.Fprintf(w, "  task #%d: %s\n", result.Task, closedBy(result))
 	}
 	fmt.Fprintf(w, "  journal %s\n", result.Journal)
 }
@@ -260,8 +260,24 @@ func printVerify(w io.Writer, result merge.Verification) {
 	}
 }
 
-// closedOrOpen is how a report says that a task is closed, and how it says that it is
-// not: a merge that left the task open has not done everything a host does behind it.
+// closedBy is what a report of a merge says about the task of the change: the host
+// closed it behind the change that went in, or crewflow closed it where the host left it
+// open. A task nobody closed is said as not closed, and it is the one thing of a merge
+// that is still to be done by hand (docs/DESIGN.md §6, §7h).
+func closedBy(result merge.Result) string {
+	switch result.TaskClosedBy {
+	case merge.ClosedByHost:
+		return "closed by host"
+	case merge.ClosedByCrewflow:
+		return "closed by crewflow"
+	default:
+		return "not closed yet"
+	}
+}
+
+// closedOrOpen is how the check of a merge says that a task is closed, and how it says
+// that it is not: the check reads the tracker and does not close anything, and a task it
+// finds open is a task a person is to close.
 func closedOrOpen(closed bool) string {
 	if closed {
 		return "closed"

@@ -55,7 +55,7 @@ func TestRunMergeOfAChangeTheGateAllows(t *testing.T) {
 		t.Fatalf("crewflow merge = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	for _, want := range []string{
-		"change #7", "merged: main of the host is at " + reviewHead, "task #7: closed",
+		"change #7", "merged: main of the host is at " + reviewHead, "task #7: closed by host",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow merge wrote:\n%s\nwant it to mention %q", stdout.String(), want)
@@ -100,21 +100,26 @@ func TestRunMergeAsJSON(t *testing.T) {
 		t.Fatalf("crewflow merge -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	var answer struct {
-		Task      int           `json:"task"`
-		Change    int           `json:"change"`
-		Head      string        `json:"head"`
-		Branch    string        `json:"branch"`
-		Outcome   merge.Outcome `json:"outcome"`
-		MergedSHA string        `json:"merged_sha"`
-		TaskClose bool          `json:"task_closed"`
-		Journal   string        `json:"journal"`
-		Verdict   gate.Verdict  `json:"verdict"`
+		Task      int            `json:"task"`
+		Change    int            `json:"change"`
+		Head      string         `json:"head"`
+		Branch    string         `json:"branch"`
+		Outcome   merge.Outcome  `json:"outcome"`
+		MergedSHA string         `json:"merged_sha"`
+		TaskClose bool           `json:"task_closed"`
+		ClosedBy  merge.ClosedBy `json:"task_closed_by"`
+		Journal   string         `json:"journal"`
+		Verdict   gate.Verdict   `json:"verdict"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
 		t.Fatalf("the answer of crewflow merge is not the JSON of an outcome: %v\n%s", err, stdout.String())
 	}
 	if answer.Outcome != merge.Merged || answer.MergedSHA != reviewHead || answer.Head != reviewHead {
 		t.Errorf("the answer holds %+v, want the change merged at the approved commit", answer)
+	}
+	if answer.ClosedBy != merge.ClosedByHost {
+		t.Errorf("the answer says the task was closed by %q, want %q: a host that closes an issue behind a change says so",
+			answer.ClosedBy, merge.ClosedByHost)
 	}
 	if answer.Change != 7 || answer.Task != 7 || answer.Branch != "main" || !answer.TaskClose {
 		t.Errorf("the answer is of #%d of task #%d into %q (task closed %v), want #7 of task 7 into main",
@@ -125,6 +130,39 @@ func TestRunMergeAsJSON(t *testing.T) {
 			answer.Verdict, answer.Journal)
 	}
 	_ = host
+}
+
+// TestTheReportOfAMergeNamesWhoClosedTheTask: a change that has gone in leaves a task
+// behind it, the host closes that task as a rule, and where it does not the merge closes
+// it itself. A report that does not say which hand closed the task leaves a person
+// guessing about a task that is closed for good (docs/DESIGN.md §6, §7h).
+func TestTheReportOfAMergeNamesWhoClosedTheTask(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		closed merge.ClosedBy
+		want   string
+	}{
+		{"the host closed it", merge.ClosedByHost, "task #7: closed by host"},
+		{"crewflow closed it", merge.ClosedByCrewflow, "task #7: closed by crewflow"},
+		{"nobody closed it yet", "", "task #7: not closed yet"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+
+			printMerge(&out, merge.Result{
+				Change:       7,
+				Outcome:      merge.Merged,
+				MergedSHA:    reviewHead,
+				Task:         7,
+				TaskClosed:   tc.closed != "",
+				TaskClosedBy: tc.closed,
+			})
+
+			if !strings.Contains(out.String(), tc.want) {
+				t.Errorf("the report of the merge wrote:\n%s\nwant it to mention %q", out.String(), tc.want)
+			}
+		})
+	}
 }
 
 // TestRunMergeRefusesAChangeTheGateRefuses: a change nobody approved is not pushed at

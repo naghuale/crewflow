@@ -78,9 +78,10 @@ type Adapter struct {
 // the machine: without a compile error here, a GitHub that cannot be read would
 // pass for a host.
 var (
-	_ forge.Tracker = (*Adapter)(nil)
-	_ forge.Forge   = (*Adapter)(nil)
-	_ forge.CI      = (*Adapter)(nil)
+	_ forge.Tracker    = (*Adapter)(nil)
+	_ forge.Forge      = (*Adapter)(nil)
+	_ forge.CI         = (*Adapter)(nil)
+	_ forge.TaskCloser = (*Adapter)(nil)
 )
 
 // New returns the adapter of the repository, which is all it needs to know: the
@@ -102,6 +103,23 @@ func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 		return forge.Task{}, err
 	}
 	return issue.task(), nil
+}
+
+// CloseTask closes the issue with the number and leaves the comment under it in
+// the same command: a task a merge closed has to say under itself why it is
+// closed and by whom, because the person who reads the task afterwards is not
+// the machine that closed it (docs/DESIGN.md §7h).
+func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) error {
+	arguments := []string{"issue", "close", strconv.Itoa(number), "-R", a.repo, "--comment", comment}
+	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
+	switch {
+	case err != nil:
+		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+	case code != 0:
+		return fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+	}
+	return nil
 }
 
 // FindChangeRequest returns the request of the branch, and whether there is one:

@@ -12,10 +12,11 @@
 // wrote about it is kept in the journal of the merge, because a person who is told
 // that a merge was refused has to be able to see what git said (docs/DESIGN.md §6).
 //
-// Nothing after the merge can undo it, and nothing after it is a refusal: the task is
-// waited for, the commit that was merged is recorded in the state of the task, and the
-// worktree of the task is taken away. What could not be done there is said as what is
-// left to do by hand, and the merge itself still stands (docs/DESIGN.md §7h).
+// Nothing after the merge can undo it, and nothing after it is a refusal: the task
+// of the change is waited for and closed where the host left it open, the commit that
+// was merged is recorded in the state of the task, and the worktree of the task is
+// taken away. What could not be done there is said as what is left to do by hand, and
+// the merge itself still stands (docs/DESIGN.md §7h).
 package merge
 
 import (
@@ -56,9 +57,26 @@ const (
 // Outcome is how a merge ended, and one of the four words above and nothing else.
 type Outcome string
 
+// ClosedBy is who closed the task of a change, and one of the two words below: a
+// change that has gone in leaves a task behind it, and the task is either closed by
+// the host behind the change or by the merge itself. A merge that names neither has
+// left a task open, and a person has to close it by hand (docs/DESIGN.md §6, §7h).
+type ClosedBy string
+
+const (
+	// ClosedByHost says that the host closed the task behind the change that went in,
+	// as it usually does, and that crewflow did not write to the tracker at all.
+	ClosedByHost ClosedBy = "host"
+	// ClosedByCrewflow says that the host did not close the task in the time the merge
+	// waited for it, and that the merge closed it with a record under it.
+	ClosedByCrewflow ClosedBy = "crewflow"
+)
+
 // TaskClosureTimeout is how long a merge waits for the task of a change to be closed
 // on the host: the host closes an issue behind a change that has been merged, and a
-// merge that does not wait for it cannot say whether it did (docs/DESIGN.md §7h).
+// merge that does not wait for it cannot say whether it did — and closes the task
+// itself where the host did not, because a task left open behind a change that went
+// in is a cycle nobody finished (docs/DESIGN.md §7h).
 const TaskClosureTimeout = time.Minute
 
 // taskClosedPoll is how often the merge asks the tracker about the task of the change
@@ -79,8 +97,10 @@ type Deps struct {
 	// Checkout is the repository the merge pushes from and asks the branch of the
 	// host about.
 	Checkout Git
-	// Tracker is where the task of the change is read from. A merge waits for the
-	// host to close it, as a host closes an issue behind a change that has gone in.
+	// Tracker is where the task of the change is read from, and — where the host did
+	// not close it behind the change that went in — closed through: a merge that ends
+	// with the task open is a cycle a person has to finish by hand, and a check after
+	// the merge cannot confirm that merge because of it (docs/DESIGN.md §7h).
 	Tracker forge.Tracker
 	// Task is the task the change is of: its state is where the commit that was
 	// merged is recorded and its worktree is what is taken away afterwards. Zero is a
@@ -121,11 +141,13 @@ type Result struct {
 	// MergedSHA is the commit the default branch of the host is at, once the merge is
 	// over: the answer of `git ls-remote`, and not the code `git push` exited with.
 	MergedSHA string `json:"merged_sha,omitempty"`
-	// TaskClosed says that the host closed the task of the change, and Left is what
-	// is left to do by hand when the merge went through and what came after it did
-	// not.
-	TaskClosed bool     `json:"task_closed,omitempty"`
-	Left       []string `json:"left,omitempty"`
+	// TaskClosed says that the task of the change is closed, TaskClosedBy who closed
+	// it — the host behind the change that went in, or crewflow where the host left
+	// the task open — and Left is what is left to do by hand when the merge went
+	// through and what came after it did not.
+	TaskClosed   bool     `json:"task_closed,omitempty"`
+	TaskClosedBy ClosedBy `json:"task_closed_by,omitempty"`
+	Left         []string `json:"left,omitempty"`
 	// Journal is where the facts, every command of git and what it wrote are.
 	Journal string `json:"journal"`
 }
@@ -227,9 +249,86 @@ func Run(ctx context.Context, deps Deps, number int) (Result, error) {
 		})
 	}
 
-	result.TaskClosed = d.taskClosed(ctx, journal, result.Task)
-	result = d.after(ctx, result, journal)
+	// The task of the change is closed only now: the branch of the host is at the
+	// approved commit, and a task closed before that would be a task closed for a merge
+	// that did not happen (docs/DESIGN.md §7h).
+	left := d.closedTask(ctx, journal, &result)
+	result = d.after(ctx, result, journal, left)
 	return result, journal.Outcome(result)
+}
+
+// closedTask is the task of the change after the commit is in the branch of the host:
+// the merge waits for the host to close it, and closes it itself where the host did not
+// do it in the time it was given. A host does not close an issue behind every change it
+// merged — it did not for #48 of this project on 30.09 — and a task left open behind a
+// change that went in is a cycle a person has to finish by hand, and a check after the
+// merge answers «not verified» about a merge that did go in (docs/DESIGN.md §6, §7h).
+//
+// Only the task the change itself names in its `Closes #N` is closed, and only where
+// the tracker of the project can close a task at all: a task crewflow closes is one a
+// person will not look at again, and the two facts that make it safe are the line of the
+// change and the fact that the branch of the host is at the approved commit.
+//
+// What could not be closed is what is left to do by hand, and it is what the caller is
+// given.
+func (d *deps) closedTask(ctx context.Context, journal *Journal, result *Result) []string {
+	if d.taskClosed(ctx, journal, result.Task) {
+		result.TaskClosed, result.TaskClosedBy = true, ClosedByHost
+		return nil
+	}
+	closer, is := d.Tracker.(forge.TaskCloser)
+	if !is {
+		return nil
+	}
+	number, is := d.taskOfTheChange(ctx, journal, result.Change)
+	if !is {
+		return nil
+	}
+	// The change is what the host closes tasks by, and it is what a person reads on
+	// the host: where it names another task than the one this machine kept state of,
+	// the change wins and the difference is said out loud.
+	if result.Task > 0 && result.Task != number {
+		_ = journal.Note(fmt.Errorf("the change request #%d names the task #%d, and this machine kept the state of the task #%d",
+			result.Change, number, result.Task))
+	}
+	result.Task = number
+	if err := closer.CloseTask(ctx, number, closingOf(*result)); err != nil {
+		left := fmt.Sprintf("close the task #%d by hand: %v", number, err)
+		_ = journal.Note(errors.New(left))
+		return []string{left}
+	}
+	result.TaskClosed, result.TaskClosedBy = true, ClosedByCrewflow
+	_ = journal.Note(fmt.Errorf("the host did not close the task %d in %s, and crewflow closed it",
+		number, d.Timeout))
+	return nil
+}
+
+// taskOfTheChange is the task the change names in its own `Closes #N`, and nothing else
+// crewflow kept: a change merged on another machine has no state here, and the line in
+// its body is what still says which task it was of (docs/DESIGN.md §7h).
+func (d *deps) taskOfTheChange(ctx context.Context, journal *Journal, number int) (int, bool) {
+	if d.Gate.Forge == nil {
+		return 0, false
+	}
+	change, err := d.Gate.Forge.ChangeRequest(ctx, number)
+	if err != nil {
+		_ = journal.Note(fmt.Errorf("read the change request #%d to find the task to close: %w", number, err))
+		return 0, false
+	}
+	task, is := gate.TaskOf(change.Body)
+	if !is {
+		_ = journal.Note(fmt.Errorf("the change request #%d names no task in `Closes #N`, so crewflow closes none", number))
+		return 0, false
+	}
+	return task, true
+}
+
+// closingOf is the record crewflow leaves under a task it closed: the change that went
+// in, the commit it went in with, and the hand that closed the task. A person who reads
+// the task afterwards is not looking at a report of a merge, and has to be able to see
+// why the task is closed without asking anybody (docs/DESIGN.md §7h).
+func closingOf(result Result) string {
+	return fmt.Sprintf("влита #%d, %s, закрыта crewflow", result.Change, short(result.MergedSHA))
 }
 
 // rejection is the reason a push git refused is refused with: the branch of the host
@@ -267,9 +366,9 @@ func (d *deps) rejection(ctx context.Context, commit, before string, pushErr err
 //
 // Neither can call the merge off, and both are said in the outcome: a merge that went
 // through with a worktree nobody took away is a merge that went through
-// (docs/DESIGN.md §7h).
-func (d *deps) after(ctx context.Context, result Result, journal *Journal) Result {
-	var left []string
+// (docs/DESIGN.md §7h). What is left of the task of the change is what came before
+// this, and it is said here as well.
+func (d *deps) after(ctx context.Context, result Result, journal *Journal, left []string) Result {
 	if result.Task > 0 {
 		if err := d.remember(result); err != nil {
 			left = append(left, err.Error())

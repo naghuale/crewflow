@@ -39,13 +39,29 @@ type Task struct {
 }
 
 // Tracker is where the tasks of a project come from. Crewflow reads a task and
-// never writes to the tracker: a run that opens a task is a change outside the
-// cycle, and those are not crewflow's (§7e).
+// never opens one: a run that opens a task is a change outside the cycle, and
+// those are not crewflow's (§7e). Closing is the other matter: a tracker is
+// where a task is closed, and §7g says so of the role.
 type Tracker interface {
 	RoleChecker
 	// Task returns the task with the number, and an error when there is no
 	// such task or the tracker could not be read.
 	Task(ctx context.Context, number int) (Task, error)
+}
+
+// TaskCloser is the tracker of a project that can close a task of it, which is
+// the third thing §7g asks of the role. A host closes an issue behind a change
+// that has gone in, and it does not always: a change that went in with its task
+// still open is a cycle nobody finished, and a check after the merge answers
+// «not verified» about a merge that did go in — which is how tasks of a project
+// come to be closed by hand, one at a time, beside crewflow (docs/DESIGN.md
+// §6, §7g, §7h).
+type TaskCloser interface {
+	// CloseTask closes the task with the number and leaves the comment under
+	// it: a task crewflow closed is one a person will not look at again, and
+	// the reason it is closed has to be where they read it (docs/DESIGN.md
+	// §7h).
+	CloseTask(ctx context.Context, number int, comment string) error
 }
 
 // ChangeRequest is a request to change the code of a project: what it wants,
