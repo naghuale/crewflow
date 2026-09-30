@@ -1,6 +1,7 @@
 package github
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -127,9 +128,11 @@ func TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount(t *testing.T) {
 }
 
 // TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal: the account a record was written
-// by is what makes it a record of somebody, and a record nobody may be named for is not
-// a record the gate may count. An answer of the host that holds no name is not that, and
-// it is not an answer either — it is `forge-unavailable` (§7h).
+// by is what makes it a record of somebody, and a record of an account the gate cannot
+// name is not a record it may count. Only a person and an App are read: an answer with no
+// kind in it, a kind crewflow does not know, and a person whose login is called an App are
+// all refused, because reading any of them as «a person» hands a record to whoever shares
+// the name (docs/DESIGN.md §7h, §7i).
 func TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -137,10 +140,22 @@ func TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal(t *testing.T) {
 	}{
 		{
 			name:   "the answer holds no account at all",
-			answer: fixture(t, "comment-authors-unnamed.json"),
+			answer: commentAuthors("", ""),
 		},
 		{
-			name:   "the answer does not hold that record",
+			name:   "the answer does not say what kind of account it is",
+			answer: commentAuthors("crewflow-orchestrator", ""),
+		},
+		{
+			name:   "the account is an organization and not a person",
+			answer: commentAuthors("crewflow", "Organization"),
+		},
+		{
+			name:   "a person whose login is called an App",
+			answer: commentAuthors("crewflow-orchestrator[bot]", "User"),
+		},
+		{
+			name:   "the answer does not hold that record at all",
 			answer: "[]",
 		},
 	}
@@ -152,10 +167,31 @@ func TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal(t *testing.T) {
 			a := New(repo, "", m.env(t))
 
 			if _, err := a.Comments(t.Context(), 2); err == nil {
-				t.Fatal("Comments(2) read a record whose author nobody may be named for")
+				t.Fatal("Comments(2) read a record of an account crewflow cannot name")
 			}
 		})
 	}
+}
+
+// commentAuthors is the answer of the REST API about the accounts the records of the
+// change in comments-bot.json were written by, with the account of both of them given as
+// asked: the shape of the answer is the recorded one of comment-authors.json, and each case
+// of the refusal above is that answer with one field of the account changed.
+func commentAuthors(login, kind string) string {
+	comment := func(id string, number int) string {
+		return fmt.Sprintf(`  {
+    "id": %d,
+    "node_id": %q,
+    "author_association": "NONE",
+    "issue_url": "https://api.github.com/repos/naghuale/crewflow/issues/107",
+    "user": {"id": 336252606, "login": %q, "type": %q, "site_admin": false},
+    "created_at": "2026-09-30T22:05:47Z",
+    "updated_at": "2026-09-30T22:05:47Z"
+  }`, number, id, login, kind)
+	}
+	return "[\n" +
+		comment("IC_kwDOUv-WT88AAAABYORP4w", 5920542691) + ",\n" +
+		comment("IC_kwDOUv-WT88AAAABYORP5y", 5920542702) + "\n]"
 }
 
 // TestCommentsThatWereEdited is the fact a gate cannot do without: a record of a

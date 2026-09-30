@@ -325,29 +325,42 @@ func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]string,
 }
 
 // botSuffix is what the host appends to the login of every account that is an App, and
-// botKind is how the API says an account is one. The suffix is what tells the account of
-// the orchestrator of a project from the account of a person, so it is put on by the kind
-// and never read out of a login: over GraphQL an App has no suffix at all, and over REST
-// a person cannot have one (docs/DESIGN.md §7h, §7i).
+// botKind and userKind are how the API says an account is one or the other. The suffix is
+// what tells the account of the orchestrator of a project from the account of a person, so
+// it is put on by the kind and never read out of a login: over GraphQL an App has no
+// suffix at all, and over REST a person cannot have one (docs/DESIGN.md §7h, §7i).
 const (
 	botSuffix = "[bot]"
 	botKind   = "Bot"
+	userKind  = "User"
 )
 
-// accountOf is the name the gate counts a record of this account by: the login of the
-// host for a person or an organization, and that login with the suffix the host gives
-// accounts of that kind for an App. An answer that names no account is an error and not
-// an account with no name: a record of nobody is not a record the gate may count, and a
-// name nobody may be named for is a gap in the answer of the host (docs/DESIGN.md §7h).
+// accountOf is the name the gate counts a record of this account by: the login of the host
+// for a person, and that login with the suffix the host gives accounts of that kind for an
+// App.
+//
+// Only these two kinds of account are read. A kind crewflow does not know is refused, and
+// so is a kind it knows and a login that does not go with it: reading any other answer as
+// «a person» would hand a record of an account crewflow cannot name to whoever shares its
+// name — an unknown kind with the login `x[bot]` would count as the person `x`, which is a
+// record of somebody the host never named. An answer crewflow does not understand is a gap
+// in what the host said, and a gap is what the gate refuses on (docs/DESIGN.md §7h).
 func accountOf(login, kind string) (string, error) {
 	if login == "" {
 		return "", errors.New("the answer of the host names no account")
 	}
-	name := strings.TrimSuffix(login, botSuffix)
-	if kind == botKind {
-		return name + botSuffix, nil
+	switch kind {
+	case botKind:
+		return strings.TrimSuffix(login, botSuffix) + botSuffix, nil
+	case userKind:
+		if strings.HasSuffix(login, botSuffix) {
+			return "", fmt.Errorf("the account %q is named a person and is called an App", login)
+		}
+		return login, nil
+	default:
+		return "", fmt.Errorf("the account %q is of a kind the host names and crewflow does not know: %q",
+			login, kind)
 	}
-	return name, nil
 }
 
 // Status returns how the check runs of the commit stand. A commit with a check
