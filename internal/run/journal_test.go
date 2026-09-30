@@ -414,7 +414,9 @@ func TestWatchShowsTheLastLineNobodyClosed(t *testing.T) {
 
 // TestWatchFollowsARunningAttempt: a watch of a run that is going shows what the
 // executor writes as it writes it, and stops when the run is over. The tick is a
-// channel the test fills itself, so that nothing waits for a clock.
+// channel the test fills itself, so that nothing waits for a clock: a watch reads the
+// state of the task again on every look, so it may see the end of the run by itself,
+// and the test does not wait for a look of a watch that has already ended.
 func TestWatchFollowsARunningAttempt(t *testing.T) {
 	home := t.TempDir()
 	journals := newJournals(home, "naghuale-crewflow")
@@ -431,18 +433,27 @@ func TestWatchFollowsARunningAttempt(t *testing.T) {
 	shown := make(chan string, 16)
 	out := &lineWriter{write: func(line string) { shown <- line }}
 	stopped := make(chan error, 1)
-	go func() { stopped <- watch.Follow(t.Context(), out, ticks) }()
+	// over is closed when the watch has ended. A watch reads the state of the task
+	// again on every look, so it can see the end of the run on a look of its own and
+	// go on by itself: the lines below may be shown by the look the first tick caused
+	// or by the look before it, and neither the test nor the watch is to be made to
+	// wait for the other one.
+	over := make(chan struct{})
+	go func() {
+		defer close(over)
+		stopped <- watch.Follow(t.Context(), out, ticks)
+	}()
 
 	// The executor writes while the run is going, and the watch shows it.
 	write(t, running.Attempts[0].Journal, theWork)
-	ticks <- time.Now()
-	if got := <-shown; !strings.Contains(got, "I did the work.") {
+	tick(t, ticks, over)
+	if got := nextShown(t, shown, over); !strings.Contains(got, "I did the work.") {
 		t.Errorf("the watch showed %q, want what the executor wrote while the run was going", got)
 	}
-	if got := <-shown; !strings.Contains(got, "bash: go test") {
+	if got := nextShown(t, shown, over); !strings.Contains(got, "bash: go test") {
 		t.Errorf("the watch showed %q, want the tool the executor called", got)
 	}
-	if got := <-shown; !strings.Contains(got, "The change request is open.") {
+	if got := nextShown(t, shown, over); !strings.Contains(got, "The change request is open.") {
 		t.Errorf("the watch showed %q, want the last line the executor wrote while the run was going", got)
 	}
 
@@ -453,12 +464,17 @@ func TestWatchFollowsARunningAttempt(t *testing.T) {
 		t.Fatalf("the attempt of the state moved from %q to %q, want the same journal",
 			running.Attempts[0].Journal, ended.Attempts[0].Journal)
 	}
-	ticks <- time.Now()
-	if got := <-shown; !strings.Contains(got, "BLOCKED: I could not go on") {
+	tick(t, ticks, over)
+	if got := nextShown(t, shown, over); !strings.Contains(got, "BLOCKED: I could not go on") {
 		t.Errorf("the watch showed %q after the run ended, want the last thing the executor wrote", got)
 	}
-	if err := <-stopped; err != nil {
-		t.Fatalf("Follow of a run that has ended returned an error: %v", err)
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("Follow of a run that has ended returned an error: %v", err)
+		}
+	case <-time.After(watchTurn):
+		t.Fatal("the watch showed the end of the run and did not stop with it")
 	}
 	select {
 	case line := <-shown:
@@ -602,4 +618,47 @@ func (w *lineWriter) Write(p []byte) (int, error) {
 		w.write(line)
 	}
 	return len(p), nil
+}
+
+// watchTurn is how long a test of a watch waits for one look or one line of it. A
+// watch reads files of a folder of the test and does nothing else, so a look takes
+// microseconds; the bound is there so that a watch that will not come is a test that
+// says so instead of a test that holds the timeout of the whole package.
+const watchTurn = 10 * time.Second
+
+// tick hands a watch a look, or gives up if there is no longer a watch to hand it
+// to: a watch that has seen the end of the run takes no tick any more, and a send
+// that waits for a reader who is gone waits for good.
+func tick(t *testing.T, ticks chan<- time.Time, over <-chan struct{}) {
+	t.Helper()
+	select {
+	case ticks <- time.Now():
+	case <-over:
+	case <-time.After(watchTurn):
+		t.Fatal("the watch took no look and did not end")
+	}
+}
+
+// nextShown is the next line a watch has shown, and the one it showed last before
+// it stopped: a watch that has ended shows nothing more, and a test that waited for
+// one more line of it would wait for good.
+func nextShown(t *testing.T, shown <-chan string, over <-chan struct{}) string {
+	t.Helper()
+	select {
+	case line := <-shown:
+		return line
+	case <-over:
+		// The watch has ended, and everything it showed is in the channel already:
+		// what is not in it, it is not going to show.
+		select {
+		case line := <-shown:
+			return line
+		default:
+			t.Fatal("the watch ended without showing what the executor had written")
+			return ""
+		}
+	case <-time.After(watchTurn):
+		t.Fatal("the watch showed nothing and did not end")
+		return ""
+	}
 }
