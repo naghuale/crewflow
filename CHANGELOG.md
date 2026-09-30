@@ -42,6 +42,10 @@
   ([#42](https://github.com/naghuale/crewflow/pull/42), задача [#8](https://github.com/naghuale/crewflow/issues/8))
 - `CHANGELOG.md` — этот файл.
   ([#69](https://github.com/naghuale/crewflow/pull/69), задача [#69](https://github.com/naghuale/crewflow/issues/69))
+- `make install SIGN_IDENTITY="<name>"` — та же установка, что `go install`, но программа подписана
+  сертификатом владельца машины, и доступ к ключу переживает пересборку; без `SIGN_IDENTITY` скрипт
+  говорит, чего это стоит. README рассказывает, как сделать такой сертификат.
+  ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
 
 ### Изменено
 
@@ -78,6 +82,11 @@
 - Правило 4: дефект, переживший три неудачные проверки правки, следующей правкой не закрывается, пока
   не появился новый факт — и перечислено, что фактом считается.
   ([#46](https://github.com/naghuale/crewflow/pull/46), задача [#44](https://github.com/naghuale/crewflow/issues/44))
+- `crewflow doctor` называет каждый шаг отчёта до того, как делает его, и задаёт два вопроса, на
+  которые можно ответить без окна: `keychain access` — может ли эта сборка читать секреты без
+  окна, и `binary signature` — что о подписи говорит `codesign`. Шаги идут в stderr, поэтому
+  `-json` остаётся одним отчётом.
+  ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
 
 ### Исправлено
 
@@ -99,6 +108,14 @@
 - `crewflow merge` закрывает задачу сам, когда хостинг не закрыл её по `Closes #N`, и говорит в
   отчёте, кто закрыл; при отказе ворот не закрывается ничего.
   ([#75](https://github.com/naghuale/crewflow/pull/75), задача [#70](https://github.com/naghuale/crewflow/issues/70))
+- Ожидание доступа к связке ключей больше не молчит и не длится бесконечно: команда говорит, о чём
+  будет ждать, ещё до ожидания — в терминале и в журнале попытки, — а через две минуты заканчивается
+  как `blocked` с причиной `keychain-approval`, и попытка, у которой исполнитель не запускался, видна
+  в `crewflow task list`.
+  ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
+- Прогон, оборванный до старта исполнителя, убирает за собой рабочую копию и не оставляет её
+  следующему прогону.
+  ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
 
 ### Безопасность
 
