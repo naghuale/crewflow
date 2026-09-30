@@ -39,9 +39,6 @@ func TestRunEverythingThere(t *testing.T) {
 		// that the file is there.
 		prints("sh -c test -e /usr/local/lib/libtdjson", "")
 	config := writeConfig(t, baseConfig+`
-[[executor.fallback]]
-command = ["codex", "exec", "{prompt}"]
-
 [requirements]
 tools = [
   { name = "go", check = ["go", "version"], min = "1.27" },
@@ -61,7 +58,7 @@ run = ["golangci-lint", "run", "./..."]
 	report := runOn(t, m, config)
 
 	want := []string{
-		"config", "git", "gh", "gh login", "executor identity", "executor", "executor fallback 1",
+		"config", "git", "gh", "gh login", "executor identity", "executor",
 		"access read", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {
@@ -142,13 +139,6 @@ func TestRunMissingPrograms(t *testing.T) {
 			missing:  "agent",
 			check:    "executor",
 			wantHint: []string{"agent", "executor.command"},
-		},
-		{
-			name:     "fallback executor",
-			missing:  "codex",
-			config:   "\n[[executor.fallback]]\ncommand = [\"codex\", \"exec\", \"{prompt}\"]\n",
-			check:    "executor fallback 1",
-			wantHint: []string{"codex", "executor.fallback[0].command"},
 		},
 		{
 			name:     "program of a gate",
@@ -415,37 +405,30 @@ func TestRunUnreadableConfig(t *testing.T) {
 	}
 }
 
-// TestRunRoleWithoutAnAdapter is the case a person runs into after writing down
-// a host crewflow has no adapter for: the report says so by name and says which
-// key is to be changed, and the code is not zero.
-func TestRunRoleWithoutAnAdapter(t *testing.T) {
+// TestRunSpecifiedSettings is the case a person runs into after writing down a
+// host, a tracker or a CI crewflow has no adapter for: the file does not load, the
+// report says which key asked, which task writes it and what to write instead, and
+// the code is not zero (docs/DESIGN.md §5).
+func TestRunSpecifiedSettings(t *testing.T) {
 	cases := []struct {
-		name    string
-		config  string
-		check   string
-		want    []string
-		wantNot []string
+		name   string
+		config string
+		want   []string
 	}{
 		{
-			name:    "the host of the code",
-			config:  "\n[forge]\nkind = \"gitlab\"\n",
-			check:   "forge",
-			want:    []string{"adapter gitlab is not implemented yet", "forge.kind"},
-			wantNot: []string{"gh"},
+			name:   "the host of the code",
+			config: "\n[forge]\nkind = \"gitlab\"\n",
+			want:   []string{"forge.kind", "gitlab", "crewflow#60", `kind = "github"`},
 		},
 		{
-			name:    "the tracker of the tasks",
-			config:  "\n[tracker]\nkind = \"jira\"\n",
-			check:   "tracker",
-			want:    []string{"adapter jira is not implemented yet", "tracker.kind"},
-			wantNot: []string{"gh"},
+			name:   "the tracker of the tasks",
+			config: "\n[tracker]\nkind = \"jira\"\n",
+			want:   []string{"tracker.kind", "jira", "crewflow#62", `kind = "forge"`},
 		},
 		{
-			name:    "the CI of a commit",
-			config:  "\n[ci]\nkind = \"jenkins\"\n",
-			check:   "ci",
-			want:    []string{"adapter jenkins is not implemented yet", "ci.kind"},
-			wantNot: []string{"gh"},
+			name:   "the CI of a commit",
+			config: "\n[ci]\nkind = \"jenkins\"\n",
+			want:   []string{"ci.kind", "jenkins", "no issue is open", `kind = "forge"`},
 		},
 	}
 	for _, tc := range cases {
@@ -458,27 +441,36 @@ func TestRunRoleWithoutAnAdapter(t *testing.T) {
 
 			report := runOn(t, m, config)
 
-			got := checkOf(t, report, tc.check)
-			if got.Status != Fail {
-				t.Errorf("check %q = %q (%s), want fail", tc.check, got.Status, got.Detail)
+			file := checkOf(t, report, "config")
+			if file.Status != Fail {
+				t.Errorf("check %q = %q (%s), want fail: the file asks for what crewflow does not do", "config", file.Status, file.Detail)
+			}
+			if !strings.Contains(file.Detail, "crewflow.toml") {
+				t.Errorf("check %q detail = %q, want it to name the file", "config", file.Detail)
+			}
+			asked := checkOf(t, report, specifiedCheck)
+			if asked.Status != Fail {
+				t.Errorf("check %q = %q (%s), want fail", specifiedCheck, asked.Status, asked.Detail)
 			}
 			for _, want := range tc.want {
-				if !strings.Contains(got.Detail, want) {
-					t.Errorf("check %q detail = %q, want it to mention %q", tc.check, got.Detail, want)
+				if !strings.Contains(asked.Detail+asked.Hint+file.Detail, want) {
+					t.Errorf("the report does not mention %q, want the key that asked, the task and what to write", want)
 				}
 			}
-			if !strings.Contains(got.Hint, "crewflow.toml") {
-				t.Errorf("check %q hint = %q, want it to name the file to change", tc.check, got.Hint)
+			// The list of what asked is a part of the report and not only a line of a
+			// check: an orchestrator reads the report on every run, and the keys are
+			// what it has to tell a person about (docs/DESIGN.md §5).
+			if len(report.Specified) != 1 {
+				t.Fatalf("the report holds %d settings, want the one the file asked for", len(report.Specified))
+			}
+			if got := report.Specified[0].Key; got != strings.SplitN(tc.want[0], " = ", 2)[0] {
+				t.Errorf("the report names the key %q, want %q", got, tc.want[0])
 			}
 			if report.OK() {
-				t.Error("report.OK() = true, want false when a role has no adapter")
+				t.Error("report.OK() = true, want false when the file asks for what is not written")
 			}
-			for _, check := range report.Checks {
-				for _, not := range tc.wantNot {
-					if check.Name == not {
-						t.Errorf("check %q was made, want the check of the role that is missing to say it all", not)
-					}
-				}
+			if slices.ContainsFunc(report.Checks, func(check Check) bool { return check.Name == "gh" }) {
+				t.Error("the report asked GitHub about a project whose file does not load, want nothing asked")
 			}
 		})
 	}

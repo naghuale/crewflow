@@ -276,5 +276,12 @@ func Load(path string) (Config, error) {
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
 	}
+	// The shape of the file is one thing and what crewflow can do with it another: a
+	// value the design describes and the code has not written is refused here, where
+	// the person who wrote the file reads what to write instead, and not in the middle
+	// of a task that has already started (docs/DESIGN.md §5).
+	if asked := cfg.asked(); len(asked) > 0 {
+		return Config{}, fmt.Errorf("%s: %w", path, &NotImplemented{Settings: asked})
+	}
 	return cfg, nil
 }

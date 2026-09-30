@@ -125,6 +125,15 @@ crewflow task check-stalled   # the runs that stand — for the orchestrator's s
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
+Every key of `crewflow.toml` has a status in the code: `supported`, which the code
+applies, or `specified`, which the design describes and the code has not written
+yet. A value that asks for the second — `isolation.mode = "sandbox"`,
+`merge.via = "forge"`, `parallel.max_tasks > 1`, a non-empty `capabilities` or
+`fallback`, a `forge.kind` that is not `github` — is refused when the file is read,
+and the refusal says what is not written, which issue writes it and what to write
+instead. `crewflow doctor` shows the same list under `specified settings`, and in
+`-json` under `specified`.
+
 A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-permission`,
 `timeout`, `no-change-request`, `executor-failed`, `out-of-scope` or `interrupted` — and
 `stalled` is not one of them, because such a run has not ended: see

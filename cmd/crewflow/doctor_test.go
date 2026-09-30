@@ -99,6 +99,29 @@ func TestRunDoctorMissingGit(t *testing.T) {
 	}
 }
 
+// TestRunDoctorSpecifiedSetting is the manual check of §5: a file that asks for a
+// mode crewflow has not written is refused by name, with the task that writes it
+// and what to write instead, and the code is not zero.
+func TestRunDoctorSpecifiedSetting(t *testing.T) {
+	(&machine{}).use(t)
+	project := writeConfig(t, projectConfig+`
+[isolation]
+mode = "sandbox"
+`)
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"doctor", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow doctor = %d, want %d for a setting crewflow does not do", code, exitFailure)
+	}
+	for _, want := range []string{"isolation.mode", "sandbox", "crewflow#55", `mode = "host"`} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow doctor wrote %q, want it to mention %q", stdout.String(), want)
+		}
+	}
+}
+
 // TestRunDoctorNoConfig is the first case of the manual check: a folder that is
 // not a project yet says so, and the code is not zero.
 func TestRunDoctorNoConfig(t *testing.T) {
@@ -165,6 +188,14 @@ func TestRunDoctorJSON(t *testing.T) {
 	var whole map[string]any
 	if err := json.Unmarshal(stdout.Bytes(), &whole); err != nil {
 		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
+	}
+	// The settings of the project that ask for what crewflow has not written are a
+	// part of every report for the same reason: a report of a machine with nothing
+	// in them says so with an empty list, and a field that is missing is a field a
+	// script has to guard against (docs/DESIGN.md §5).
+	asked, isList := whole["specified"].([]any)
+	if !isList || asked == nil {
+		t.Errorf("specified = %v, want a list, empty when every key of the file says what crewflow does", whole["specified"])
 	}
 	policy, isTable := whole["access"].(map[string]any)
 	if !isTable {

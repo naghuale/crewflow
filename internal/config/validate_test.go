@@ -76,7 +76,7 @@ func TestLoadRejects(t *testing.T) {
 // TestLoadAccepts checks that the two valid files pass Load, which validates.
 func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
-		"example.toml", "minimal.toml", "fallback_defaults.toml", "identity_bot.toml",
+		"example.toml", "minimal.toml", "identity_bot.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

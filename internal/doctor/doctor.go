@@ -27,6 +27,11 @@ import (
 // the executor of a run of this project has (docs/DESIGN.md §7i).
 const identityCheck = "executor identity"
 
+// specifiedCheck is the name a report calls the list of the settings of the project
+// by: the keys of the file that ask for a behaviour the design describes and the
+// code has not written, which is why the file did not load (docs/DESIGN.md §5).
+const specifiedCheck = "specified settings"
+
 // Status is how one check ended.
 type Status string
 
@@ -65,6 +70,11 @@ type Report struct {
 	// task on this machine, and the paths crewflow would not open, because a refusal
 	// of the next run is about a permission that was given here (docs/DESIGN.md §7d).
 	Access Access `json:"access"`
+	// Specified are the settings of the project that ask for a behaviour the design
+	// describes and the code has not written. The file of a project that asks for one
+	// does not load, and this is the list of what asked: a person reads it in one place
+	// instead of taking the keys out of the words of an error (docs/DESIGN.md §5).
+	Specified []config.Asked `json:"specified"`
 }
 
 // Identity is the mode of a run of the project and the one line a report shows for it.
@@ -198,10 +208,11 @@ func (c *checker) step(name string) {
 // reading policy of the project, which is not a check but a part of what a run is
 // about to be given.
 type checker struct {
-	env      Env
-	checks   []Check
-	identity Identity
-	access   Access
+	env       Env
+	checks    []Check
+	identity  Identity
+	access    Access
+	specified []config.Asked
 }
 
 // add puts a check into the report.
@@ -210,14 +221,18 @@ func (c *checker) add(check Check) {
 }
 
 // report is what Run returns. The reading policy is there even when the file of the
-// project could not be read, as three empty lists: an orchestrator reads them on every
-// report and a field that is missing in one of the two is a field to guard against in
-// a script.
+// project could not be read, as three empty lists, and so is the list of the
+// settings that ask for what is not written: an orchestrator reads them on every
+// report and a field that is missing in one of the two is a field to guard against
+// in a script.
 func (c *checker) report() Report {
 	if c.access.Read == nil {
 		c.access = Access{Read: []string{}, Deny: []string{}, Rejected: []access.Problem{}}
 	}
-	return Report{Checks: c.checks, Identity: c.identity, Access: c.access}
+	if c.specified == nil {
+		c.specified = []config.Asked{}
+	}
+	return Report{Checks: c.checks, Identity: c.identity, Access: c.access, Specified: c.specified}
 }
 
 // config reads the project file, which every check below needs: which executor
@@ -231,10 +246,45 @@ func (c *checker) config() (config.Config, bool) {
 			Detail: err.Error(),
 			Hint:   "fix the file, or point -config at the crewflow.toml of the project",
 		})
+		c.specifiedFrom(err)
 		return config.Config{}, false
 	}
 	c.add(Check{Name: "config", Status: OK, Detail: c.env.ConfigPath})
 	return cfg, true
+}
+
+// specifiedFrom is the check for the settings the registry of the file refused: it
+// is a check of its own because a person who asked for a sandbox should read which
+// keys of the file asked and which task writes them, not only the words of the
+// refusal inside the line of the file (docs/DESIGN.md §5).
+func (c *checker) specifiedFrom(err error) {
+	var refusal *config.NotImplemented
+	if !errors.As(err, &refusal) || len(refusal.Settings) == 0 {
+		return
+	}
+	c.specified = refusal.Settings
+	c.add(Check{
+		Name:   specifiedCheck,
+		Status: Fail,
+		Detail: detailOfTheSettings(refusal.Settings),
+		Hint:   "a setting crewflow does not do yet is refused, not kept: take it out or write what the line says",
+	})
+}
+
+// detailOfTheSettings is the list of the settings in one line: the key, the value
+// and the task that writes it, one after another.
+func detailOfTheSettings(settings []config.Asked) string {
+	lines := make([]string, 0, len(settings))
+	for _, setting := range settings {
+		line := fmt.Sprintf("%s = %q", setting.Key, setting.Value)
+		if setting.Task > 0 {
+			line += fmt.Sprintf(" (crewflow#%d)", setting.Task)
+		} else {
+			line += " (no issue is open)"
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, ", ")
 }
 
 // git checks that git is installed: a task happens in a worktree, so without git
@@ -364,14 +414,13 @@ func asLine(check forge.Check) Check {
 	}
 }
 
-// executors checks that the executor and every executor it may fall back to are
-// installed, in the order crewflow would try them (docs/DESIGN.md §7b).
+// executors checks that the executor is installed: crewflow knows no agent of its
+// own, so a project whose file does not name one has nothing to run a task with
+// (§7b). A list of executors to try in turn is a promise of the same section that
+// crewflow does not keep yet (#51), and the load refuses such a file before this
+// check ever asks.
 func (c *checker) executors(cfg config.Config) {
 	c.executor("executor", "executor.command", cfg.Executor.ExecutorSpec)
-	for i, fallback := range cfg.Executor.Fallback {
-		key := fmt.Sprintf("executor.fallback[%d].command", i)
-		c.executor(fmt.Sprintf("executor fallback %d", i+1), key, fallback)
-	}
 }
 
 // executor checks one executor, under the name a report calls it and the key a

@@ -143,7 +143,12 @@ func TestNewWithoutChecks(t *testing.T) {
 // adapter of a host, and the adapter of the tasks is the adapter of the host
 // whenever the tasks are there, which is not the case any more.
 func TestHostOfWithoutAHost(t *testing.T) {
-	cfg := load(t, baseConfig+"\n[forge]\nkind = \"none\"\n\n[tracker]\nkind = \"files\"\n\n[ci]\nkind = \"none\"\n")
+	cfg := config.Config{
+		Project: config.Project{Repo: "naghuale/crewflow"},
+		Forge:   config.Forge{Kind: "none"},
+		Tracker: config.Tracker{Kind: "files"},
+		CI:      config.CI{Kind: "none"},
+	}
 
 	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode)
 	if err != nil {
@@ -163,24 +168,29 @@ func TestHostOfWithoutAHost(t *testing.T) {
 // TestNewNotImplemented walks the kinds crewflow has no adapter for yet, which
 // are all of them but GitHub: the error names the setting and the kind, so that
 // a report can tell a person which key to change.
+//
+// The settings are made by hand, because a file that asks for a role crewflow has
+// no adapter for is refused by config.Load now, naming the task that writes it
+// (docs/DESIGN.md §5). What is left for this package to answer is what it does
+// with the settings it is given, which is the refusal a caller that builds them
+// itself still meets.
 func TestNewNotImplemented(t *testing.T) {
 	cases := []struct {
-		name   string
-		config string
-		key    string
-		kind   string
+		name string
+		key  string
+		kind string
 	}{
-		{"gitlab", baseConfig + "\n[forge]\nkind = \"gitlab\"\n", "forge.kind", "gitlab"},
-		{"bitbucket", baseConfig + "\n[forge]\nkind = \"bitbucket\"\n", "forge.kind", "bitbucket"},
-		{"jira", baseConfig + "\n[tracker]\nkind = \"jira\"\n", "tracker.kind", "jira"},
-		{"linear", baseConfig + "\n[tracker]\nkind = \"linear\"\n", "tracker.kind", "linear"},
-		{"files", baseConfig + "\n[tracker]\nkind = \"files\"\n", "tracker.kind", "files"},
-		{"jenkins", baseConfig + "\n[ci]\nkind = \"jenkins\"\n", "ci.kind", "jenkins"},
-		{"command", baseConfig + "\n[ci]\nkind = \"command\"\n", "ci.kind", "command"},
+		{"gitlab", "forge.kind", "gitlab"},
+		{"bitbucket", "forge.kind", "bitbucket"},
+		{"jira", "tracker.kind", "jira"},
+		{"linear", "tracker.kind", "linear"},
+		{"files", "tracker.kind", "files"},
+		{"jenkins", "ci.kind", "jenkins"},
+		{"command", "ci.kind", "command"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := New(load(t, tc.config), newMachine().env(t))
+			_, err := New(settingsWithKind(tc.key, tc.kind), newMachine().env(t))
 			if err == nil {
 				t.Fatalf("New with the %s adapter returned no error, want one", tc.name)
 			}
@@ -246,6 +256,28 @@ func TestNewWithRolesThatContradictThemselves(t *testing.T) {
 // load reads a crewflow.toml of the test into the settings, and it writes the
 // file into a folder of its own so that a test never reads the file of the
 // project it runs in.
+// settingsWithKind is the settings of a project whose role under the key is the
+// kind, with the other two roles on the ones crewflow has an adapter for: a case
+// of this file is about one role, and a role the file does not name is not the
+// one under test.
+func settingsWithKind(key, kind string) config.Config {
+	cfg := config.Config{
+		Project: config.Project{Repo: "naghuale/crewflow"},
+		Forge:   config.Forge{Kind: "github"},
+		Tracker: config.Tracker{Kind: "forge"},
+		CI:      config.CI{Kind: "forge"},
+	}
+	switch key {
+	case "forge.kind":
+		cfg.Forge.Kind = kind
+	case "tracker.kind":
+		cfg.Tracker.Kind = kind
+	case "ci.kind":
+		cfg.CI.Kind = kind
+	}
+	return cfg
+}
+
 func load(t *testing.T, content string) config.Config {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "crewflow.toml")

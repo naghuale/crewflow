@@ -10,6 +10,11 @@ import (
 // baseConfig is what a project says at least: a repository and an executor. A
 // case adds the keys of the roles it is about to this table and never writes it
 // twice, because a file with two [executor] tables is not a file.
+// noTask is what a kind of a role is expected to be refused with when the design
+// describes it and no issue is written for it yet: the refusal names the key and
+// the value and says that nobody waits for it.
+const noTask = "-"
+
 const baseConfig = `
 [project]
 repo = "naghuale/crewflow"
@@ -20,31 +25,63 @@ command = ["agent", "run", "{prompt}"]
 
 // TestLoadRoleKinds walks every kind of every role of DESIGN §7g, so that the
 // list of what crewflow knows is spelled out in one place and not only in the
-// file that checks it.
+// file that checks it. A kind of a role crewflow has no adapter for is described
+// in §7g and is not written, so a file that asks for it does not load: the load
+// says so, with the task that writes it (docs/DESIGN.md §5).
 func TestLoadRoleKinds(t *testing.T) {
 	cases := []struct {
 		table string
 		key   string
-		kinds []string
+		kinds map[string]string
 		// besides is written next to the kind, for a kind that cannot stand on
-		// its own: a project with no host takes its tasks in files and waits
+		// its own: a project with no host would take its tasks in files and wait
 		// only for its own gates.
 		besides string
 	}{
-		{table: "forge", key: "kind", kinds: []string{"github", "gitlab", "bitbucket", "gitea", "azure"}, besides: ""},
-		{table: "forge", key: "kind", kinds: []string{"none"}, besides: "\n[tracker]\nkind = \"files\"\n\n[ci]\nkind = \"none\"\n"},
-		{table: "tracker", key: "kind", kinds: []string{"forge", "jira", "linear", "files"}},
-		{table: "ci", key: "kind", kinds: []string{"forge", "jenkins", "command", "none"}},
-		{table: "merge", key: "via", kinds: []string{"git-push", "forge"}},
+		{table: "forge", key: "kind", kinds: map[string]string{"github": ""}},
+		{table: "forge", key: "kind", kinds: map[string]string{
+			"gitlab": "#60", "bitbucket": "#61", "gitea": noTask, "azure": noTask, "none": "#59",
+		}, besides: "\n[tracker]\nkind = \"files\"\n\n[ci]\nkind = \"none\"\n"},
+		{table: "tracker", key: "kind", kinds: map[string]string{
+			"forge": "", "jira": "#62", "linear": noTask, "files": "#59",
+		}},
+		{table: "ci", key: "kind", kinds: map[string]string{
+			"forge": "", "jenkins": noTask, "command": "#59", "none": "",
+		}},
+		{table: "merge", key: "via", kinds: map[string]string{"git-push": "", "forge": "#58"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.table+"."+tc.key, func(t *testing.T) {
-			for _, kind := range tc.kinds {
+			for kind, task := range tc.kinds {
 				t.Run(kind, func(t *testing.T) {
 					path := filepath.Join(t.TempDir(), "crewflow.toml")
 					writeFile(t, path, baseConfig+"\n["+tc.table+"]\n"+tc.key+" = \""+kind+"\""+tc.besides+"\n")
-					if _, err := Load(path); err != nil {
-						t.Errorf("Load with %s.%s = %q returned an error: %v", tc.table, tc.key, kind, err)
+					_, err := Load(path)
+					switch task {
+					case "":
+						if err != nil {
+							t.Errorf("Load with %s.%s = %q returned an error: %v", tc.table, tc.key, kind, err)
+						}
+					case noTask:
+						if err == nil {
+							t.Fatalf("Load with %s.%s = %q returned no error, want the refusal of the registry",
+								tc.table, tc.key, kind)
+						}
+						for _, want := range []string{tc.table + "." + tc.key, kind, "no issue is open"} {
+							if !strings.Contains(err.Error(), want) {
+								t.Errorf("error %q does not mention %q", err, want)
+							}
+						}
+					default:
+						if err == nil {
+							t.Fatalf("Load with %s.%s = %q returned no error, want the refusal that names %s",
+								tc.table, tc.key, kind, task)
+						}
+						for _, want := range []string{tc.table + "." + tc.key, kind, task} {
+							if !strings.Contains(err.Error(), want) {
+								t.Errorf("error %q does not mention %q", err, want)
+							}
+						}
 					}
 				})
 			}
@@ -80,28 +117,35 @@ func TestLoadRoleDefaults(t *testing.T) {
 }
 
 // TestLoadRoleHostAndProject checks the two free strings of the roles: the
-// project's own server and the key of the tracker, which crewflow only carries
-// and does not judge.
+// project's own server, which the adapter of the host is given, and the key of
+// the tracker, which only a tracker of its own would read. A key of the tracker
+// in a file whose tracker is the forge promises something crewflow does not do,
+// and the load refuses it (docs/DESIGN.md §5).
 func TestLoadRoleHostAndProject(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "crewflow.toml")
 	writeFile(t, path, baseConfig+`
 [forge]
-kind = "gitlab"
-host = "gitlab.company.com"
-
-[tracker]
-kind = "jira"
-project = "TELE"
+host = "github.company.com"
 `)
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load returned an error: %v", err)
 	}
-	if cfg.Forge.Host != "gitlab.company.com" {
-		t.Errorf("forge.host = %q, want %q", cfg.Forge.Host, "gitlab.company.com")
+	if cfg.Forge.Host != "github.company.com" {
+		t.Errorf("forge.host = %q, want %q", cfg.Forge.Host, "github.company.com")
 	}
-	if cfg.Tracker.Project != "TELE" {
-		t.Errorf("tracker.project = %q, want %q", cfg.Tracker.Project, "TELE")
+
+	refused := filepath.Join(t.TempDir(), "crewflow.toml")
+	writeFile(t, refused, baseConfig+`
+[tracker]
+project = "TELE"
+`)
+	_, err = Load(refused)
+	if err == nil {
+		t.Fatal("Load of a file with a key of the tracker returned no error, want the refusal of the registry")
+	}
+	if !strings.Contains(err.Error(), "tracker.project") {
+		t.Errorf("error %q does not name the key of the tracker", err)
 	}
 }
 
@@ -131,9 +175,10 @@ func TestLoadRolesOfAProjectWithoutAForge(t *testing.T) {
 	}
 }
 
-// TestLoadRolesWithoutAForge is the other side of the same two keys: a project
-// without a host that takes its tasks in files and waits only for its own gates
-// is a project crewflow can work with.
+// TestLoadRolesWithoutAForge is the offline project of DESIGN §7g: no host at
+// all, the tasks in files and only its own gates. It is described and crewflow
+// has no adapter for it (#59), so the load says so instead of taking a file that
+// promises a cycle the program cannot run.
 func TestLoadRolesWithoutAForge(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "crewflow.toml")
 	writeFile(t, path, baseConfig+`
@@ -146,7 +191,13 @@ kind = "files"
 [ci]
 kind = "none"
 `)
-	if _, err := Load(path); err != nil {
-		t.Errorf("Load of a project without a host returned an error: %v", err)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load of a project without a host returned no error, want the refusal that names #59")
+	}
+	for _, want := range []string{"forge.kind", "tracker.kind", "crewflow#59"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/BurntSushi/toml"
 )
 
 func loadFile(t *testing.T, name string) (Config, error) {
@@ -70,15 +72,10 @@ func TestLoadExample(t *testing.T) {
 			},
 		},
 		{"isolation.mode", cfg.Isolation.Mode, "host"},
-		{
-			"capabilities",
-			cfg.Capabilities,
-			[]Capability{{
-				Name:    "github-keys",
-				Use:     []string{"gh"},
-				Actions: []string{"gh ssh-key add", "gh gpg-key add"},
-			}},
-		},
+		// The example comments [[capabilities]] out: a declaration of a capability
+		// is a promise crewflow does not keep yet, and a file that makes it does
+		// not load (docs/DESIGN.md §5, §7e).
+		{"capabilities", cfg.Capabilities, []Capability(nil)},
 		{"worktrees.root", cfg.Worktrees.Root, "~/.crewflow/worktrees/{repo}"},
 		{
 			"gates",
@@ -253,11 +250,24 @@ required = false
 	}
 }
 
-func TestLoadFallbackAppliesDefaultTimeout(t *testing.T) {
-	cfg, err := loadFile(t, "fallback_defaults.toml")
+// TestApplyDefaultsGivesAFallbackTheTimeoutOfTheExecutor holds the rule of
+// defaults.go about a fallback executor, which the load no longer reaches: a
+// non-empty fallback is a promise of §7b that crewflow does not keep yet, so the
+// file is refused (docs/DESIGN.md §5). The rule itself stays with the task that
+// writes the fallback, and this test is what holds it to what it says.
+func TestApplyDefaultsGivesAFallbackTheTimeoutOfTheExecutor(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "fallback_defaults.toml"))
 	if err != nil {
-		t.Fatalf("Load(fallback_defaults.toml) returned an error: %v", err)
+		t.Fatalf("read testdata/fallback_defaults.toml: %v", err)
 	}
+	var cfg Config
+	meta, err := toml.Decode(string(data), &cfg)
+	if err != nil {
+		t.Fatalf("decode testdata/fallback_defaults.toml: %v", err)
+	}
+
+	cfg.applyDefaults(&meta)
+
 	if got, want := cfg.Executor.Fallback[0].Timeout, cfg.Executor.Timeout; got != want {
 		t.Errorf("executor.fallback[0].timeout = %q, want %q", got, want)
 	}
