@@ -97,7 +97,9 @@ what that costs:
 
 When a window of the system does open, crewflow says what it is waiting for before it waits, and
 stops waiting after two minutes: `blocked` with the reason `keychain-approval`, in the journal of
-the attempt, in the report and in `-json`. Nothing is stored outside the keychain.
+the attempt, in the report and in `-json`. A run refused the key before its executor started takes
+the worktree and the branch it made away with it, so the next `task run` of the task simply starts
+again. Nothing is stored outside the keychain.
 
 ## Use
 

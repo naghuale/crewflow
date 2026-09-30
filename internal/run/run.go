@@ -444,7 +444,11 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		if errors.Is(err, secret.ErrApproval) {
 			return r.blockedOnApproval(files, err)
 		}
-		return Result{}, errors.Join(err, files.takeAway())
+		// A run that never started its executor leaves nothing behind: neither the
+		// journal of an attempt that was not made, nor the worktree and the branch it
+		// made, which nothing written down points at and the next run of the task cannot
+		// come back to (docs/DESIGN.md §7i).
+		return Result{}, errors.Join(err, files.takeAway(), r.takeRunAway(ctx))
 	}
 	state := r.stateOf(r.env.Now())
 	attempt := state.Attempts[len(state.Attempts)-1]

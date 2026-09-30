@@ -8,7 +8,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,6 +142,109 @@ func TestARunInAMachineThatAllowsThisBuildGoesOnAsItAlwaysWent(t *testing.T) {
 	}
 }
 
+// TestARunCutOffBeforeTheExecutorStartedLeavesNeitherWorktreeNorBranch is the failure
+// the ledger of the pilot names (F-048, #37): the owner refused the window of the
+// keychain — macOS answers −128 "User canceled" — the run ended before the executor was
+// started, and the folder of the worktree and the branch of the task stayed behind. The
+// next `task run` refused them ("the worktree … is already there: run it again with
+// -continue"), and `-continue` was impossible, because nothing was ever written down.
+//
+// So a run that is cut off before the executor is started takes the worktree and the
+// branch it made away, and the task is runnable again from the start. A continuation
+// keeps its worktree: the work of the attempt before it is in that folder, and nobody
+// takes a worktree away with the work of a task in it.
+func TestARunCutOffBeforeTheExecutorStartedLeavesNeitherWorktreeNorBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	executor := fakeExecutor(t, "agent", commit("internal/run/run.go", "package run\n"))
+	keychain := &refusedOnce{key: keyOfTheRun(t)}
+	host := &host{task: taskOf(43), store: keychain}
+	cfg := projectOf(t, t.TempDir(), "1h")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	worktree, err := Worktree(cfg, 43)
+	if err != nil {
+		t.Fatalf("the place of the worktree of task 43: %v", err)
+	}
+	home := t.TempDir()
+
+	_, err = Run(t.Context(), System(home), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+
+	if err == nil {
+		t.Fatal("Run returned no error, want the refusal of the keychain of the machine")
+	}
+	if !strings.Contains(err.Error(), "User canceled") {
+		t.Errorf("Run = %v, want the words of the keychain about the window nobody answered", err)
+	}
+	if _, statErr := os.Stat(worktree); !os.IsNotExist(statErr) {
+		t.Errorf("the worktree %s is there after a run that was cut off (%v), want it taken away", worktree, statErr)
+	}
+	if branches := split(gitOut(t, repo, "branch", "--list", Branch(taskOf(43)))); len(branches) > 0 {
+		t.Errorf("the branch %s is there after a run that was cut off, want it taken away: %v",
+			Branch(taskOf(43)), branches)
+	}
+	// The task is runnable again from the start, in a worktree of its own, and the run
+	// goes on to the executor this time: the keychain of the machine let it in.
+	result, err := Run(t.Context(), System(home), cfg, host.set(), Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("the second Run returned an error: %v", err)
+	}
+	if result.Outcome == "" {
+		t.Error("the second run has no outcome, want a run that went on to the executor")
+	}
+	if !movedByRun(t, worktree) {
+		t.Errorf("the work of the second run is nowhere in %s, want the executor to have worked there", worktree)
+	}
+}
+
+// TestARunThatWentOnInAWorktreeKeepsItWhenItIsCutOffBeforeTheExecutor is the other side
+// of the same rule: a continuation that is refused the key of the App before the
+// executor is started leaves the work of the attempt it goes on in exactly where it is,
+// because that work is the work of the task (docs/DESIGN.md §7i).
+func TestARunThatWentOnInAWorktreeKeepsItWhenItIsCutOffBeforeTheExecutor(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	m.answers["git config"] = answer{}
+	// A first run that worked, a state of the task and a worktree of the task, and a
+	// host whose keychain of macOS is now in front of a window the owner does not answer.
+	host := &host{task: taskOf(43), opened: true, identity: theBot()}
+	cfg := inTheModeOfTheBot(projectOf(t, m.worktrees, ""))
+	first, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("the first Run returned an error: %v", err)
+	}
+	if first.Outcome != ChangeRequestOpened {
+		t.Fatalf("the first run = %q, want %q, want a run of a machine that answers the keychain", first.Outcome, ChangeRequestOpened)
+	}
+	// The window of the second run: the owner said no this time.
+	host.noIdentity = errors.New("the keychain of macOS refused to read crewflow/github-app-5107052 " +
+		"(status -128): User canceled")
+
+	_, err = Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo, Continue: "go on"})
+
+	if err == nil {
+		t.Fatal("the continuation returned no error, want the refusal of the keychain of the machine")
+	}
+	if _, statErr := os.Stat(first.Worktree); statErr != nil {
+		t.Errorf("the worktree %s of the attempt is gone (%v), want the work of the task kept in it", first.Worktree, statErr)
+	}
+	if removed := m.ranCommand("worktree remove"); removed {
+		t.Errorf("the machine was asked %v, want no worktree taken away from a continuation", m.lines())
+	}
+}
+
+// movedByRun is whether the work of a run is in the worktree of the task, which is how a
+// test of a run sees that the executor was started and did what it was told.
+func movedByRun(t *testing.T, worktree string) bool {
+	t.Helper()
+	_, err := os.Stat(filepath.Join(worktree, "internal", "run", "run.go"))
+	return err == nil
+}
+
 // TestARunThatWasRefusedSomethingElseLeavesNothingBehind: a run that could not be given
 // an account of the host for any other reason — no key imported, no store to read — is
 // not a run, and the journals of the task hold nothing about it: an attempt of a task in
@@ -226,3 +332,34 @@ func keyOfTheRun(t *testing.T) []byte {
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
 }
+
+// refusedOnce is the keychain of macOS of a machine whose owner refused the window of the
+// system the first time and let the program in the second: what macOS answers when the
+// owner presses "Deny" is −128 "User canceled", and a run that is cut off by it has to
+// leave a machine as it found it (docs/DESIGN.md §7i).
+type refusedOnce struct {
+	// key is what the store holds for every read after the refusal.
+	key []byte
+	// mu guards refused, because the read of the key of a run happens in the goroutine
+	// of that run.
+	mu      sync.Mutex
+	refused bool
+}
+
+func (s *refusedOnce) Get(string, string) ([]byte, error) {
+	s.mu.Lock()
+	refused := s.refused
+	s.refused = true
+	s.mu.Unlock()
+	if !refused {
+		return nil, errors.New("the keychain of macOS refused to read crewflow/github-app-5107052 " +
+			"(status -128): User canceled")
+	}
+	return s.key, nil
+}
+
+func (s *refusedOnce) Set(string, string, []byte) error { return nil }
+
+func (s *refusedOnce) Has(string, string) (bool, error) { return true, nil }
+
+func (s *refusedOnce) Allowed(string) (bool, error) { return true, nil }

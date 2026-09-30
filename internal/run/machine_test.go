@@ -307,11 +307,26 @@ func (m *machine) answerOf(program string, args []string) (answer, bool) {
 // made is what a command left on the machine. Only git makes worktrees here, and it
 // is the one command a test of a second run of a task meets on the way: the folder
 // of the worktree is there afterwards, or a continuation has nothing to go on in.
+// And git takes a worktree away again, which is what a test of a run that was cut
+// off before the executor started meets: the folder has to be gone for the next run
+// of the task to make one of its own.
 func (m *machine) made(program string, args []string) {
-	if program != "git" || len(args) < 5 || args[0] != "worktree" || args[1] != "add" {
+	if program != "git" {
 		return
 	}
-	m.has(args[4])
+	switch {
+	case len(args) >= 5 && args[0] == "worktree" && args[1] == "add":
+		m.has(args[4])
+	case len(args) >= 4 && args[0] == "worktree" && args[1] == "remove":
+		m.gone(args[len(args)-1])
+	}
+}
+
+// gone takes a folder of the machine away, as `git worktree remove` does.
+func (m *machine) gone(path string) {
+	if err := os.RemoveAll(path); err != nil {
+		panic(fmt.Sprintf("take %s away: %v", path, err))
+	}
 }
 
 // all are the commands that were run, in order, under the lock.

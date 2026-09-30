@@ -1,9 +1,11 @@
 package run
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
@@ -67,6 +69,47 @@ func (r *runner) blockedOnApproval(files *AttemptFiles, err error) (Result, erro
 		return result, closeErr
 	}
 	return result.spent(Blocked), nil
+}
+
+// takeRunAway is what a run does with the worktree and the branch it made when it is cut
+// off before the executor was started: the keychain of macOS refused to let this program
+// read the key of the App, and nothing was done in the worktree of the task, nothing was
+// pushed and nothing is written down that points at either of them. What is left is a
+// folder and a branch that the next `task run` refuses ("the worktree … is already there:
+// run it again with -continue") and that `-continue` cannot reach, because the state of
+// the task has no attempt in it (F-048, docs/DESIGN.md §7i).
+//
+// A continuation is not touched: the folder it went on in holds the work of the attempt
+// before it, and that work is the work of the task.
+func (r *runner) takeRunAway(ctx context.Context) error {
+	if r.req.Continue != "" {
+		return nil
+	}
+	var problems []error
+	if _, err := os.Stat(r.worktree); err == nil {
+		// The folder of the worktree and the record of it in the repository go together:
+		// `git worktree remove` takes both, and `--force` is here because a run that
+		// does not start its executor has nothing in the folder to lose.
+		if err := r.git(ctx, r.repoDir(), "worktree", "remove", "--force", r.worktree); err != nil {
+			problems = append(problems, err)
+		}
+	} else if !os.IsNotExist(err) {
+		problems = append(problems, fmt.Errorf("the worktree %s: %w", r.worktree, err))
+	}
+	// The branch of the task is of the clone of the person and nothing of it was pushed:
+	// the executor was never started. `git branch -D` fails on a branch that is not
+	// there, and a machine where somebody took the branch away by hand is a machine where
+	// a run has to take what is left and say nothing about the rest.
+	listed, err := r.output(ctx, r.repoDir(), "branch", "--list", r.branch)
+	switch {
+	case err != nil:
+		problems = append(problems, err)
+	case strings.TrimSpace(listed) != "":
+		if err := r.git(ctx, r.repoDir(), "branch", "-D", r.branch); err != nil {
+			problems = append(problems, err)
+		}
+	}
+	return errors.Join(problems...)
 }
 
 // resultOf is the answer of a run for everything a report shows about it whatever

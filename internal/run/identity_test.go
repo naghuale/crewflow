@@ -304,6 +304,20 @@ func (m *machine) askedFor(program string) bool {
 	return false
 }
 
+// ranCommand is whether any command of git was run whose arguments begin with the given
+// words, which is how a test sees what a run asked of the repository of the project
+// besides the worktree of the task.
+func (m *machine) ranCommand(words string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, command := range m.ran {
+		if command.program == "git" && strings.HasPrefix(strings.Join(command.args, " "), words) {
+			return true
+		}
+	}
+	return false
+}
+
 // The pre-push hook of a run is a guard behind the rules of the branch on the host, and
 // it is the only guard that lives in the worktree of the run itself: the rules of the
 // host are the ones an app cannot go around, and a hook is a file of a machine that
