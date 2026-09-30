@@ -250,39 +250,46 @@ required = false
 	}
 }
 
-// TestApplyDefaultsGivesAFallbackTheTimeoutOfTheExecutor holds the rule of
+// TestApplyDefaultsGivesAFallbackTheLimitsOfTheExecutor holds both rules of
 // defaults.go about a fallback executor, which the load no longer reaches: a
 // non-empty fallback is a promise of §7b that crewflow does not keep yet, so the
-// file is refused (docs/DESIGN.md §5). The rule itself stays with the task that
-// writes the fallback, and this test is what holds it to what it says.
-func TestApplyDefaultsGivesAFallbackTheTimeoutOfTheExecutor(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("testdata", "fallback_defaults.toml"))
-	if err != nil {
-		t.Fatalf("read testdata/fallback_defaults.toml: %v", err)
-	}
-	var cfg Config
-	meta, err := toml.Decode(string(data), &cfg)
-	if err != nil {
-		t.Fatalf("decode testdata/fallback_defaults.toml: %v", err)
-	}
+// file is refused (docs/DESIGN.md §5). The rules themselves stay with the task that
+// writes the fallback, and this test is what holds them to what they say.
+func TestApplyDefaultsGivesAFallbackTheLimitsOfTheExecutor(t *testing.T) {
+	for _, tc := range []struct {
+		file    string
+		applied func(Config) (string, string)
+		key     string
+	}{
+		{
+			file: "fallback_defaults.toml", key: "executor.fallback[0].timeout",
+			applied: func(c Config) (string, string) { return c.Executor.Fallback[0].Timeout, c.Executor.Timeout },
+		},
+		{
+			// The silence a run is marked at is a limit of the run and not of the
+			// agent in it (#67), so a fallback says nothing about it and gets the one
+			// of the executor it stands in for.
+			file: "stall_after_defaults.toml", key: "executor.fallback[0].stall_after",
+			applied: func(c Config) (string, string) { return c.Executor.Fallback[0].StallAfter, c.Executor.StallAfter },
+		},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", tc.file))
+			if err != nil {
+				t.Fatalf("read testdata/%s: %v", tc.file, err)
+			}
+			var cfg Config
+			meta, err := toml.Decode(string(data), &cfg)
+			if err != nil {
+				t.Fatalf("decode testdata/%s: %v", tc.file, err)
+			}
 
-	cfg.applyDefaults(&meta)
+			cfg.applyDefaults(&meta)
 
-	if got, want := cfg.Executor.Fallback[0].Timeout, cfg.Executor.Timeout; got != want {
-		t.Errorf("executor.fallback[0].timeout = %q, want %q", got, want)
-	}
-}
-
-// TestLoadFallbackAppliesDefaultStallAfter: the silence a run is marked at is a
-// limit of the run and not of the agent in it, so a fallback says nothing about it
-// and gets the one of the executor it stands in for.
-func TestLoadFallbackAppliesDefaultStallAfter(t *testing.T) {
-	cfg, err := loadFile(t, "stall_after_defaults.toml")
-	if err != nil {
-		t.Fatalf("Load(stall_after_defaults.toml) returned an error: %v", err)
-	}
-	if got, want := cfg.Executor.Fallback[0].StallAfter, cfg.Executor.StallAfter; got != want {
-		t.Errorf("executor.fallback[0].stall_after = %q, want %q", got, want)
+			if got, want := tc.applied(cfg); got != want {
+				t.Errorf("%s = %q, want %q", tc.key, got, want)
+			}
+		})
 	}
 }
 

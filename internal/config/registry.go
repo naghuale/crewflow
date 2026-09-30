@@ -152,10 +152,11 @@ var settings = []Setting{
 		Applies: "cfg.Identity.GitHubApp.InstallationID",
 	},
 
-	// [executor] — the agent a run works with (§7b). The command line, the model
-	// and the time limit are what a run and the probe of doctor use; a list of
-	// executors to try in turn is what a run does not do yet (#51), so a file
-	// with one is refused rather than left to look as if it were a plan.
+	// [executor] — the agent a run works with (§7b). The command line, the model,
+	// the time limit and the silence after which a run is marked standing are what a
+	// run, a list and the probe of doctor use; a list of executors to try in turn is
+	// what a run does not do yet (#51), so a file with one is refused rather than left
+	// to look as if it were a plan.
 	{
 		Key: "executor.command", Status: Supported,
 		Applies: "cfg.Executor.ExecutorSpec.Command",
@@ -163,6 +164,7 @@ var settings = []Setting{
 	{Key: "executor.model", Status: Supported, Applies: "spec.Model"},
 	{Key: "executor.model_flag", Status: Supported, Applies: "spec.ModelFlag"},
 	{Key: "executor.timeout", Status: Supported, Applies: "cfg.Executor.Timeout"},
+	{Key: "executor.stall_after", Status: Supported, Applies: "cfg.Executor.StallAfter"},
 	{
 		Key: "executor.fallback", Status: Specified,
 		Unwritten: []Asked{{
@@ -241,8 +243,16 @@ var settings = []Setting{
 			asks: func(c Config) bool { return c.Merge.Via == "forge" },
 		}},
 	},
-	// Who counts as an approving reviewer is what the gate is given (§7h).
+	// Who counts as an approving reviewer, and who as the owner who looks at the
+	// result himself, is what the gate is given (§7h); an empty list of either is
+	// the owner of the repository.
 	{Key: "merge.reviewers", Status: Supported, Applies: "cfg.Merge.Reviewers"},
+	{Key: "merge.owners", Status: Supported, Applies: "cfg.Merge.Owners"},
+
+	// [acceptance] — the label of a task whose result the owner accepts before the
+	// change may go in (§7h). The gate is given it with the owners, and a task
+	// without the label is merged as it always was.
+	{Key: "acceptance.label", Status: Supported, Applies: "cfg.Acceptance.Label"},
 
 	// [parallel] — how many tasks run at once (§7c). Crewflow runs one at a time,
 	// and a second one asks for tasks without crossing files (#56).
