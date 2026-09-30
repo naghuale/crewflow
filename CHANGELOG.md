@@ -12,10 +12,12 @@
 [PROJECT_RULES.md](PROJECT_RULES.md)). Строка пишется для человека и не копируется из заголовка
 коммита; из коммитов журнал не собирается.
 
-**Первый выпуск — `v0.1.0`**, при закрытии вехи `v1`. До него всё слитое лежит в «Не выпущено».
-Как выпустить версию — в [README](README.md#releases) и в `scripts/release.sh`.
+**Первый выпуск — `v0.1.0` от 2026-10-01**, при закрытии вехи `v1`: всё слитое до него лежит в его
+разделе. Как выпустить следующую версию — в [README](README.md#releases) и в `scripts/release.sh`.
 
 ## [Не выпущено]
+
+## [v0.1.0] - 2026-10-01
 
 ### Добавлено
 
@@ -40,12 +42,28 @@
 - `crewflow merge` — слияние ровно одобренного коммита, одним refspec, без `--force`; и
   `crewflow verify` — проверка после слияния: ветка на том коммите, задача закрыта, CI зелёный.
   ([#42](https://github.com/naghuale/crewflow/pull/42), задача [#8](https://github.com/naghuale/crewflow/issues/8))
-- `CHANGELOG.md` — этот файл.
-  ([#69](https://github.com/naghuale/crewflow/pull/69), задача [#69](https://github.com/naghuale/crewflow/issues/69))
 - `make install SIGN_IDENTITY="<name>"` — та же установка, что `go install`, но программа подписана
   сертификатом владельца машины, и доступ к ключу переживает пересборку; без `SIGN_IDENTITY` скрипт
   говорит, чего это стоит. README рассказывает, как сделать такой сертификат.
   ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
+- `CHANGELOG.md` — этот файл, и `scripts/release.sh` — выпуск версии: раздел журнала получает номер и
+  дату, на коммит ставится аннотированный тег, а сборка получает эту версию вместо `dev`; README,
+  раздел Releases, — те же три шага руками.
+  ([#76](https://github.com/naghuale/crewflow/pull/76), задача [#69](https://github.com/naghuale/crewflow/issues/69))
+- `CREWFLOW_CHECKLIST.md` — чек-лист процесса по шагам: перед задачей, перед прогоном, во время прогона,
+  когда что-то сломалось, перед ревью, перед одобрением, перед слиянием, после слияния, журнал задачи и
+  журнал недели. У каждого пункта — ссылка на правило, которое его формулирует, чтобы правило жило в
+  одном месте.
+  ([#79](https://github.com/naghuale/crewflow/pull/79), задача [#68](https://github.com/naghuale/crewflow/issues/68))
+- Приёмка владельцем по точному коммиту: задача с меткой `owner-check` не сливается, пока под её
+  изменением нет записи `ACCEPTED <sha>`, написанной одним из `[merge] owners` — ровно для того коммита,
+  на котором изменение стоит. Коммит после приёмки снова ждёт приёмки, а `crewflow review` называет
+  причину отказа: `owner-acceptance-missing`, `-untrusted`, `-edited`.
+  ([#81](https://github.com/naghuale/crewflow/pull/81), задача [#9](https://github.com/naghuale/crewflow/issues/9))
+- Проверка секретов gitleaks стала постоянной: в CI отдельный шаг на всю историю, в `crewflow.toml` —
+  ворота `secrets` по коммитам изменения, а двенадцать известных заглушек из документации GitHub
+  перечислены в `.gitleaksignore` по отпечатку; README говорит, что делать с настоящим секретом.
+  ([#87](https://github.com/naghuale/crewflow/pull/87), задача [#84](https://github.com/naghuale/crewflow/issues/84))
 - Прогон, который стоит, виден: `task list` показывает `stalled` со временем простоя, в журнале
   прогона — по строке на вход в простой и на выход, а `crewflow task check-stalled` для расписания
   оркестратора говорит, что стоит, и оставляет под задачей одну запись на эпизод простоя. Порог —
@@ -119,6 +137,14 @@
   окна, и `binary signature` — что о подписи говорит `codesign`. Шаги идут в stderr, поэтому
   `-json` остаётся одним отчётом.
   ([#73](https://github.com/naghuale/crewflow/pull/73), задача [#65](https://github.com/naghuale/crewflow/issues/65))
+- Каждый механизм дизайна помечен своим состоянием — реализовано, частично или только описано, — а
+  сводная таблица §11 перечисляет все механизмы с разделом, статусом и задачей; при разночтении правда
+  таблица пометок, а не текст этапов.
+  ([#83](https://github.com/naghuale/crewflow/pull/83), задача [#40](https://github.com/naghuale/crewflow/issues/40))
+- В дизайне сказано, где crewflow ещё стоит на доверии: три этапа эволюции доверия с фактами и
+  задачами, инвариант «доверие заменяется механизмом» и у каждого места в матрице §7k, где решение
+  держится на доверии, названа задача-замена.
+  ([#90](https://github.com/naghuale/crewflow/pull/90), задача [#86](https://github.com/naghuale/crewflow/issues/86))
 
 ### Исправлено
 
@@ -152,6 +178,11 @@
   сканируются только коммиты самого изменения, на `main` — история `main`, а заглушка узнаётся по
   своему значению или по пометке `placeholder` на своей строке, а не по отпечатку коммита.
   ([#92](https://github.com/naghuale/crewflow/pull/92), задача [#91](https://github.com/naghuale/crewflow/issues/91))
+- Настройка, которую crewflow пока не применяет, больше не читается молча: у каждого ключа
+  `crewflow.toml` есть статус в реестре, а значение, которое только описано в дизайне, отвергается при
+  чтении файла — с номером задачи и подсказкой, что поставить вместо него. `crewflow doctor`
+  перечисляет такие значения отдельной строкой отчёта и в `-json`.
+  ([#93](https://github.com/naghuale/crewflow/pull/93), задача [#64](https://github.com/naghuale/crewflow/issues/64))
 
 ### Безопасность
 
