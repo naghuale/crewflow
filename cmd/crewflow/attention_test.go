@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -376,6 +377,51 @@ func TestRunTaskAttentionTakesAClosedTaskOutOfTheQueue(t *testing.T) {
 	}
 	if strings.Contains(stdout.String(), "ATTENTION REQUIRED") {
 		t.Errorf("crewflow task attention wrote %q, want no queue: the host has closed the task", stdout.String())
+	}
+}
+
+// TestRunTaskAttentionOfATaskTheHostDoesNotHave: the third defect of the review of PR #118,
+// found on telecli (01.10). The repository moved, another one took the name, the issues were
+// renumbered — and the runs of tasks of the old repository stood in the queue as
+// `escalated · finished-unseen`, each row carrying "Could not resolve to an issue" and each
+// one trying to write a comment under a task that is not there. The answer of the host is a
+// fact of the project, and the queue treats it as one (docs.DESIGN.md §6a, §7g).
+func TestRunTaskAttentionOfATaskTheHostDoesNotHave(t *testing.T) {
+	host := &host{opened: true, task: taskOf(53),
+		noTask: fmt.Errorf("the task #53 is not on naghuale/tele: %w", forge.ErrNoSuchTask)}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-66*time.Hour))
+	taskClock = func() time.Time { return ended.Add(66 * time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task attention = %d, want %d: the run is a fact a person has to see (stdout: %q, stderr: %q)",
+			code, exitFailure, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), taskrun.ReasonTaskMissing) {
+		t.Errorf("crewflow task attention wrote %q, want the reason %q", stdout.String(), taskrun.ReasonTaskMissing)
+	}
+	// The hint names the project of the file, which in the test of a command is the one of
+	// the fixture; on telecli it is `naghuale/tele`.
+	for _, want := range []string{"naghuale/crewflow", "may have moved", "~/.crewflow/runs/"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("crewflow task attention wrote %q, want the hint to mention %q", stdout.String(), want)
+		}
+	}
+	for _, unwanted := range []string{"escalated", "the host could not be read", "not left under the task"} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("crewflow task attention wrote %q, want no %q: a task the host does not have is not escalated, "+
+				"nothing failed and nothing is written under it", stdout.String(), unwanted)
+		}
+	}
+	if len(host.records) != 0 {
+		t.Errorf("crewflow wrote %q under a task the host does not have, want nothing", host.records)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task attention wrote %q to stderr, want nothing", stderr.String())
 	}
 }
 

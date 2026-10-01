@@ -110,10 +110,19 @@ type hostOfAttention struct {
 // FactsOf is what the host of the project says about a task and about the change request of
 // the run of it. What could not be read is said rather than passed over: a queue that says
 // "nobody is waiting" because the host was out of reach would be lying about the work of
-// the project (docs/DESIGN.md §7h).
+// the project (docs.DESIGN.md §7h).
+//
+// A task the host of the project does not have is not a failure to read: it is the answer
+// of §7g, and the queue is told in one word. That is what a repository that moved looks
+// like — the live run of PR #118 on telecli (01.10: the name `naghuale/tele` was taken by a
+// new repository and the issues of it renumbered) held five runs of tasks of the old one as
+// `escalated · finished-unseen`, each with a comment written under a task that is not there.
 func (h hostOfAttention) FactsOf(ctx context.Context, task, change int) (taskrun.HostFacts, error) {
 	found, err := h.set.Tracker.Task(ctx, task)
-	if err != nil {
+	switch {
+	case forge.NoSuchTask(err):
+		return taskrun.HostFacts{Missing: true}, nil
+	case err != nil:
 		return taskrun.HostFacts{}, fmt.Errorf("read task %d: %w", task, err)
 	}
 	facts := taskrun.HostFacts{Labels: found.Labels, Closed: isClosed(found.State)}

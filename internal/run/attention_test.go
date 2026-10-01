@@ -217,6 +217,96 @@ func TestAHostThatCouldNotBeReadLeavesTheEntryWithoutAClaim(t *testing.T) {
 	}
 }
 
+// TestATaskTheHostDoesNotHaveIsAFactAndNotAWait: the third defect of the review of PR #118,
+// found on telecli (01.10). The repository moved, another one took the name `naghuale/tele`
+// and the issues of it renumbered; the runs of tasks of the old repository came out of the
+// queue as `escalated · finished-unseen` with a comment written under a task that does not
+// exist. A task the host says it does not have is its own reason: nobody is waited for,
+// nothing is escalated, nothing is written under it, and where the journal of the run stayed
+// is said in the row (§6a, §7g).
+func TestATaskTheHostDoesNotHaveIsAFactAndNotAWait(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-tele"
+	ended := monday.Add(8*time.Hour + 42*time.Minute)
+	writeState(t, home, repo, 53, "проверки навыков агента", &Change{Number: 61, URL: "https://example.com/61"},
+		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	host := hostOfTest{53: HostFacts{Missing: true}}
+	at := ended.Add(66 * time.Hour)
+	said := &saidUnderTheTask{}
+
+	queue := queueOf(t, home, repo, attentionEnvOf(at), host, said.sayAttention)
+
+	one, wanted := queue.Wanted(53)
+	if !wanted {
+		t.Fatalf("the queue holds %v, want the task 53 in it: the run is a fact a person has to see", tasksOfQueue(queue))
+	}
+	if one.Reason != ReasonTaskMissing {
+		t.Errorf("the reason = %q, want %q", one.Reason, ReasonTaskMissing)
+	}
+	if one.State == AttentionEscalated || one.EscalatedFrom != "" {
+		t.Errorf("the state = %q of %q, want %q: a fact of a project that moved is not escalated",
+			one.State, one.EscalatedFrom, AttentionFinishedUnseen)
+	}
+	if one.Priority != Normal || one.Actable != ActWatch {
+		t.Errorf("the entry is %q and %q, want %q and %q: nobody is waited for and nothing is asked",
+			one.Priority, one.Actable, Normal, ActWatch)
+	}
+	if one.Problem != "" {
+		t.Errorf("the entry says %q, want nothing: the host answered, it did not fail", one.Problem)
+	}
+	for _, want := range []string{"naghuale/tele", "may have moved", "~/.crewflow/runs/naghuale-tele"} {
+		if !strings.Contains(one.Hint, want) {
+			t.Errorf("the hint is %q, want it to mention %q", one.Hint, want)
+		}
+	}
+	if len(said.lines) != 0 {
+		t.Errorf("crewflow left %q under a task the host does not have, want nothing", said.lines)
+	}
+	// A run that went on after the repository moved is the same fact and is said as one: a
+	// missing task says nothing about whether the process of the run is alive (F-042).
+	kept, err := LoadState(newJournals(home, repo).StatePath(53))
+	if err != nil {
+		t.Fatalf("load the state of the task: %v", err)
+	}
+	if kept.Notice != nil {
+		t.Errorf("the state of the task holds the notice %+v, want none: nothing was written under it", kept.Notice)
+	}
+}
+
+// TestATrackerThatCouldNotBeReadIsNotAMissingTask: the other half of the rule. A network that
+// failed, a 5xx and a repository gh cannot resolve are all "crewflow does not know", and they
+// stay that way: the entry names the problem, does not promise that a person may act and is
+// escalated like any other wait (§6a, §7h).
+func TestATrackerThatCouldNotBeReadIsNotAMissingTask(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-tele"
+	ended := monday.Add(8*time.Hour + 42*time.Minute)
+	writeState(t, home, repo, 53, "the run of a task", &Change{Number: 61, URL: "https://example.com/61"},
+		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	said := &saidUnderTheTask{}
+
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{}, said.sayAttention)
+
+	one, wanted := queue.Wanted(53)
+	if !wanted {
+		t.Fatalf("the queue holds %v, want the task 53 in it", tasksOfQueue(queue))
+	}
+	if one.Reason == ReasonTaskMissing {
+		t.Errorf("the reason = %q, want the reason of the wait: the host could not be read, "+
+			"which is not the same thing as the task being gone", one.Reason)
+	}
+	if one.Problem == "" {
+		t.Error("the entry says nothing about the host it could not read, want the reason of it")
+	}
+	if one.Hint != "" {
+		t.Errorf("the entry has the hint %q, want none: crewflow does not know that the task is gone", one.Hint)
+	}
+	if one.State != AttentionEscalated {
+		t.Errorf("the state = %q, want %q: a wait crewflow cannot vouch for is escalated like any other", one.State, AttentionEscalated)
+	}
+	if len(said.lines) != 1 {
+		t.Errorf("crewflow left %d records under the task, want the one of the escalation: %q", len(said.lines), said.lines)
+	}
+}
+
 // TestAnApprovedTaskOfTheLabelOfTheOwnerWaitsForTheOwner: the wait of ES-002 and ES-003. A
 // change of a task marked `owner-check` is approved and the owner has not taken the result
 // in, so the next one is the owner — and the wait began when the change was approved and

@@ -231,7 +231,15 @@ reason), not repeated for a day. The thresholds are in `[attention]`: `top_after
 A reason that is known is never "standing": a run at the keychain window *waits* for a person
 (`blocked`, `human-authorization-required`, the channel and the action), and a run whose silence
 has no reason at all *stands* — and standing is the one state that always wants a person, because
-nothing is known to be broken and nothing is known to be going on. In `-json` of both commands each
+nothing is known to be broken and nothing is known to be going on.
+
+A reaction takes a task out of the queue: a merged or closed pull request, a review of the head
+the change stands at, the owner's `ACCEPTED`, a task the host has closed. A run of a task the host
+does not have at all — the repository moved and another one took the name — is a fact about the
+project, not an expectation: it comes out as `task-missing`, is never escalated, never gets a
+comment written under a task that is not there, and the row says where the run journal stayed.
+And a host that could not be read is not the same thing: that entry is `unknown` and names the
+problem, because crewflow does not know whether anybody has looked at the result. In `-json` of both commands each
 entry of the queue carries `attention_state`, `waiting_since`, `next_actor`, `reason`, `priority`,
 `actable`, and, where a person is being asked for something, `channel`, `resource` and `action`.
 See §6a of the design.

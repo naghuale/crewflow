@@ -160,6 +160,12 @@ const (
 	ReasonBlocked = "blocked"
 	// ReasonStoppedByHand is a run a person stopped with SIGINT or SIGTERM (§7a).
 	ReasonStoppedByHand = "stopped-by-person"
+	// ReasonTaskMissing is a run of a task the host of the project does not have: the
+	// repository moved, or another one took its name, and the state of the run outlived
+	// the task it is of. It is a fact about the project and not an expectation — nobody is
+	// waited for, nothing is escalated and nothing is written under a task that is not
+	// there — and the journal of the run stays where it was (§6a, §7g).
+	ReasonTaskMissing = "task-missing"
 )
 
 // The channel of `human-authorization-required` in the window of the keychain of macOS,
@@ -248,6 +254,11 @@ type Attention struct {
 	// that is missing. It is nothing where crewflow has nothing to name, and a guessed
 	// command is worse than no command (§7e).
 	Next string `json:"next,omitempty"`
+	// Hint is what a person has to be told where the queue has no action to offer: a task
+	// of a repository that moved, and where the journal of the run stayed (§6a). It is a
+	// hint and not a `Next`, because there is nothing to run — the same word doctor uses
+	// for what to do about a check (§7d).
+	Hint string `json:"hint,omitempty"`
 	// Outcome is how the last attempt of the task came out, and Change the change request
 	// a run of it opened, as a list of runs says it (docs/DESIGN.md §6).
 	Outcome Kind    `json:"outcome"`
@@ -342,6 +353,11 @@ type HostFacts struct {
 	// not a verdict about it: a task the host closed is a task that is done, whoever closed
 	// it and whatever stood in the way of its run (§7g).
 	Closed bool `json:"closed,omitempty"`
+	// Missing says that the host of the project does not have the task at all, and is not
+	// a failure of the host: a repository that moved and another one that took its name
+	// answer exactly that, and the run journal of the task is still where it was (§7g).
+	// It is not `Problem`: nothing failed, and the queue has an answer.
+	Missing bool `json:"missing,omitempty"`
 	// Labels are the words the host marks the task with, the label of the acceptance of
 	// the owner among them ([acceptance] label, §7f).
 	Labels []string `json:"labels,omitempty"`
@@ -482,7 +498,7 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 		// The state of the task is read on its own first: a run that is working asks for
 		// nobody, and a project of a hundred tasks is asked about the ones that wait and
 		// not about the rest (§6).
-		one, wanted := AttentionOf(env, queue.Repo, state, HostFacts{})
+		one, wanted := AttentionOf(env, repo, state, HostFacts{})
 		if !wanted {
 			continue
 		}
@@ -490,12 +506,12 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			// Only a run that has ended can be cleared by a reaction of the host — a
 			// change merged, a task closed, a record of a review — and a queue that asked
 			// about a run that is going would put a network in the middle of a list.
-			one, wanted = AttentionOf(env, queue.Repo, state, askHost(ctx, host, state))
+			one, wanted = AttentionOf(env, repo, state, askHost(ctx, host, state))
 			if !wanted {
 				continue
 			}
 		}
-		if one.State == AttentionEscalated {
+		if one.State == AttentionEscalated && one.Reason != ReasonTaskMissing {
 			one.Said, one.Unsaid = leaveRecord(ctx, env, say, path, state, one)
 		}
 		queue.Entries = append(queue.Entries, one)
@@ -567,6 +583,11 @@ func leaveRecord(ctx context.Context, env AttentionEnv, say SayAttention, path s
 // and whether the task is in the queue at all. A task with no run in it has nothing
 // running and nothing finished, and a task whose run is working is not asking for anybody
 // today (§6a).
+//
+// The project is named the way its state is kept, with a dash where the host has a slash,
+// because that is also the name of the folder the journals of the runs are in: an entry of a
+// task the host does not have says where those journals stayed, and the path it gives is the
+// one a person can open (§7).
 func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (Attention, bool) {
 	if len(state.Attempts) == 0 {
 		return Attention{}, false
@@ -576,7 +597,7 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 	outcome := env.outcome(last)
 	silence := silenceOf(last, state.Profile, now)
 	one := Attention{
-		Repo:    repo,
+		Repo:    ownerAndRepo(repo),
 		Task:    state.Number,
 		Title:   line(state.Title),
 		Run:     runOf(state),
@@ -605,7 +626,7 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 	case Blocked, BlockedPermission, BlockedSecret:
 		one.refused(last, silence)
 	default:
-		if !one.finished(env, state, last, outcome, facts) {
+		if !one.finished(env, repo, state, last, outcome, facts) {
 			return Attention{}, false
 		}
 	}
@@ -706,17 +727,43 @@ func (a *Attention) refused(last Attempt, silence Stall) {
 	}
 }
 
+// gone is a run of a task the host of the project does not have: the repository moved, or
+// another one took its name, and the state of the run is a fact of yesterday. It is in the
+// queue and it is not an expectation — nobody is waited for, nothing is escalated and
+// nothing is ever written under a task that is not there — and the journal of the run is
+// where it always was (§6a, §7g).
+func (a *Attention) gone(repo string, last Attempt) {
+	a.State, a.Reason, a.Priority = AttentionFinishedUnseen, ReasonTaskMissing, Normal
+	a.Subject, a.NextActor, a.Actable = SubjectResult, ActorOwner, ActWatch
+	a.Since = endedAt(last)
+	a.Hint = fmt.Sprintf("the task is not on %s: the repository may have moved, the journal of the run stays in %s",
+		a.Repo, journalFolder(repo))
+	a.LastStep = last.LastStep
+}
+
+// journalFolder is where the journals of the runs of a project are kept, as a person is
+// told the path: `~/.crewflow/runs/<project>`, the same words DESIGN §7 uses.
+func journalFolder(repo string) string {
+	return filepath.Join("~", ".crewflow", "runs", repo)
+}
+
 // finished is a run that ended and left a task that wants somebody: the work of the task
 // is over and its result is not looked at, or the run ended with nothing at all, or it
 // ended too late, or it changed what it was not to change. Whether the task is in the queue
 // at all is the question of the change request: a change that is merged or closed has been
 // dealt with by the host and needs nobody (§6a).
-func (a *Attention) finished(env AttentionEnv, state State, last Attempt, outcome Kind, facts HostFacts) bool {
+func (a *Attention) finished(env AttentionEnv, repo string, state State, last Attempt, outcome Kind, facts HostFacts) bool {
 	if state.MergedSHA != "" {
 		// crewflow merged the change of the task itself and wrote the commit of it in the
 		// state of the task: that is the reaction the queue waits for, and it is in the
 		// state and not in the host, so it is said with or without a network (§7h).
 		return false
+	}
+	if facts.Missing {
+		// The host of the project does not have the task: there is nothing of it to look
+		// at, there is nothing to write under it and nobody is waited for (§7g).
+		a.gone(repo, last)
+		return true
 	}
 	if change := facts.Change; change != nil {
 		if !change.open() {
@@ -795,9 +842,11 @@ func (a *Attention) measured(env AttentionEnv, now time.Time) {
 	a.Since = atOr(a.Since, now)
 	waited := max(now.Sub(a.Since), 0)
 	a.WaitingSeconds = waited.Seconds()
-	if env.EscalateAfter > 0 && waited > env.EscalateAfter {
+	if env.EscalateAfter > 0 && waited > env.EscalateAfter && a.Reason != ReasonTaskMissing {
 		// The state keeps its place beside the escalation, because an escalation of a task
-		// nobody knows the cause of is an escalation about nothing (AQ-008).
+		// nobody knows the cause of is an escalation about nothing (AQ-008). A task the
+		// host does not have is not escalated: it is a fact of a project that moved, and
+		// a reminder about a task of another repository is a record of a lie (§7g).
 		a.EscalatedFrom, a.State, a.Priority = a.State, AttentionEscalated, Critical
 		a.Actable = ActNow
 	}
@@ -934,6 +983,9 @@ func detailOf(one Attention) string {
 	said := []string{"    waiting " + Idle(one.Waited()), "next: " + one.NextActor}
 	if one.LastStep != "" {
 		said = append(said, "the last step: "+one.LastStep)
+	}
+	if one.Hint != "" {
+		said = append(said, one.Hint)
 	}
 	if one.Problem != "" {
 		said = append(said, "the host could not be read: "+one.Problem)

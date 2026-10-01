@@ -12,6 +12,7 @@ package forge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -37,6 +38,21 @@ type Task struct {
 	// URL is where a person reads the task.
 	URL string
 }
+
+// ErrNoSuchTask is the answer of a tracker about a task it does not have: a fact about
+// the project and not a failure of the machine. A repository that moved and took the name
+// of another one answers it too — a task of yesterday is not a task of today, and the run
+// journal of it is still in ~/.crewflow/runs — and a caller has to tell the two apart
+// (docs/DESIGN.md §6a, §7g).
+//
+// A tracker that could not be reached, that failed or that was refused is not this error:
+// there crewflow does not know, and does not say (§7h).
+var ErrNoSuchTask = errors.New("no such task")
+
+// NoSuchTask is whether an error of a tracker is its answer about a task it does not have,
+// and a caller that has to act on the difference asks it here instead of reading the words
+// of an error (docs.DESIGN.md §6a).
+func NoSuchTask(err error) bool { return errors.Is(err, ErrNoSuchTask) }
 
 // Tracker is where the tasks of a project come from. Crewflow reads a task and
 // never opens one: a run that opens a task is a change outside the cycle, and

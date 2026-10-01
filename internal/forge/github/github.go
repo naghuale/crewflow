@@ -11,6 +11,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -103,9 +104,19 @@ func New(repo, host string, env forge.Env) *Adapter {
 // Task returns the issue with the number, as a task of the project: the body a
 // person wrote, the labels crewflow decides a task by, and the state, which says
 // whether anyone has done it already.
+//
+// An issue the host of the project does not have is the answer of §7g and not a failure of
+// the machine: gh says it in one line of its own words, and crewflow wraps that line in
+// `forge.ErrNoSuchTask` so that a caller can tell a task of a repository that moved from a
+// tracker that could not be read (docs.DESIGN.md §6a). Nothing else is that answer: a
+// repository gh cannot resolve, a network that failed and a 5xx are all "crewflow does not
+// know", and they stay it.
 func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 	out, err := a.json(ctx, "issue", "view", strconv.Itoa(number), "-R", a.repo, "--json", taskFields)
 	if err != nil {
+		if issueIsGone(err) {
+			return forge.Task{}, fmt.Errorf("the task #%d is not on %s: %w", number, a.repo, goneTask{err})
+		}
 		return forge.Task{}, err
 	}
 	var issue issueJSON
@@ -602,6 +613,30 @@ func (c commentJSON) editedAfter() (bool, error) {
 // whatever case the system of the project writes it in.
 func state(from string) string {
 	return strings.ToLower(from)
+}
+
+// goneTask is the answer of a tracker about a task it does not have with the answer of the
+// host inside it: a person reading a report sees what gh said and may run the command by hand,
+// and a program asking `forge.NoSuchTask` sees which of the two answers it got (§7g, §6a).
+type goneTask struct{ what error }
+
+// Error is the answer of the host as it was, and nothing of its own: what gh said is what
+// happened, and a sentence of crewflow over it would hide the command a person may re-run.
+func (g goneTask) Error() string { return g.what.Error() }
+
+// Unwrap is the answer as a caller reads it: `forge.ErrNoSuchTask` for the fact, and the
+// answer of the host inside it for everything else that may be wrapped around it.
+func (g goneTask) Unwrap() error { return errors.Join(forge.ErrNoSuchTask, g.what) }
+
+// issueIsGone is whether an answer of gh about a task means that the host of the project
+// does not have it. gh of GitHub says so in one line — "GraphQL: Could not resolve to an
+// issue with the number of 53" — and says nothing else that way: a repository it cannot
+// resolve, a network that failed and a 5xx are other lines, and a task a tracker could not
+// be read about is not a task a tracker does not have (§7g, §6a).
+func issueIsGone(err error) bool {
+	said := strings.ToLower(err.Error())
+	return strings.Contains(said, "could not resolve to an issue") ||
+		strings.Contains(said, "could not resolve to an 'issue'")
 }
 
 // json starts gh with the arguments, in the environment of the project, and

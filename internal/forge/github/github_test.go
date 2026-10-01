@@ -507,6 +507,57 @@ func TestGHFails(t *testing.T) {
 	}
 }
 
+// TestAGoneIssueIsTheAnswerOfTheHostAndNotAFailure walks the difference a caller of the
+// queue of attention has to see (docs/DESIGN.md §6a, §7g): an issue the host of the project
+// does not have is `forge.ErrNoSuchTask` — a repository that moved and another one that took
+// its name say it that way — and everything else that goes wrong, a repository gh cannot
+// resolve, a network that failed, a 5xx, is a tracker crewflow could not read, and stays it.
+func TestAGoneIssueIsTheAnswerOfTheHostAndNotAFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		answer answer
+		gone   bool
+	}{
+		{
+			name:   "the host does not have the issue",
+			answer: answer{stderr: "GraphQL: Could not resolve to an Issue with the number of 53.\n", code: 1},
+			gone:   true,
+		},
+		{
+			name:   "the host says it in the other words",
+			answer: answer{stderr: "GraphQL: Could not resolve to an 'Issue' with the number of 53.\n", code: 1},
+			gone:   true,
+		},
+		{
+			name:   "gh cannot resolve the repository itself",
+			answer: answer{stderr: "GraphQL: Could not resolve to a Repository with the name 'naghuale/tele'.\n", code: 1},
+		},
+		{
+			name:   "the network failed",
+			answer: answer{stderr: "error connecting to api.github.com\n", code: 1},
+		},
+		{
+			name:   "the host failed",
+			answer: answer{stderr: "HTTP 502: Bad Gateway\n", code: 1},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine()
+			m.answers["issue view"] = tc.answer
+			a := New(repo, "", m.env(t))
+
+			_, err := a.Task(t.Context(), 53)
+
+			if err == nil {
+				t.Fatal("Task returned no error, want one")
+			}
+			if got := forge.NoSuchTask(err); got != tc.gone {
+				t.Errorf("the host has no such task: %v, want %v: %v", got, tc.gone, err)
+			}
+		})
+	}
+}
+
 // TestHostIsTheEnvironmentOfGH checks that a project on its own server is talked
 // to through GH_HOST, and that a project on the public one is not: an adapter
 // that always sets the host would send the public requests to a server that is
