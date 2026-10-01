@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -557,6 +558,11 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 		}
 		return Queue{}, fmt.Errorf("read the states of the tasks in %s: %w", folder, err)
 	}
+	// The states of the tasks are read first, and only then is the host asked about the
+	// runs whose work may be over: a project of a hundred tasks is asked about the ones
+	// that wait and not about the rest, and спрашивается о них пачкой, а не по одному
+	// (§6a).
+	var about []asked
 	for _, name := range names {
 		if name.IsDir() || !isStateOfATask(name.Name()) {
 			continue
@@ -571,8 +577,7 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			continue
 		}
 		// The state of the task is read on its own first: a run that is working asks for
-		// nobody, and a project of a hundred tasks is asked about the ones that wait and
-		// not about the rest (§6).
+		// nobody (§6).
 		one, wanted := AttentionOf(env, repo, state, HostFacts{})
 		if !wanted {
 			continue
@@ -586,37 +591,44 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			// the memory of that is fresh: a schedule of an orchestrator asks every minute,
 			// и девять слитых прогонов этого репозитория держали её на сети вместо
 			// ответа (F-061, §6a).
-			facts := askHost(ctx, host, state)
-			if facts.Problem != "" {
-				// Хостинг не прочитан, и очередь не знает ни о чём, что его ждёт. Такая
-				// строка не запись очереди, а дыра в ней: она уходит в отдельный блок с
-				// названной проблемой, не эскалируется и под задачей не пишется ничего —
-				// восемь строк «эскалировано, ждёт 66 ч» после Ctrl+C это и были
-				// (F-098, §6a, §7h).
-				queue.Unread = append(queue.Unread, Unread{
-					Task: state.Number, Run: one.Run, Title: one.Title,
-					Reason: reasonOfRead(ctx, facts.Problem), Problem: facts.Problem,
-				})
-				queue.Interrupted = queue.Interrupted || interrupted(ctx, facts.Problem)
-				continue
-			}
-			// Что хостинг сказал о завершении работы, помнится рядом с прогоном: и очередь,
-			// и список прогонов читают это вместо того, чтобы спрашивать заново, а по
-			// истечении срока памяти вопрос задаётся снова (F-105, §6, §6a).
-			if done := settledBy(facts); done != "" {
-				state = state.SettledBy(env.Now(), done)
-				_ = SaveState(path, state)
-				continue
-			}
-			one, wanted = AttentionOf(env, repo, state, facts)
-			if !wanted {
-				continue
-			}
+			about = append(about, asked{path: path, state: state, one: one})
+			continue
 		}
 		if one.State == AttentionEscalated && one.Reason != ReasonTaskMissing {
 			one.Said, one.Unsaid = leaveRecord(ctx, env, say, path, state, one)
 		}
 		queue.Entries = append(queue.Entries, one)
+	}
+	facts := factsOfAll(ctx, host, about)
+	for at, facts := range facts {
+		one := about[at]
+		switch {
+		case facts.Problem != "":
+			// Хостинг не прочитан, и очередь не знает ни о чём, что его ждёт. Такая строка
+			// не запись очереди, а дыра в ней: она уходит в отдельный блок с названной
+			// проблемой, не эскалируется и под задачей не пишется ничего — восемь строк
+			// «эскалировано, ждёт 66 ч» после Ctrl+C это и были (F-098, §6a, §7h).
+			queue.Unread = append(queue.Unread, Unread{
+				Task: one.state.Number, Run: one.one.Run, Title: one.one.Title,
+				Reason: reasonOfRead(ctx, facts.Problem), Problem: facts.Problem,
+			})
+			queue.Interrupted = queue.Interrupted || interrupted(ctx, facts.Problem)
+		case settledBy(facts) != "":
+			// Что хостинг сказал о завершении работы, помнится рядом с прогоном: и очередь,
+			// и список прогонов читают это вместо того, чтобы спрашивать заново, а по
+			// истечении срока памяти вопрос задаётся снова (F-105, §6, §6a).
+			settled := one.state.SettledBy(env.Now(), settledBy(facts))
+			_ = SaveState(one.path, settled)
+		default:
+			entry, wanted := AttentionOf(env, repo, one.state, facts)
+			if !wanted {
+				continue
+			}
+			if entry.State == AttentionEscalated && entry.Reason != ReasonTaskMissing {
+				entry.Said, entry.Unsaid = leaveRecord(ctx, env, say, one.path, one.state, entry)
+			}
+			queue.Entries = append(queue.Entries, entry)
+		}
 	}
 	slices.SortFunc(queue.Entries, byUrgency)
 	return queue, nil
@@ -713,6 +725,52 @@ func interrupted(ctx context.Context, problem string) bool {
 	return ctx.Err() != nil || errors.Is(ctx.Err(), context.Canceled) ||
 		strings.Contains(problem, context.Canceled.Error()) ||
 		strings.Contains(problem, context.DeadlineExceeded.Error())
+}
+
+// asked is one run of the project, чья работа может быть кончена, и потому о нём надо
+// спросить хостинг: что он сказал о прогоне до чтения, где его состояние лежит и что
+// очередь решила о нём по одному состоянию (§6a).
+type asked struct {
+	path  string
+	state State
+	one   Attention
+}
+
+// hostAtOnce is сколько вопросов хостингу может быть задано одновременно. Это предел, а
+// не скорость: чужой сервис не терпит вопросов без счётчика, и очередь, которая
+// спрашивает о каждой задаче разом, уронила бы чужой проект вместо своего ответа
+// (docs.DESIGN.md §6a).
+const hostAtOnce = 4
+
+// factsOfAll is what the host of the project says about every run of the list at once: one
+// question per run, но не по одному — вопросы идут пачками по [hostAtOnce], и очередь не
+// ждёт окончания одного, чтобы задать следующий.
+//
+// It is how a schedule of an orchestrator gets an answer in seconds where it used to wait
+// for one question at a time, and it is also how a person pressing Ctrl+C stops the reading
+// of ten tasks at once instead of one (F-061, F-098, docs.DESIGN.md §6a).
+func factsOfAll(ctx context.Context, host Host, about []asked) []HostFacts {
+	facts := make([]HostFacts, len(about))
+	if len(about) == 0 {
+		return facts
+	}
+	room := make(chan struct{}, hostAtOnce)
+	var group sync.WaitGroup
+	for at, one := range about {
+		at, one := at, one
+		room <- struct{}{}
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			defer func() { <-room }()
+			// Каждый вопрос пишет в своё место и ни в чьё чужое: очередь собирается
+			// после того, как все ответы пришли, и в том порядке, в котором задачи
+			// стояли в пачке (§6a).
+			facts[at] = askHost(ctx, host, one.state)
+		}()
+	}
+	group.Wait()
+	return facts
 }
 
 // leaveRecord is the notice crewflow leaves under the task of an entry that waits for

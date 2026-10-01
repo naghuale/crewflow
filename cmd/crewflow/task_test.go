@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1526,9 +1527,10 @@ type host struct {
 	// in, and closed that the task of the test is closed: the two reactions of the host that
 	// take a run out of the queue of attention (F-061, §6a, §7g).
 	merged bool
-	// changes are the change requests the host was asked about, in order: a queue that
-	// asks about a change request of no number asks the host about nothing, and a test
-	// that has to see that keeps the numbers (F-099, §6a).
+	// changes are the change requests the host was asked about: очередь спрашивает
+	// хостинг несколькими вопросами сразу, и замок нужен, чтобы их список не потерялся
+	// (F-099, §6a).
+	mu      sync.Mutex
 	changes []int
 	// states is where each change request of the project stands, by its number, for a
 	// project of several changes — слитая, закрытая и открытая рядом (F-061, §6a).
@@ -1722,7 +1724,9 @@ func (h *host) CommentTask(_ context.Context, number int, body string) error {
 // test where it opened one, and nothing where it did not. A host of a test whose change
 // went in says so, and that is what takes a run out of the queue of attention (§6a).
 func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
+	h.mu.Lock()
 	h.changes = append(h.changes, number)
+	h.mu.Unlock()
 	if state, is := h.states[number]; is {
 		return forge.ChangeRequest{
 			Number: number, HeadBranch: "crewflow/43-task", HeadSHA: "9f1c0de",
@@ -1786,9 +1790,16 @@ var appOfTest = map[string]int64{
 // as is the host of a test as the project gave it one App: the two roles of a project are
 // two constructions of the roles, and a command that builds them another way is talking
 // about a host that does not know the account it is asking about (§7i).
+//
+// The host is копируется by value, and the lock of the questions goes with it in a fresh
+// one: a second host of the same test speaks for itself and keeps its own list (§7i).
 func (h *host) as(app int64) *host {
-	other := *h
-	other.app = app
+	other := host{
+		task: h.task, tasks: h.tasks, noTask: h.noTask, opened: h.opened, changed: h.changed,
+		repoDir: h.repoDir, started: h.started, refusal: h.refusal, noIdentity: h.noIdentity,
+		home: h.home, worktrees: h.worktrees, git: h.git, records: h.records, under: h.under,
+		noSubject: h.noSubject, merged: h.merged, states: h.states, app: app,
+	}
 	return &other
 }
 

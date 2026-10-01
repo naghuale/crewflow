@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -776,6 +778,44 @@ func TestTheBlockOfTheQueueIsAtTheTopOfAListOfRuns(t *testing.T) {
 	}
 }
 
+// TestTheQueueAsksTheHostAboutManyTasksAtATimeAndNotOneAfterAnother: скорость чтения.
+// Восемь прогонов, каждому из которых нужна реакция хостинга, читались восемь раз
+// подряд — по одному вопросу на задачу, и на живой машине это были минуты молчания
+// (F-061, 01.10).
+//
+// Теперь вопросы идут пачками, и очередь не ждёт окончания одного, чтобы начать
+// следующий: счётчик в тесте показывает, что одновременно в работе было больше одного
+// вопроса, и что их было не больше предела. Предел существует потому, что хостинг —
+// это чужой сервис, и вопрос к нему без счётчика одновременности есть способ уронить
+// чужой проект (F-061, §6a).
+func TestTheQueueAsksTheHostAboutManyTasksAtATimeAndNotOneAfterAnother(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	for task := 1; task <= 8; task++ {
+		writeState(t, home, repo, task, "ждёт", &Change{Number: 100 + task},
+			try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	}
+	host := (&hostThatCounts{states: map[int]string{}}).gather(hostAtOnce)
+
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), host)
+
+	if len(host.asked) != 8 {
+		t.Errorf("the host was asked about %v, want all eight runs", host.asked)
+	}
+	if host.widest < 2 {
+		t.Errorf("the host was asked %d at a time at the most, want more than one: "+
+			"очередь не должна ждать окончания одного вопроса, чтобы задать следующий", host.widest)
+	}
+	if host.widest > hostAtOnce {
+		t.Errorf("the host was asked %d at a time, want not more than %d: чужой хостинг "+
+			"не терпит вопросов без предела", host.widest, hostAtOnce)
+	}
+	if len(queue.Entries) != 8 {
+		t.Errorf("очередь держит %v, want все восемь записей: чтение пачками не теряет ни одной",
+			tasksOfQueue(queue))
+	}
+}
+
 // TestTheQueueRemembersThatTheWorkIsOverAndAsksNoMoreAboutIt: скорость и правда в одном
 // правиле. Слитьё изменения — это факт хостинга, и очередь, спросившая о нём однажды,
 // помнит его: расписание оркестратора ходит каждую минуту и не должна спрашивать про один
@@ -952,6 +992,9 @@ func TestTheEntryOfAListCarriesTheStateOfTheAttention(t *testing.T) {
 // task of the project would put a network in the middle of a list of runs, and a task that
 // wants nobody has nothing to ask about. A run that is going is not asked about either:
 // nobody reacts to a change while the run that opened it works (§6, §6a).
+//
+// The questions now go in batches and their order is whatever the host answers first, so the
+// test compares the set: порядок вопросов ничего не значит для того, о чём их спрашивали.
 func TestTheHostIsAskedOnlyWhereAWaitMayBeCleared(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-crewflow"
 	ended := monday.Add(8 * time.Hour)
@@ -969,11 +1012,12 @@ func TestTheHostIsAskedOnlyWhereAWaitMayBeCleared(t *testing.T) {
 
 	queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Minute), 100), host)
 
-	if len(host.asked) != 2 || host.asked[0] != 43 || host.asked[1] != 44 {
+	if !slices.Equal(slices.Sorted(slices.Values(host.asked)), []int{43, 44}) {
 		t.Errorf("the host was asked about %v, want the tasks 43 and 44: a reaction may clear what has ended, "+
 			"and a run that is going or a task that wants nobody is not read from the host", host.asked)
 	}
-	if changes := host.changes; changes[0] != 113 || changes[1] != 0 {
+	changes := slices.Sorted(slices.Values(host.changes))
+	if !slices.Equal(changes, []int{0, 113}) {
 		t.Errorf("the host was asked about the changes %v, want 113 and nothing: a run that opened no change "+
 			"has no change to ask about, only a task", changes)
 	}
@@ -1218,6 +1262,7 @@ func tasksOfQueue(queue Queue) []int {
 // «спросили или нет» is a part of what the queue promises: помнит ли она, что хостинг уже
 // сказал (F-061, F-105, §6a).
 type hostOfTest struct {
+	mu    sync.Mutex
 	facts map[int]HostFacts
 	asked []int
 }
@@ -1225,11 +1270,13 @@ type hostOfTest struct {
 // FactsOf is what the host of the test says about a task. A task it knows nothing about is
 // a task the host could not be read for, and the queue is told so rather than concluding
 // that the task wants nobody.
+//
+// Очередь спрашивает хостинг пачками и сразу несколькими вопросами, и замок здесь —
+// потому, что список заданных вопросов пишут из нескольких горутин сразу (§6a).
 func (h *hostOfTest) FactsOf(_ context.Context, task, _ int) (HostFacts, error) {
+	h.mu.Lock()
 	h.asked = append(h.asked, task)
-	if h.facts == nil {
-		return HostFacts{}, fmt.Errorf("the host of the test knows no task %d", task)
-	}
+	h.mu.Unlock()
 	facts, known := h.facts[task]
 	if !known {
 		return HostFacts{}, fmt.Errorf("the host of the test knows no task %d", task)
@@ -1242,16 +1289,73 @@ func (h *hostOfTest) FactsOf(_ context.Context, task, _ int) (HostFacts, error) 
 type hostThatCounts struct {
 	asked   []int
 	changes []int
+	// states is what the change of each task stands as, and everything is «open» where it
+	// is not named: тест о чтении пачками считает вопросы, а не состояния (§6a).
+	states map[int]string
+	// going и widest — сколько вопросов было в работе одновременно и сколько их было
+	// больше всего: по ним видно, читала очередь по одному или пачками.
+	mu     sync.Mutex
+	going  int
+	widest int
+	// waitFor сколько вопросов должно висеть одновременно, чтобы тест поверил, что
+	// очередь читает пачками: каждый вопрос ждёт, пока столько их соберётся, иначе
+	// одновременность была бы случайной и тест ничего бы не проверял (§6a).
+	waitFor int
+}
+
+// gather is how many questions a test wants to see hanging at once, and how long a
+// question of it may wait for the others before it is answered anyway: a queue that reads
+// one by one will answer every question of it alone, and the test sees widest == 1.
+func (h *hostThatCounts) gather(want int) *hostThatCounts {
+	h.waitFor = want
+	return h
 }
 
 // FactsOf is one task asked of the host: the change request of the run where there is one,
-// and nothing about the change where the run opened none.
+// and nothing about the change where the run opened none. It counts what it was asked and
+// how many вопросов висело на нём одновременно (docs.DESIGN.md §6a).
 func (h *hostThatCounts) FactsOf(_ context.Context, task, change int) (HostFacts, error) {
+	h.enter()
+	defer h.leave()
+	h.mu.Lock()
 	h.asked, h.changes = append(h.asked, task), append(h.changes, change)
+	h.mu.Unlock()
 	if change == 0 {
 		return HostFacts{}, nil
 	}
-	return HostFacts{Change: &ChangeFacts{Number: change, State: "open", Head: "abc"}}, nil
+	state, is := h.states[change]
+	if !is {
+		state = "open"
+	}
+	return HostFacts{Change: &ChangeFacts{Number: change, State: state, Head: "abc"}}, nil
+}
+
+// enter и leave — счётчик вопросов в работе: widest remembers the most that were asked at
+// once, which is what tells a queue that reads by batches from one that reads one by one.
+func (h *hostThatCounts) enter() {
+	waited := 0
+	h.mu.Lock()
+	h.going++
+	h.widest = max(h.widest, h.going)
+	// Ждать остальных, пока не собралось столько, сколько тест хочет видеть, — но не
+	// вечно: очередь, которая читает по одному, ответит каждый вопрос сам по себе, и
+	// тест увидитwidest == 1 вместо того, чтобы провиснуть.
+	for h.going < h.waitFor {
+		waited++
+		if waited > 500 {
+			break
+		}
+		h.mu.Unlock()
+		time.Sleep(time.Millisecond)
+		h.mu.Lock()
+	}
+	h.mu.Unlock()
+}
+
+func (h *hostThatCounts) leave() {
+	h.mu.Lock()
+	h.going--
+	h.mu.Unlock()
 }
 
 // saidUnderTheTask is the records a queue left under the tasks of a project in a test: the
