@@ -330,7 +330,7 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	}
 	if !worksAsAnAccountOfItsOwn(cfg, *as) ||
 		request["protocol"] != "https" ||
-		request["host"] != hostOfProject(cfg) || request["path"] != cfg.Project.Repo {
+		request["host"] != hostOfProject(cfg) || !isTheRepositoryOf(cfg.Project.Repo, request["path"]) {
 		// Nothing said is the right answer for anything that is not a push of this
 		// project to this host, and for a push in a mode with no account of its own to
 		// sign it: git then asks whoever else can answer, which is what it did before
@@ -350,6 +350,15 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	// stops asking about it.
 	fmt.Fprintf(stdout, "username=x-access-token\npassword=%s\n", token.Value)
 	return exitOK
+}
+
+// isTheRepositoryOf is whether the repository git named in its request is the repository
+// of the project. Git writes the name as the host holds it — for the address
+// `https://github.com/naghuale/crewflow.git` it asks about `naghuale/crewflow.git` — and
+// the `.git` at the end and a `/` after it are not another repository (docs/DESIGN.md §6).
+func isTheRepositoryOf(repo, path string) bool {
+	name := strings.TrimSuffix(path, "/")
+	return strings.TrimSuffix(name, ".git") == repo
 }
 
 // hostOfProject is the server git has to be talking to for the credentials of this

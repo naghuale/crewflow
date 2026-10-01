@@ -675,12 +675,20 @@ func (s *Source) gitConfig() (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{credentialHelperKey: helper}, nil
+	return map[string]string{
+		credentialHelperKey: helper,
+		useHttpPathKey:      "true",
+	}, nil
 }
 
-// credentialHelperKey is the setting of git that holds the helper of the credentials of
-// a push, as git names it.
-const credentialHelperKey = "credential.helper"
+// The settings of git that hold the helper of the credentials of a push, and the one that
+// makes git name the repository in the question it asks it: without it the question holds
+// the host and nothing else, and a helper that answers for one repository of a host has
+// nothing to tell the repositories of that host apart by (docs/DESIGN.md §7i).
+const (
+	credentialHelperKey = "credential.helper"
+	useHttpPathKey      = "credential.useHttpPath"
+)
 
 // credentialHelper is the helper git is given for the credentials of a push: this very
 // program, told whose token it is to sign.
