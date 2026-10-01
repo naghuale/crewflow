@@ -62,6 +62,9 @@ In progress:
 
 - ⏳ `crewflow init` and recovery of an interrupted task
 
+The model this project follows — why agent development works the way it does — is in
+[docs/MODEL.md](docs/MODEL.md) (in Russian): the core principles C1–C8, the roles, the levels of
+autonomy, human decisions R1–R6, and an honest table of what crewflow does with each of them today.
 The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian). The steps of the
 process itself, in order, are in [CREWFLOW_CHECKLIST.md](CREWFLOW_CHECKLIST.md) (in Russian): every
 item links to the rule it comes from.
