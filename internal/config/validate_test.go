@@ -87,6 +87,7 @@ func TestLoadRejects(t *testing.T) {
 func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
 		"example.toml", "minimal.toml", "identity_bot.toml", "orchestrator_separate.toml",
+		"attention_thresholds.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

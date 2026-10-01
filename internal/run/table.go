@@ -97,6 +97,9 @@ func (r Runs) Write(w io.Writer, screen Screen) error {
 			return fmt.Errorf("write the list: %w", err)
 		}
 	}
+	if err := r.Attention.Write(w, screen); err != nil {
+		return err
+	}
 	if len(r.Entries) == 0 {
 		if _, err := fmt.Fprintln(w, "no runs yet"); err != nil {
 			return fmt.Errorf("write the list: %w", err)

@@ -517,25 +517,21 @@ func TestRunTaskSaysWhoseNameTheExecutorWorkedUnder(t *testing.T) {
 var columnsOfAList = regexp.MustCompile(`\s{2,}`)
 
 // listColumn is the cell of the list under the column with that name, for a test that
-// is about the column of the mode of the run and not about the whole table. The
-// header of a list is the line with the project on it, and the table is the one under
-// it.
+// is about the column of the mode of the run and not about the whole table. The table of
+// a list is under the block of the queue of attention wherever that block is (§6a), so the
+// line of the names is what says where the table begins.
 func listColumn(t *testing.T, list, column string) string {
 	t.Helper()
 	lines := strings.Split(strings.TrimSpace(list), "\n")
-	if len(lines) < 3 {
-		t.Fatalf("the list is %q, want a header, a line of names and a line of a run", list)
-	}
-	names, runs := lines[1], lines[2]
-	for i, name := range columnsOfAList.Split(strings.TrimSpace(names), -1) {
-		if name != column {
+	for at, line := range lines {
+		cells := columnsOfAList.Split(strings.TrimSpace(line), -1)
+		if at+1 >= len(lines) || !slices.Contains(cells, column) {
 			continue
 		}
-		cells := columnsOfAList.Split(strings.TrimSpace(runs), -1)
-		if i >= len(cells) {
-			t.Fatalf("the line %q has no cell under the column %q", runs, column)
+		under := columnsOfAList.Split(strings.TrimSpace(lines[at+1]), -1)
+		if at := slices.Index(cells, column); at < len(under) {
+			return under[at]
 		}
-		return cells[i]
 	}
 	t.Fatalf("the list has no column %q:\n%s", column, list)
 	return ""
@@ -1484,8 +1480,13 @@ type host struct {
 	git       string
 	// records are the lines crewflow left under the tasks of the project, in order: a
 	// run that stands is written about under its task, and what a person reads there is
-	// what a schedule of an orchestrator is for (docs/DESIGN.md §6).
+	// what a schedule of an orchestrator is for (docs.DESIGN.md §6).
 	records []string
+	// under is what the host holds written under the change request of the run, and
+	// noSubject says that the host cannot name an account of its own — a host of a
+	// project whose file names nobody it knows (docs.DESIGN.md §6a, §7i).
+	under     []forge.Comment
+	noSubject bool
 }
 
 // use makes the task command run on this host, and puts the machine back when the
@@ -1643,14 +1644,40 @@ func (h *host) CommentTask(_ context.Context, number int, body string) error {
 	return nil
 }
 
-// ChangeRequest returns a request by its number, which a run of a task never asks
-// for.
-func (h *host) ChangeRequest(context.Context, int) (forge.ChangeRequest, error) {
-	return forge.ChangeRequest{}, nil
+// ChangeRequest returns a request by its number: the change request of the run of the
+// test where it opened one, and nothing where it did not.
+func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
+	if !h.opened {
+		return forge.ChangeRequest{}, fmt.Errorf("could not find change request #%d", number)
+	}
+	return forge.ChangeRequest{
+		Number:     44,
+		URL:        "https://github.com/naghuale/crewflow/pull/44",
+		HeadBranch: "crewflow/43-task",
+		HeadSHA:    "9f1c0de",
+		BaseBranch: "main",
+		State:      "open",
+	}, nil
 }
 
-// Comments returns nothing, which a run of a task never asks for either.
-func (h *host) Comments(context.Context, int) ([]forge.Comment, error) { return nil, nil }
+// Comments is what is written under the change request of the run of the test, which is
+// what the queue of attention reads to know whether somebody has already looked at it
+// (docs.DESIGN.md §6a).
+func (h *host) Comments(context.Context, int) ([]forge.Comment, error) { return h.under, nil }
+
+// Subject is what account of the host of the test a login of the file of the project is,
+// so that the records of a review and of an acceptance are counted by the number the host
+// keeps them under and not by a login (docs.DESIGN.md §7h, §7i).
+//
+// A host that cannot name an account is a host of a project whose file names nobody the
+// host knows, and the queue of attention is then worked out of the state of the tasks
+// alone and says what it knows.
+func (h *host) Subject(_ context.Context, login string) (forge.Subject, error) {
+	if h.noSubject {
+		return forge.Subject{}, errors.New("the host of the test does not say what an account of it is")
+	}
+	return forge.Subject{Kind: forge.KindUser, Login: login, ID: int64(len(login))}, nil
+}
 
 // Doctor says nothing: a test of the command has a host of its own already.
 func (h *host) Doctor(context.Context) []forge.Check { return nil }

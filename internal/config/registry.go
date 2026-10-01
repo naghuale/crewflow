@@ -289,6 +289,15 @@ var settings = []Setting{
 		Applies:   "cfg.Tasks.OwnerApproval",
 	},
 
+	// [attention] — when a task that wants a person is put in front of one, and how long
+	// that person is waited for (§6a). The silence after which a run is called standing is
+	// `[executor] stall_after` and not a key of this table: it belongs to the executor that
+	// has to answer for it (§7a).
+	{Key: "attention.top_after", Status: Supported, Applies: "cfg.Attention.TopAfter"},
+	{Key: "attention.escalate_after", Status: Supported, Applies: "cfg.Attention.EscalateAfter"},
+	{Key: "attention.remind_after", Status: Supported, Applies: "cfg.Attention.RemindAfter"},
+	{Key: "attention.weekly_after", Status: Supported, Applies: "cfg.Attention.WeeklyAfter"},
+
 	// [[requirements]] — the tools of the project and how each of them is checked;
 	// doctor asks every one of them and compares what it printed with the minimum
 	// the project wrote (§7d).

@@ -1,0 +1,12 @@
+# attention.top_after is not a duration: a task cannot wait in front of a person for
+# "half an hour" written in words, and a threshold crewflow cannot read is a threshold
+# the queue of attention has none of (§6a).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[attention]
+top_after = "half an hour"

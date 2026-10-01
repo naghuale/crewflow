@@ -80,6 +80,9 @@ func (c Config) Validate() error {
 	if err := validateDuration("ci.timeout", c.CI.Timeout); err != nil {
 		return err
 	}
+	if err := validateAttention(c.Attention); err != nil {
+		return err
+	}
 	if err := oneOf("merge.by", c.Merge.By, mergeBys); err != nil {
 		return err
 	}
@@ -333,6 +336,34 @@ func validateExecutor(key string, executor ExecutorSpec) error {
 		validateDuration(key+".timeout", executor.Timeout),
 		validateDuration(key+".stall_after", executor.StallAfter),
 	)
+}
+
+// validateAttention checks that every threshold of the queue of attention is a length of
+// time a person can be waited for, and that the thresholds of the project make a queue out
+// of them: a task is escalated before it is called a long wait, and a record under a task
+// is left once before it is repeated (docs/DESIGN.md §6a).
+func validateAttention(attention Attention) error {
+	err := errors.Join(
+		validateDuration("attention.top_after", attention.TopAfter),
+		validateDuration("attention.escalate_after", attention.EscalateAfter),
+		validateDuration("attention.remind_after", attention.RemindAfter),
+		validateDuration("attention.weekly_after", attention.WeeklyAfter),
+	)
+	if err != nil {
+		return err
+	}
+	top, _ := time.ParseDuration(attention.TopAfter)
+	escalate, _ := time.ParseDuration(attention.EscalateAfter)
+	weekly, _ := time.ParseDuration(attention.WeeklyAfter)
+	if escalate < top {
+		return fmt.Errorf("attention.escalate_after: must be at least attention.top_after (%q), "+
+			"or a task is escalated before it has waited long enough to be in the queue", attention.TopAfter)
+	}
+	if weekly < escalate {
+		return fmt.Errorf("attention.weekly_after: must be at least attention.escalate_after (%q), "+
+			"or a wait is called a long one before it is escalated", attention.EscalateAfter)
+	}
+	return nil
 }
 
 // validateGates checks that every gate can be named in a report and can fail.

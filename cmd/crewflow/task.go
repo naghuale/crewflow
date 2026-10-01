@@ -66,6 +66,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return runTaskWatch(args[1:], stdout, stderr)
 	case "list":
 		return runTaskList(args[1:], stdout, stderr)
+	case "attention":
+		return runTaskAttention(args[1:], stdout, stderr)
 	case "check-stalled":
 		return runTaskCheckStalled(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -272,7 +274,7 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	runs, err := listOfRuns(*configPath, *repo, *all, taskrun.ListEnv{
+	runs, err := listOfRuns(context.Background(), *configPath, *repo, *all, taskrun.ListEnv{
 		Now:     taskClock,
 		Running: taskMachine.Alive,
 	})
@@ -300,6 +302,105 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		return failed(stderr, err)
 	}
 	return exitOK
+}
+
+// runTaskAttention is `crewflow task attention`: the queue of attention of the project —
+// only the tasks that want a person — with the state of the process of each of them, the
+// reason of it, what it waits for, who acts next, how long it has been that way and what may
+// be done about it (docs/DESIGN.md §6a).
+//
+// It is the same queue that `crewflow task list` shows over its table, with the host of the
+// project in it: the labels of the tasks and the records under their change requests, so
+// that a run that ended with an open change and a review of it is not in the queue at all.
+// It is made for the schedule of an orchestrator, and it leaves a record under a task that
+// has waited for longer than `[attention] escalate_after`: one for the key of the entry — the
+// task, the state, the priority and the reason — and not again for a day while the key is
+// the same, so that a schedule that runs every minute leaves one line under a task and not
+// one a minute. The code is not zero while anything in the queue wants a person.
+func runTaskAttention(args []string, stdout, stderr io.Writer) int {
+	flags := taskFlags("attention", stderr)
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	asJSON := flags.Bool("json", false, "print the queue as JSON, for the orchestrator")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "crewflow task attention: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	env, err := attentionEnv(cfg)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := whereCrewflowKeeps()
+	if err != nil {
+		return failed(stderr, err)
+	}
+	ctx, stop := stoppedBy()
+	defer stop()
+	// The state of the tasks is read first and the host is asked about the roles of the
+	// project only where the queue is worked out of it: a project whose host is not there
+	// is answered from the state alone, and says so in the entries it could not ask
+	// about (docs/DESIGN.md §6a).
+	queue, err := taskrun.CheckAttention(ctx, home, cfg.RepoName(), env,
+		hostOfTheProject(ctx, cfg, *configPath), noticeUnderTheTask(cfg, *configPath))
+	if err != nil {
+		return failed(stderr, err)
+	}
+	if *asJSON {
+		if err := printJSON(stdout, queue); err != nil {
+			return failed(stderr, err)
+		}
+	} else if err := queue.Write(stdout, taskScreen(stdout, taskClock())); err != nil {
+		return failed(stderr, err)
+	}
+	if err := queue.Notes(stderr); err != nil {
+		return failed(stderr, err)
+	}
+	if len(queue.Entries) == 0 {
+		if !*asJSON {
+			fmt.Fprintln(stdout, "nothing wants a person: the runs of this project are working or are over")
+		}
+		return exitOK
+	}
+	// A task in the queue is a thing a person has to do something about, and the code of
+	// the command says so, whatever crewflow managed to write under the task.
+	return exitFailure
+}
+
+// hostOfTheProject is the host of the project as the queue of attention asks about it.
+//
+// A project whose roles cannot be built gets a host that answers nothing and says why: the
+// queue is then worked out of the state of the tasks alone, which is a whole answer for
+// everything but the review and the acceptance of a change, and every entry of it says that
+// the host was not read. A queue that says "nobody is waiting" because the host was out of
+// reach would be lying about the work of the project (docs/DESIGN.md §6a, §7h).
+func hostOfTheProject(ctx context.Context, cfg config.Config, configPath string) taskrun.Host {
+	set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+	if err != nil {
+		return hostUnreachable{err}
+	}
+	host, err := attentionHost(ctx, set, cfg)
+	if err != nil {
+		return hostUnreachable{err}
+	}
+	return host
+}
+
+// hostUnreachable is a host of a project crewflow could not reach or could not read the
+// accounts of: it says why for every task, and the queue puts that into the entries it could
+// not work out of the host (docs.DESIGN.md §7h).
+type hostUnreachable struct{ err error }
+
+// FactsOf is the failure itself, and nothing else: there is no fact of a host that is not
+// there, and a queue that guessed one would act on a guess.
+func (h hostUnreachable) FactsOf(context.Context, int, int) (taskrun.HostFacts, error) {
+	return taskrun.HostFacts{}, h.err
 }
 
 // runTaskCheckStalled is `crewflow task check-stalled`: the runs of the project that
@@ -438,11 +539,12 @@ func printStandings(w io.Writer, standings []taskrun.Standing) {
 }
 
 // listOfRuns is the list the call asked for: the runs of the project of the folder, or
-// the runs of every project on the machine.
-//
-// -all is asked from any folder, and it reads no file of a project: the state of the
-// runs of every project is under one root whatever project the person stands in.
-func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun.Runs, error) {
+// the runs of every project on the machine. The queue of attention comes with the list of
+// one project, worked out of the state of its tasks and of nothing else: a list reads no
+// tracker, no host and no network, and the entries of it are told the state of the process
+// of their own task, which is what the state of the task is enough for (docs/DESIGN.md §6,
+// §6a).
+func listOfRuns(ctx context.Context, configPath, repo string, all bool, env taskrun.ListEnv) (taskrun.Runs, error) {
 	home, err := whereCrewflowKeeps()
 	if err != nil {
 		return taskrun.Runs{}, err
@@ -467,7 +569,19 @@ func listOfRuns(configPath, repo string, all bool, env taskrun.ListEnv) (taskrun
 		// it, so the header of the list can say which branch the work is on its way
 		// to.
 		runs.Branch = cfg.Project.DefaultBranch
-		return runs, nil
+		attention, err := attentionEnv(cfg)
+		if err != nil {
+			return taskrun.Runs{}, err
+		}
+		attention.ListEnv = env
+		// A list of the whole machine has no queue at the top of it: every project of
+		// the machine has thresholds of its own in its own file, and a folder of no
+		// project at all says nothing about any of them (§6).
+		queue, err := taskrun.AttentionQueue(ctx, home, cfg.RepoName(), attention, nil)
+		if err != nil {
+			return taskrun.Runs{}, err
+		}
+		return runs.WithAttention(queue), nil
 	}
 	// The file of the project of the folder, where there is one, is read for two things
 	// only — how long a run of it may go on and how long it may stand still — and a

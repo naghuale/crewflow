@@ -37,6 +37,11 @@ import (
 // was doing when it last showed a sign of life, and what it stands at where crewflow
 // knows it before it stands there.
 type Stall struct {
+	// At is the moment the run last showed a sign of life, which is where the silence
+	// began. It is here and not worked out of `For` wherever a queue of attention counts
+	// how long a task waits from (§6a): a silence is a length of time, and a wait is a
+	// moment and a length of time.
+	At time.Time
 	// For is how long the run has shown nothing.
 	For time.Duration
 	// LastStep is what the run showed the last time it showed anything: a line of the
@@ -107,6 +112,7 @@ func silenceOf(attempt Attempt, executor string, now time.Time) Stall {
 		step = stepSilent
 	}
 	return Stall{
+		At:       at,
 		For:      max(now.Sub(at), 0),
 		LastStep: step,
 		Reason:   attempt.Reason,

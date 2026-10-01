@@ -53,8 +53,25 @@ type State struct {
 	// here is what has already happened (docs/DESIGN.md §7h).
 	MergedSHA  string     `json:"merged_sha,omitempty"`
 	VerifiedAt *time.Time `json:"verified_at,omitempty"`
+	// Notice is what crewflow left under the task on the host about the queue of
+	// attention, and when: the key of the entry it was about and the moment of the
+	// record. It is a fact of what has been said and not a verdict about the task —
+	// whether the task is in the queue at all is worked out at every read — and it is
+	// what keeps one record to a key and a day rather than one a minute (§6a, §7h).
+	Notice *Notice `json:"notice,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
+}
+
+// Notice is the record crewflow left under a task about the queue of attention, and the
+// moment of it: the key is what the record was about — the task, the state, the priority
+// and the reason of the entry — and a record of another key is a new record, whatever the
+// one before it said (docs/DESIGN.md §6a).
+type Notice struct {
+	// Key is what the record was about, as `Attention.Key` writes it.
+	Key string `json:"key"`
+	// At is when the record was left.
+	At time.Time `json:"at"`
 }
 
 // Change is the change request a run of a task opened: its number and where it is,
@@ -310,6 +327,27 @@ func (s State) NoLongerReported() State {
 	}
 	s.Attempts[len(s.Attempts)-1].ReportedAt = nil
 	return s
+}
+
+// Noticed is the state of a task with the record of the queue of attention that was left
+// under it, and the moment of it. It is the sign of one key of the queue, in the way
+// `Reported` is the sign of one episode of the silence of a run: the same key is not
+// written again within the day, and another key is a new record whatever the one before it
+// said (docs/DESIGN.md §6a).
+func (s State) Noticed(at time.Time, key string) State {
+	s.Notice = &Notice{Key: key, At: at}
+	return s
+}
+
+// NoticedWithin is whether a record of this key of the queue was left under the task
+// within `after` of `now`, and a key that was never left is a record that is due
+// (docs/DESIGN.md §6a). A limit of no length says that a task nobody has been told about
+// is told about whenever the queue is read.
+func (s State) NoticedWithin(now time.Time, after time.Duration, key string) bool {
+	if s.Notice == nil || s.Notice.Key != key {
+		return false
+	}
+	return after <= 0 || now.Sub(s.Notice.At) < after
 }
 
 // Journals is where the journal of every run and the state of every task are kept:

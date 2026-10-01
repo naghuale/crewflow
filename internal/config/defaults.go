@@ -6,25 +6,29 @@ import "github.com/BurntSushi/toml"
 // model or a language of the host: a project says all of that itself, and
 // crewflow only fills in the parts that mean the same everywhere.
 const (
-	defaultBranch           = "main"
-	defaultLanguage         = "en"
-	defaultWorktreesRoot    = "~/.crewflow/worktrees/{repo}"
-	defaultExecutorTimeout  = "90m"
-	defaultStallAfter       = "10m"
-	defaultForgeKind        = "github"
-	defaultTrackerKind      = "forge"
-	defaultIdentityMode     = "owner"
-	defaultOrchestratorMode = ModeShared
-	defaultCIKind           = "forge"
-	defaultCIRequired       = true
-	defaultCITimeout        = "30m"
-	defaultMergeBy          = "orchestrator"
-	defaultMergeStrategy    = "ff-only"
-	defaultMergeVia         = "git-push"
-	defaultMaxTasks         = 1
-	defaultIsolationMode    = "host"
-	defaultOwnerApproval    = "risky"
-	defaultAcceptanceLabel  = "owner-check"
+	defaultBranch            = "main"
+	defaultLanguage          = "en"
+	defaultWorktreesRoot     = "~/.crewflow/worktrees/{repo}"
+	defaultExecutorTimeout   = "90m"
+	defaultStallAfter        = "10m"
+	defaultForgeKind         = "github"
+	defaultTrackerKind       = "forge"
+	defaultIdentityMode      = "owner"
+	defaultOrchestratorMode  = ModeShared
+	defaultCIKind            = "forge"
+	defaultCIRequired        = true
+	defaultCITimeout         = "30m"
+	defaultMergeBy           = "orchestrator"
+	defaultMergeStrategy     = "ff-only"
+	defaultMergeVia          = "git-push"
+	defaultMaxTasks          = 1
+	defaultIsolationMode     = "host"
+	defaultOwnerApproval     = "risky"
+	defaultAcceptanceLabel   = "owner-check"
+	defaultAttentionTop      = "30m"
+	defaultAttentionEscalate = "24h"
+	defaultAttentionRemind   = "24h"
+	defaultAttentionWeekly   = "168h"
 )
 
 // DefaultWorktreesRoot is where the worktree of a task is made when the file of
@@ -120,5 +124,24 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	// looked at the head (docs/DESIGN.md §7h).
 	if c.Acceptance.Label == "" {
 		c.Acceptance.Label = defaultAcceptanceLabel
+	}
+	// The thresholds of the queue of attention are the ones a project that says nothing
+	// gets, and they are the ones the design of §6a names: half an hour before a task
+	// waits in front of a person whatever its class, a day before the waiting is escalated
+	// and written under the task, a day before the same record may be written again, and
+	// a week before the wait is called a long one and goes into the weekly slice (#37).
+	// The silence after which a run is called standing is `[executor] stall_after` and
+	// not a key of this table (§7a).
+	if c.Attention.TopAfter == "" {
+		c.Attention.TopAfter = defaultAttentionTop
+	}
+	if c.Attention.EscalateAfter == "" {
+		c.Attention.EscalateAfter = defaultAttentionEscalate
+	}
+	if c.Attention.RemindAfter == "" {
+		c.Attention.RemindAfter = defaultAttentionRemind
+	}
+	if c.Attention.WeeklyAfter == "" {
+		c.Attention.WeeklyAfter = defaultAttentionWeekly
 	}
 }

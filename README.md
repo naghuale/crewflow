@@ -62,6 +62,10 @@ Works today:
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
 - ✅ a run that stands is visible: `stalled` with the length of the silence in `task list`,
   an event in the journal of the attempt and one record under the task per episode
+- ✅ the attention queue: what of the project needs you right now, on top of `task list` and
+  in full from `crewflow task attention` — a run that ended with an open PR, a run that
+  stands, a change without a review, a result the owner has to accept, a run waiting for a
+  decision of a person, and everything escalated after a day with one record per key
 - ✅ two identities for the orchestrator too, `shared` or a second GitHub App, and a gate that
   counts the records of the owner apart from the records of the orchestrator
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
@@ -138,6 +142,7 @@ crewflow task watch 12     # follow a run live
 crewflow task list         # runs of this project, the ones that want you on top, and what else runs here
 crewflow task list -all    # every run of every project on this machine
 crewflow task check-stalled   # the runs that stand — for the orchestrator's schedule
+crewflow task attention     # what of this project needs you right now — same queue for a schedule
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
@@ -196,6 +201,40 @@ The state of a run is written *before* crewflow asks the machine for anything, s
 in front of the keychain window is in `~/.crewflow/state` while it stands there; a run refused
 for another reason puts the state back as it was and leaves no attempt behind. See §7a of the
 design.
+
+## The attention queue
+
+`stalled` says that a run is quiet. The attention queue says what needs **you**: it is the answer
+to the first question of an orchestrator and an owner, and it is the failure of the practice
+journal it is there for — on 30.09 three runs finished with open PRs between 20:39 and 21:01 and
+nobody noticed until 22:30, an hour and a half of "work is going on" (F-061, #37).
+
+It is worked out every time it is read — from the state of the runs, and where a command may ask
+the host, from the change requests, the review records and the labels of the tasks. It is never
+stored next to the state: that would say what it said when it was written.
+
+```
+ATTENTION REQUIRED
+  #41 · blocked · human-authorization-required · channel macos-keychain · the resource executor-key · the action human-execute
+    waiting 2m · next: owner · crewflow task resume 41
+  #43 · finished-unseen · run-completed · the change #113
+    waiting 1h · next: orchestrator · crewflow review 113
+```
+
+`task list` shows the block over the table, out of the local state and without a network.
+`crewflow task attention` is the whole queue with the host of the project in it — a reviewed
+change is not in it at all — and it is made for a schedule: it exits non-zero while anything in
+the queue wants a person, and leaves **one record under the task per key** (task, state, priority,
+reason), not repeated for a day. The thresholds are in `[attention]`: `top_after` (30m),
+`escalate_after` (24h), `remind_after` (24h) and `weekly_after` (7d, the weekly slice of #37).
+
+A reason that is known is never "standing": a run at the keychain window *waits* for a person
+(`blocked`, `human-authorization-required`, the channel and the action), and a run whose silence
+has no reason at all *stands* — and standing is the one state that always wants a person, because
+nothing is known to be broken and nothing is known to be going on. In `-json` of both commands each
+entry of the queue carries `attention_state`, `waiting_since`, `next_actor`, `reason`, `priority`,
+`actable`, and, where a person is being asked for something, `channel`, `resource` and `action`.
+See §6a of the design.
 
 ## The gate
 

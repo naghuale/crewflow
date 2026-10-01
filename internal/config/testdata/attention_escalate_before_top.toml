@@ -1,0 +1,13 @@
+# attention.escalate_after is shorter than attention.top_after: a task would be
+# escalated before it has waited long enough to be in the queue at all, and a queue
+# that escalates first is a queue that cries wolf (§6a).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[attention]
+top_after = "1h"
+escalate_after = "30m"

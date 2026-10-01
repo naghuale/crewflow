@@ -27,6 +27,7 @@ type Config struct {
 	Acceptance   Acceptance   `toml:"acceptance"`
 	Parallel     Parallel     `toml:"parallel"`
 	Tasks        Tasks        `toml:"tasks"`
+	Attention    Attention    `toml:"attention"`
 	Requirements Requirements `toml:"requirements"`
 	Isolation    Isolation    `toml:"isolation"`
 	Capabilities []Capability `toml:"capabilities"`
@@ -253,6 +254,31 @@ type Tasks struct {
 	// OwnerApproval is whose approval a task waits for: "all" makes every task
 	// wait, "risky" only the ones a person must look at, "none" none.
 	OwnerApproval string `toml:"owner_approval"`
+}
+
+// Attention is when a task of the project that wants a person is put in front of one, and
+// how long that person may be waited for. The silence after which a run is called standing
+// is not here: it belongs to the executor that has to answer for it, and it is
+// `[executor] stall_after` (docs/DESIGN.md §6, §6a, §7a).
+//
+// Every value is a duration a project agrees to put up with, and every one of them is a
+// promise a person is owed: a task that waits longer than `escalate_after` is escalated and
+// a record of it is left under the task, and `remind_after` is what keeps that record from
+// becoming a line a minute (§6a).
+type Attention struct {
+	// TopAfter is how long a task may wait before it goes to the top of the queue of
+	// attention even where nobody can act on it yet, such as a task that waits for a
+	// resource of the project.
+	TopAfter string `toml:"top_after"`
+	// EscalateAfter is how long a task may wait before the waiting is escalated and a
+	// record of it is left under the task on the host.
+	EscalateAfter string `toml:"escalate_after"`
+	// RemindAfter is how long the same state of the same task waits before the same
+	// record may be left under it once more.
+	RemindAfter string `toml:"remind_after"`
+	// WeeklyAfter is how long a task may wait before the wait is called a long one and
+	// goes into the weekly slice of the practice journal (#37).
+	WeeklyAfter string `toml:"weekly_after"`
 }
 
 // Requirements are the tools the project needs, with the command that checks

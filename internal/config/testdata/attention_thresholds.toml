@@ -1,0 +1,15 @@
+# The thresholds of the queue of attention of a project that named them all: what the
+# queue escalates, when it may remind about the same key, and when a wait is called a
+# long one for the weekly slice of the practice journal (#37, §6a).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[attention]
+top_after = "15m"
+escalate_after = "12h"
+remind_after = "6h"
+weekly_after = "240h"

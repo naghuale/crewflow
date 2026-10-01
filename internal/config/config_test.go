@@ -103,6 +103,40 @@ func TestLoadExample(t *testing.T) {
 		{"merge.owners", cfg.Merge.Owners, []string{}},
 		{"parallel.max_tasks", cfg.Parallel.MaxTasks, 1},
 		{"tasks.owner_approval", cfg.Tasks.OwnerApproval, "risky"},
+		// The thresholds of the queue of attention are the ones §6a names, and the example
+		// of §5 writes them out so that a project reads them where it reads the rest of
+		// its settings and not in a task that needs them.
+		{"attention.top_after", cfg.Attention.TopAfter, "30m"},
+		{"attention.escalate_after", cfg.Attention.EscalateAfter, "24h"},
+		{"attention.remind_after", cfg.Attention.RemindAfter, "24h"},
+		{"attention.weekly_after", cfg.Attention.WeeklyAfter, "168h"},
+	}
+	for _, c := range checks {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s = %#v, want %#v", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestLoadAttentionThresholds checks that the thresholds a project names are the ones the
+// queue of attention is worked out on, and that a project which names one of them names
+// it for itself: a queue of attention with the thresholds of another project in it is a
+// queue that escalates too early or too late (docs/DESIGN.md §6a).
+func TestLoadAttentionThresholds(t *testing.T) {
+	cfg, err := loadFile(t, "attention_thresholds.toml")
+	if err != nil {
+		t.Fatalf("Load(attention_thresholds.toml) returned an error: %v", err)
+	}
+
+	checks := []struct {
+		name string
+		got  any
+		want any
+	}{
+		{"attention.top_after", cfg.Attention.TopAfter, "15m"},
+		{"attention.escalate_after", cfg.Attention.EscalateAfter, "12h"},
+		{"attention.remind_after", cfg.Attention.RemindAfter, "6h"},
+		{"attention.weekly_after", cfg.Attention.WeeklyAfter, "240h"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {

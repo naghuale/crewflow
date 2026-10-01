@@ -73,6 +73,10 @@ type Runs struct {
 	// what runs beside it, and a run of another project of the machine is as much of
 	// this machine as the one of their own (docs/DESIGN.md §6).
 	Elsewhere []Project
+	// Attention is the queue of the project: the tasks that want a person, in the order
+	// a person reads them in, and the block at the top of the list is made of it
+	// (docs/DESIGN.md §6a).
+	Attention Queue
 }
 
 // Entry is one task in the list: what it is, how many tries it took, how the last of
@@ -127,6 +131,12 @@ type Entry struct {
 	// other run: a run that is working, a run that is over and a run of a project
 	// that names no silence (docs/DESIGN.md §6).
 	Stalled *Stall `json:"stalled,omitempty"`
+	// Attention is what the queue of attention of the project says about the task of
+	// this run: the state of its process, the reason of it, who acts next and how long
+	// it has been that way (docs/DESIGN.md §6a). It is nothing for a task that wants
+	// nobody, and it is worked out where the list is read, because a mark stored in the
+	// state would outlive the waiting it was written for.
+	Attention *Attention `json:"-"`
 }
 
 // Project is what a project of the machine is doing: its runs by what the last try of
@@ -165,6 +175,11 @@ func (e Entry) Length() (time.Duration, bool) {
 // a run somebody has to look at, and a program that is to look at it has to know how
 // long it has been standing and what it was doing when it last said anything
 // (docs/DESIGN.md §6).
+//
+// The attention of the task is in the same answer, and it is there for the same reason:
+// a person asks a program for the queue of what needs them, and the state of a process is
+// not only the outcome of a run — it is the reason of it, who acts next and how long it
+// has been that way (docs/DESIGN.md §6a).
 func (e Entry) MarshalJSON() ([]byte, error) {
 	length, known := e.Length()
 	var seconds *float64
@@ -178,22 +193,44 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		whole := math.Round(e.Stalled.For.Seconds())
 		stalledFor, lastStep, reason = &whole, e.Stalled.LastStep, e.Stalled.Reason
 	}
+	if e.Attention != nil {
+		// A task in the queue of attention says why it is there in the reason of the
+		// queue, which is the reason of its process and not the silence of its run; the
+		// silence of a run that is going has its own seconds and its own step beside it.
+		reason = e.Attention.Reason
+		if e.Attention.LastStep != "" {
+			lastStep = e.Attention.LastStep
+		}
+	}
 	answer := struct {
-		Repo            string     `json:"repo"`
-		Task            int        `json:"task"`
-		Title           string     `json:"title"`
-		Attempts        int        `json:"attempts"`
-		Run             string     `json:"run"`
-		Outcome         Kind       `json:"outcome"`
-		StartedAt       time.Time  `json:"started_at"`
-		EndedAt         *time.Time `json:"ended_at,omitempty"`
-		DurationSeconds *float64   `json:"duration_seconds"`
-		StalledFor      *float64   `json:"stalled_for,omitempty"`
-		LastStep        string     `json:"last_step,omitempty"`
-		Reason          string     `json:"reason,omitempty"`
-		Executor        string     `json:"executor"`
-		Change          *Change    `json:"change,omitempty"`
-		Identity        Identity   `json:"identity"`
+		Repo            string          `json:"repo"`
+		Task            int             `json:"task"`
+		Title           string          `json:"title"`
+		Attempts        int             `json:"attempts"`
+		Run             string          `json:"run"`
+		Outcome         Kind            `json:"outcome"`
+		StartedAt       time.Time       `json:"started_at"`
+		EndedAt         *time.Time      `json:"ended_at,omitempty"`
+		DurationSeconds *float64        `json:"duration_seconds"`
+		StalledFor      *float64        `json:"stalled_for,omitempty"`
+		LastStep        string          `json:"last_step,omitempty"`
+		Reason          string          `json:"reason,omitempty"`
+		Executor        string          `json:"executor"`
+		Change          *Change         `json:"change,omitempty"`
+		Identity        Identity        `json:"identity"`
+		AttentionState  *AttentionState `json:"attention_state,omitempty"`
+		EscalatedFrom   AttentionState  `json:"escalated_from,omitempty"`
+		WaitingSince    *time.Time      `json:"waiting_since,omitempty"`
+		WaitingSeconds  *float64        `json:"waiting_seconds,omitempty"`
+		NextActor       string          `json:"next_actor,omitempty"`
+		Priority        Priority        `json:"priority,omitempty"`
+		Actable         Actable         `json:"actable,omitempty"`
+		Subject         string          `json:"subject,omitempty"`
+		Channel         string          `json:"channel,omitempty"`
+		Resource        string          `json:"resource,omitempty"`
+		Action          string          `json:"action,omitempty"`
+		Next            string          `json:"next,omitempty"`
+		LongWaiting     bool            `json:"long_waiting,omitempty"`
 	}{
 		Repo:            ownerAndRepo(e.Repo),
 		Task:            e.Task,
@@ -210,6 +247,16 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		Executor:        e.Executor,
 		Change:          e.Change,
 		Identity:        e.Identity,
+	}
+	if one := e.Attention; one != nil {
+		state, since := one.State, one.Since
+		waited := one.WaitingSeconds
+		answer.AttentionState, answer.EscalatedFrom = &state, one.EscalatedFrom
+		answer.WaitingSince, answer.WaitingSeconds = &since, &waited
+		answer.NextActor, answer.Priority, answer.Actable = one.NextActor, one.Priority, one.Actable
+		answer.Subject, answer.Channel = one.Subject, one.Channel
+		answer.Resource, answer.Action, answer.Next = one.Resource, one.Action, one.Next
+		answer.LongWaiting = one.LongWaiting
 	}
 	data, err := json.Marshal(answer)
 	if err != nil {
@@ -317,6 +364,24 @@ func (r Runs) Of(repo string) Runs {
 		}
 	}
 	return of
+}
+
+// WithAttention is the list of runs with the queue of attention of the project on it: every
+// entry carries the state of the attention of its own task, so that the block at the top of
+// the list and the answer of `-json` are the same queue and not two answers about one
+// project (docs/DESIGN.md §6a).
+//
+// It writes into the entries of the list it is given rather than copying them, and a caller
+// that holds another list of the same runs gets the same answer from it either way.
+func (r Runs) WithAttention(queue Queue) Runs {
+	r.Attention = queue
+	for i := range r.Entries {
+		if one, wanted := queue.Wanted(r.Entries[i].Task); wanted {
+			entry := one
+			r.Entries[i].Attention = &entry
+		}
+	}
+	return r
 }
 
 // projects is every project of the machine, with what the last try of each of its

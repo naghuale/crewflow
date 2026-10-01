@@ -1,0 +1,13 @@
+# attention.weekly_after is shorter than attention.escalate_after: a wait would be
+# called a long one before it was ever escalated, and the weekly slice of the journal
+# would count waits nobody has been told about (§6a, #37).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[attention]
+escalate_after = "48h"
+weekly_after = "24h"
