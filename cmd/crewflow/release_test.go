@@ -192,6 +192,13 @@ func copiedProjectIn(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("copy the project: %v", err)
 	}
+	// Nothing is started with the copy before this is answered: a `.git` in it — a folder
+	// or a file — is the git of somebody else's repository, and `git init` in a folder
+	// with such a `.git` reinitializes that repository, after which the commit and the tag
+	// of the script land in it. The copy walks past a `.git` above; this says that it did.
+	if _, err := os.Lstat(filepath.Join(copyOf, ".git")); err == nil {
+		t.Fatalf("the copy of the project at %s holds a .git of its own, and a test of the release must not touch the repository of anybody else", copyOf)
+	}
 	return copyOf
 }
 
@@ -217,9 +224,26 @@ func repositoryOf(t *testing.T, copyOf string) gitOfTheTest {
 	// refuses while another worktree of the same repository stands on it, and the copy is
 	// a repository of its own anyway.
 	git(t, on, "branch", "-M", "main")
-	where := git(t, on, "rev-parse", "--absolute-git-dir")
-	if !strings.HasPrefix(where+string(filepath.Separator), copyOf+string(filepath.Separator)) {
-		t.Fatalf("the git of the copy of the project is %s, want a git inside %s", where, copyOf)
+	// Both paths are resolved before they are told apart: macOS hands out a folder under
+	// `/var/folders` and git answers with the same folder under `/private/var/folders`, and
+	// a test that failed on that would pass on one machine and fail on another. `--git-dir`
+	// answers with a path that may be relative to the copy — which is what it is when the
+	// copy is the top of the repository — and both forms name the same folder.
+	where := strings.TrimSpace(git(t, on, "rev-parse", "--git-dir"))
+	if !filepath.IsAbs(where) {
+		where = filepath.Join(copyOf, where)
+	}
+	inside, err := filepath.EvalSymlinks(where)
+	if err != nil {
+		t.Fatalf("the git of the copy of the project at %s: %v", where, err)
+	}
+	itself, err := filepath.EvalSymlinks(copyOf)
+	if err != nil {
+		t.Fatalf("the copy of the project at %s: %v", copyOf, err)
+	}
+	relative, err := filepath.Rel(itself, inside)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		t.Fatalf("the git of the copy of the project is %s, want one inside %s: a copy that answered for the repository of somebody else would commit and tag it", inside, itself)
 	}
 	return on
 }
