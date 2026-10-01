@@ -57,8 +57,15 @@ const (
 	changeNumber = 7
 	repositoryOf = "naghuale/crewflow"
 	repoName     = "naghuale-crewflow"
-	owner        = "naghuale"
-	executor     = "crewflow-executor[bot]"
+)
+
+// The two accounts a change of a test is written in, as the host of the test keeps them:
+// the owner by the number of the account and the App of the executor by the number of
+// that App — the two records a gate counts and the one it never counts (docs/DESIGN.md
+// §7h, §7i).
+var (
+	owner    = forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+	executor = forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: "crewflow-executor[bot]"}
 )
 
 // ownerCheckLabel is the label a task is marked with to have its result accepted by the
@@ -915,7 +922,7 @@ func (s *scenario) ownerChecked() {
 
 // accepted is a record in which somebody takes the result of the task in as it stands,
 // which counts only of an owner of the project (docs/DESIGN.md §7h).
-func (s *scenario) accepted(commit, author string, edited ...bool) {
+func (s *scenario) accepted(commit string, author forge.Subject, edited ...bool) {
 	s.comment(gate.AcceptedOf(commit), author, edited...)
 }
 
@@ -968,7 +975,9 @@ func (s *scenario) deps() Deps {
 			CI:              s.host,
 			Repository:      repositoryOf,
 			DefaultBranch:   "main",
-			Reviewers:       []string{owner},
+			Reviewers:       []forge.Subject{owner},
+			Owners:          []forge.Subject{owner},
+			Executor:        executor,
 			AcceptanceLabel: ownerCheckLabel,
 			Task:            s.task.Number,
 			Boundaries:      []string{"internal/merge/**", "README.md"},

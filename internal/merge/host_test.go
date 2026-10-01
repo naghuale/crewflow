@@ -52,7 +52,7 @@ type closing struct {
 // comment is a record under the change of a test: what is written, by whom, and whether
 // it has been edited since it was published — the two facts about a record that say
 // whether the gate counts it (docs/DESIGN.md §7h).
-func (h *host) comment(body, author string, edited ...bool) {
+func (h *host) comment(body string, author forge.Subject, edited ...bool) {
 	wasEdited := len(edited) > 0 && edited[0]
 	h.comments = append(h.comments, forge.Comment{
 		Author:    author,
@@ -153,7 +153,19 @@ func (h *host) HeadRef(number int) string { return headRef(number) }
 
 // SignedIn is the account the host speaks as, which is the owner of the repository in a
 // test: a record of a review counts only because a reviewer of the project wrote it.
-func (h *host) SignedIn(context.Context) (string, error) { return owner, nil }
+func (h *host) SignedIn(context.Context) (string, error) { return owner.Login, nil }
+
+// SigningAs is the account the host speaks as, as the gate counts a record of it.
+func (h *host) SigningAs(context.Context) (forge.Subject, error) { return owner, nil }
+
+// Subject is the account of the host the login names: the owner of the repository is the
+// only account a merge of a test writes records in.
+func (h *host) Subject(_ context.Context, login string) (forge.Subject, error) {
+	if login != owner.Login {
+		return forge.Subject{}, fmt.Errorf("the account %q is not on this host", login)
+	}
+	return owner, nil
+}
 
 // Doctor says nothing: a test of a merge has a host of its own already.
 func (h *host) Doctor(context.Context) []forge.Check { return nil }
@@ -169,5 +181,7 @@ var (
 	_ forge.FileLister  = (*host)(nil)
 	_ forge.HeadRef     = (*host)(nil)
 	_ forge.SignedIn    = (*host)(nil)
+	_ forge.Naming      = (*host)(nil)
+	_ forge.Signer      = (*host)(nil)
 	_ forge.TaskCloser  = (*host)(nil)
 )

@@ -242,6 +242,10 @@ func machineWithTheOrchestrator(t *testing.T) *machine {
 	m.api.answer["/api/v3/users/crewflow-orchestrator[bot]"] = map[string]any{
 		"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot",
 	}
+	// The account of the App of the orchestrator is what the lists of the gate may name,
+	// and a name in them is asked of the host for the number under it (§7h, §7i).
+	m.prints("gh api users/crewflow-orchestrator%5Bbot%5D",
+		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
 	m.api.installationOfTheOrchestrator(rightsOfTheOrchestrator())
 	return m
 }

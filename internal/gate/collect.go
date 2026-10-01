@@ -24,11 +24,17 @@ type Deps struct {
 	// this project.
 	Repository    string
 	DefaultBranch string
-	// Reviewers are the logins whose record of a review counts, and Owners those whose
-	// record of an acceptance of the result of a task counts. Empty is the owner of the
-	// repository in both, which is the default of §5.
-	Reviewers []string
-	Owners    []string
+	// Executor is the App of the executor of a run, whose record counts for nothing: not
+	// as an approval and not as a decision of the owner, whatever the lists of the file
+	// of the project name (docs/DESIGN.md §7h, §7i).
+	Executor forge.Subject
+	// Reviewers are the subjects whose record of a review counts, and Owners those whose
+	// record of an acceptance of the result of a task counts. Both are accounts the host
+	// keeps under a number, and never logins: a host writes one account in a different
+	// line in every API and renames an App together with its account (docs.DESIGN.md §5,
+	// §7h, §7i).
+	Reviewers []forge.Subject
+	Owners    []forge.Subject
 	// AcceptanceLabel is the label a task is marked with to say that its result has to
 	// be accepted by the owner before the change of it may go in, and empty is a project
 	// that asks for no acceptance at all (docs/DESIGN.md §5, §7f, §7h).
@@ -75,6 +81,7 @@ func Collect(ctx context.Context, deps Deps, number int) Facts {
 	f := Facts{
 		WantRepository:  deps.Repository,
 		WantBranch:      deps.DefaultBranch,
+		Executor:        deps.Executor,
 		Reviewers:       deps.Reviewers,
 		Owners:          deps.Owners,
 		AcceptanceLabel: deps.AcceptanceLabel,

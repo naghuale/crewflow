@@ -22,6 +22,12 @@ const (
 	sha  = "9e37237496ea06aca445d2d6670171ec22d7d5bc"
 )
 
+// owner is the account of the owner of this repository as the REST API of GitHub keeps
+// it, and the answer of the recorded fixture is about this very account: a record of it is
+// a record of the owner, and it is counted by the number and not by the login
+// (docs/DESIGN.md §7h, §7i).
+var owner = forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+
 // TestTask reads the answer of "gh issue view" of a real issue and checks every
 // field of the task, the labels in particular: they are the words §7f decides a
 // task by.
@@ -203,12 +209,12 @@ func TestComments(t *testing.T) {
 
 	want := []forge.Comment{
 		{
-			Author:    "naghuale",
+			Author:    owner,
 			Body:      "REVIEW: CHANGES REQUESTED Ревью коммита 1d74cab. Код соответ …",
 			CreatedAt: time.Date(2026, time.September, 27, 22, 10, 43, 0, time.UTC),
 		},
 		{
-			Author:    "naghuale",
+			Author:    owner,
 			Body:      "REVIEW: APPROVED 9e37237496ea06aca445d2d6670171ec22d7d5bc Th …",
 			CreatedAt: time.Date(2026, time.September, 27, 22, 14, 28, 0, time.UTC),
 		},

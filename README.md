@@ -195,7 +195,14 @@ table of §7h — `approval-missing`, `approval-untrusted`, `approval-edited`, `
 about it.
 
 - an approval counts only from `[merge] reviewers` (in the mode `separate`, the account of the
-  App of the orchestrator), only unedited, and only of the current head of the change;
+  App of the orchestrator), only unedited, and only of the current head of the change. The gate
+  counts a record by the account behind it — the kind of the account and the number the host keeps
+  it under (`user.id` of a person, `performed_via_github_app.id` of an App) — and not by the string
+  of the login, so a renamed App is still the same App and an App of another project under our
+  login is not ours. Every login of `[merge] reviewers` and `[merge] owners` is asked of the host
+  once, when the settings are read, and a login the host cannot name is an error that names the
+  key of the list; the record of the App of the executor never counts, whatever the lists say
+  (§7i);
 - a record of the owner — the acceptance of a result (`ACCEPTED <full sha>`) and a file
   outside the boundaries of the task (`SCOPE: ACCEPTED <full sha> <why>`) — counts only from
   `[merge] owners` (the owner of the repository by default), which is one list and a
@@ -369,6 +376,14 @@ authority separation:
   executor:       crewflow-executor[bot] (bot)
   owner == orchestrator: NO
   owners ∩ reviewers: none
+```
+
+Both lists are printed as the correspondence they are — the login of the file and under it the
+kind and the number the gate counts that account by:
+
+```
+  reviewers:       crewflow-orchestrator[bot] (Bot 5140522)
+  owners:          naghuale (User 93920024)
 ```
 
 The same section is in `crewflow doctor -json` as `authority`, and the debts as `trust_debt` —

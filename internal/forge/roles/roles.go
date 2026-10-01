@@ -145,48 +145,91 @@ func orchestratorOf(cfg config.Config, env forge.Env, orchestration string) gith
 	}
 }
 
-// ReviewersOf are the accounts whose record of a review of a change of this project is
-// an approval, in the order the rules of §5 and §7h give them: the list the file names,
-// the account the App of the orchestrator works as where the file names none and the
-// orchestrator has an account of its own, and the owner of the repository where neither
-// of the two says anything.
+// ReviewersOf are the subjects whose record of a review of a change of this project is
+// an approval, in the order the rules of §5 and §7h give them: the accounts the file
+// names, the account the App of the orchestrator works as where the file names none and
+// the orchestrator has an account of its own, and the owner of the repository where
+// neither of the two says anything.
 //
 // The second of the three is why this question is asked of the host and not read out of
-// the file: the account of an App is not in the file of the project, and a gate that
-// was told a different one would count nothing (docs/DESIGN.md §7h, §7i).
-func ReviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]string, error) {
+// the file: the account of an App is not in the file of the project, and a gate that was
+// told a different one would count nothing (docs/DESIGN.md §7h, §7i).
+func ReviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]forge.Subject, error) {
 	if len(cfg.Merge.Reviewers) > 0 {
-		return cfg.Merge.Reviewers, nil
+		return subjectsOf(ctx, "merge.reviewers", cfg.Merge.Reviewers, set)
 	}
 	if cfg.Orchestrator.Mode != config.ModeSeparate {
-		return config.ReviewersOf(nil, cfg.Project.Repo), nil
+		return ownersOf(ctx, "merge.reviewers", nil, cfg.Project.Repo, set)
 	}
 	if set.Forge == nil {
 		return nil, fmt.Errorf("orchestrator.mode: this project has no host of its own, so there is no account " +
 			"to be the orchestrator apart from the owner in")
 	}
-	signed, ok := set.Forge.(forge.SignedIn)
-	if !ok {
-		return nil, fmt.Errorf("the host of the project does not say which account it speaks as, " +
-			"so the gate cannot be told whose record of a review counts")
-	}
-	account, err := signed.SignedIn(ctx)
+	subject, err := forge.SigningAs(ctx, set.Forge)
 	if err != nil {
-		return nil, fmt.Errorf("the account the orchestrator of this project works as: %w", err)
+		return nil, err
 	}
-	if account == "" {
-		return nil, fmt.Errorf("the host of the project named no account for the orchestrator of this project, " +
-			"so the gate cannot be told whose record of a review counts")
+	if subject.Kind == forge.KindUser {
+		return nil, fmt.Errorf("the host of the project named %q as the account the orchestrator works as, and that "+
+			"is a person: in the mode of a separate login the orchestrator works as an app of its own, and the "+
+			"record of a review is written in the name of that app", subject.Login)
 	}
-	return []string{account}, nil
+	return []forge.Subject{subject}, nil
 }
 
-// OwnersOf are the accounts whose records are the decisions of a person and not the
-// work of the orchestrator: the list the file names, and the owner of the repository
-// where it names none. The record of an acceptance of a result and the record of a
-// scope acceptance are counted from this one list (docs/DESIGN.md §5, §7h).
-func OwnersOf(cfg config.Config) []string {
-	return config.OwnersOf(cfg.Merge.Owners, cfg.Project.Repo)
+// OwnersOf are the subjects whose records are the decisions of a person and not the
+// work of the orchestrator: the accounts the file names, and the owner of the repository
+// where it names none. The record of an acceptance of a result and the record of a scope
+// acceptance are counted from this one list (docs/DESIGN.md §5, §7h).
+func OwnersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]forge.Subject, error) {
+	return ownersOf(ctx, "merge.owners", cfg.Merge.Owners, cfg.Project.Repo, set)
+}
+
+// ownersOf are the subjects of the accounts the file names under the key, with the
+// default of §5 filled in first: a list the file leaves empty has the owner of its
+// repository instead. That owner is named in the file of nothing — a repository names it
+// by a login — and the number of that account is the only thing a record may be counted
+// by, so every name is asked of the host here once, and the gate is given subjects from
+// then on (docs.DESIGN.md §5, §7i).
+func ownersOf(ctx context.Context, key string, list []string, repository string, set forge.Set) ([]forge.Subject, error) {
+	return subjectsOf(ctx, key, config.OwnersOf(list, repository), set)
+}
+
+// subjectsOf are the subjects of the accounts the file of the project names under the
+// key, in the order it names them in. A login the host does not know, or holds as a kind
+// crewflow does not read, is an error naming the key and the login: a file that names an
+// account nobody may write for is a mistake in that file, and a gate that went on without
+// it would count no records at all while saying that nobody had approved anything
+// (docs/DESIGN.md §7h, §7i).
+func subjectsOf(ctx context.Context, key string, logins []string, set forge.Set) ([]forge.Subject, error) {
+	if len(logins) == 0 {
+		return nil, nil
+	}
+	if set.Forge == nil {
+		return nil, fmt.Errorf("%s: this project has no host of its own, so it cannot say which account %q is",
+			key, logins[0])
+	}
+	subjects := make([]forge.Subject, 0, len(logins))
+	for i, login := range logins {
+		subject, err := forge.SubjectOf(ctx, set.Forge, login)
+		if err != nil {
+			return nil, fmt.Errorf("%s[%d]: %w", key, i, err)
+		}
+		subjects = append(subjects, subject)
+	}
+	return subjects, nil
+}
+
+// ExecutorOf is the App of the executor of a run of this project, and nothing where the
+// executor works as the person who runs crewflow: a record of the executor is not an
+// approval and not a decision of the owner whatever the lists of the file name, and the
+// number of that App is what tells it apart from every other account of the host
+// (docs/DESIGN.md §7h, §7i).
+func ExecutorOf(cfg config.Config) forge.Subject {
+	if cfg.Identity.Mode != forge.ModeBot {
+		return forge.Subject{}
+	}
+	return forge.Subject{Kind: forge.KindApp, ID: cfg.Identity.GitHubApp.AppID}
 }
 
 // asksTheForge is the check for a project that takes its tasks or its checks

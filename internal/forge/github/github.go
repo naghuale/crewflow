@@ -11,8 +11,8 @@ package github
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -229,12 +229,12 @@ func (a *Adapter) ChangedFiles(ctx context.Context, number int) ([]string, error
 // a record of a review that anybody can rewrite after the fact is not a record the
 // gate may count (docs/DESIGN.md §7h).
 //
-// The account each of them was written by is read from the answer of the REST API, and
-// not from the one above: GraphQL names an App by its slug alone, and a person may have
-// that very slug as a login, so over GraphQL the account of the orchestrator of a
-// project and the account of a person with the slug of its App are one string — and a
-// record of the second one would then count as a record of the first (docs/DESIGN.md
-// §7h, §7i).
+// The account each of them was written by is the subject the REST API keeps it under —
+// `user.type`, `user.id` and `performed_via_github_app.id` — and not the one above: over
+// GraphQL an App is named by its slug alone, which a person may have as a login, so the
+// two are one string there, and the login of an account changes when an App is renamed. A
+// record is counted by the kind of the account and the number under it, and the login is
+// read for the report and for nothing else (docs/DESIGN.md §7h, §7i).
 func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, error) {
 	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", "comments")
 	if err != nil {
@@ -284,18 +284,19 @@ func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, er
 // comments fit in one page is read with one question (docs/DESIGN.md §7h).
 const commentsPerPage = 100
 
-// authorsOf are the accounts the comments under the change were written by, by the id
-// the host knows a comment under in both of its APIs: the name of the account, and the
-// kind the host holds it as. The kind is the whole of it — the name of an App and the
-// name of a person may be one string, and the gate counts records by the name of an
-// account (docs/DESIGN.md §7h, §7i).
+// authorsOf are the subjects the comments under the change were written by, by the id
+// the host knows a comment under in both of its APIs: the kind of the account, the number
+// of that account, and the number of the App the record was written through
+// (`performed_via_github_app`), which is what tells the App of the orchestrator from the
+// App of the executor and from every other App of the host (docs/DESIGN.md §7h, §7i).
 //
 // An account the answer does not name is not a record of nobody: it is a gap in what the
 // host said, and a caller cannot tell it from an answer and must not treat it as one
-// (§7h).
-func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]string, error) {
+// (§7h). A record written by a bot that did not act as an App is read as well and counts
+// for nothing, which is a fact about the change and not a refusal (§7h).
+func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]forge.Subject, error) {
 	endpoint := fmt.Sprintf("repos/%s/issues/%d/comments", a.repo, number)
-	authors := map[string]string{}
+	authors := map[string]forge.Subject{}
 	for page := 1; ; page++ {
 		out, err := a.json(ctx, "api", fmt.Sprintf("%s?per_page=%d&page=%d", endpoint, commentsPerPage, page))
 		if err != nil {
@@ -305,14 +306,19 @@ func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]string,
 			NodeID string `json:"node_id"`
 			User   struct {
 				Login string `json:"login"`
+				ID    int64  `json:"id"`
 				Type  string `json:"type"`
 			} `json:"user"`
+			PerformedViaGitHubApp *struct {
+				ID int64 `json:"id"`
+			} `json:"performed_via_github_app"`
 		}
 		if err := decode(out, &answer); err != nil {
 			return nil, err
 		}
 		for _, comment := range answer {
-			author, err := accountOf(comment.User.Login, comment.User.Type)
+			author, err := subjectOfComment(comment.User.Login, comment.User.Type, comment.User.ID,
+				comment.PerformedViaGitHubApp)
 			if err != nil {
 				return nil, fmt.Errorf("the author of the comment %s: %w", comment.NodeID, err)
 			}
@@ -324,43 +330,79 @@ func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]string,
 	}
 }
 
-// botSuffix is what the host appends to the login of every account that is an App, and
-// botKind and userKind are how the API says an account is one or the other. The suffix is
-// what tells the account of the orchestrator of a project from the account of a person, so
-// it is put on by the kind and never read out of a login: over GraphQL an App has no
-// suffix at all, and over REST a person cannot have one (docs/DESIGN.md §7h, §7i).
-const (
-	botSuffix = "[bot]"
-	botKind   = "Bot"
-	userKind  = "User"
-)
+// subjectOfComment is the subject of the account one record of a change was written by, as
+// the REST API writes it: the login of the account, the kind the host holds it as, the
+// number of the account, and the number of the App the record was written through, which
+// GitHub writes as `performed_via_github_app` and leaves out for a record that no App
+// wrote (docs/DESIGN.md §7h, §7i).
+func subjectOfComment(login, kind string, id int64, app *struct {
+	ID int64 `json:"id"`
+}) (forge.Subject, error) {
+	var number int64
+	if app != nil {
+		number = app.ID
+	}
+	return forge.SubjectFrom(login, kind, id, number)
+}
 
-// accountOf is the name the gate counts a record of this account by: the login of the host
-// for a person, and that login with the suffix the host gives accounts of that kind for an
-// App.
+// Subject returns the subject of the account of the host the login names: a person with
+// the number the host keeps that account under, or an App with the number of the App that
+// login belongs to. It is asked once of every login the file of a project names in
+// `[merge] owners` and `[merge] reviewers`, and the gate is given subjects instead of
+// names from then on — a list of names cannot say what the gate compares, and an App may
+// be renamed under any list of them (docs/DESIGN.md §7h, §7i).
 //
-// Only these two kinds of account are read. A kind crewflow does not know is refused, and
-// so is a kind it knows and a login that does not go with it: reading any other answer as
-// «a person» would hand a record of an account crewflow cannot name to whoever shares its
-// name — an unknown kind with the login `x[bot]` would count as the person `x`, which is a
-// record of somebody the host never named. An answer crewflow does not understand is a gap
-// in what the host said, and a gap is what the gate refuses on (docs/DESIGN.md §7h).
-func accountOf(login, kind string) (string, error) {
-	if login == "" {
-		return "", errors.New("the answer of the host names no account")
+// A login the host does not know, or holds as a kind crewflow does not read, is an error
+// and not an empty subject: a file of a project naming an account crewflow cannot name is
+// a mistake in that file, and a gate that went on without it would count no records at
+// all while saying that nobody had approved anything (§7h).
+func (a *Adapter) Subject(ctx context.Context, login string) (forge.Subject, error) {
+	out, err := a.json(ctx, "api", "users/"+url.PathEscape(login))
+	if err != nil {
+		return forge.Subject{}, fmt.Errorf("the account %q: %w", login, err)
 	}
-	switch kind {
-	case botKind:
-		return strings.TrimSuffix(login, botSuffix) + botSuffix, nil
-	case userKind:
-		if strings.HasSuffix(login, botSuffix) {
-			return "", fmt.Errorf("the account %q is named a person and is called an App", login)
+	var answer struct {
+		Login string `json:"login"`
+		ID    int64  `json:"id"`
+		Type  string `json:"type"`
+	}
+	if err := decode(out, &answer); err != nil {
+		return forge.Subject{}, err
+	}
+	subject, err := forge.SubjectFrom(answer.Login, answer.Type, answer.ID, 0)
+	if err != nil {
+		return forge.Subject{}, fmt.Errorf("the account %q: %w", login, err)
+	}
+	if subject.Kind == forge.KindApp {
+		return a.subjectOfOurApp(ctx, subject)
+	}
+	return subject, nil
+}
+
+// subjectOfOurApp is the subject of the account of the App of this project it belongs to,
+// with the number of that App, and an error where it belongs to none. The host answers
+// `/users/<slug>[bot]` with the account of an App and with nothing about the App itself,
+// so which App it is crewflow knows of the two the file of a project names — the App of
+// the executor and the App of the orchestrator — and of no other: a login of a third App
+// is an account whose number cannot be learned, and a subject with no number counts for
+// nothing, so the person who wrote it into `[merge] reviewers` is told to name the App of
+// the orchestrator instead (docs.DESIGN.md §7h, §7i).
+func (a *Adapter) subjectOfOurApp(ctx context.Context, subject forge.Subject) (forge.Subject, error) {
+	for _, source := range []*app.Source{a.orchestrator, a.app} {
+		if source == nil {
+			continue
 		}
-		return login, nil
-	default:
-		return "", fmt.Errorf("the account %q is of a kind the host names and crewflow does not know: %q",
-			login, kind)
+		bot, err := source.Bot(ctx)
+		if err != nil {
+			return forge.Subject{}, err
+		}
+		if strings.EqualFold(bot.Login, subject.Login) {
+			return forge.Subject{Kind: forge.KindApp, ID: source.AppID, Login: bot.Login}, nil
+		}
 	}
+	return forge.Subject{}, fmt.Errorf("the account %q is the account of an app that is neither the app of the "+
+		"executor nor the app of the orchestrator of this project: crewflow cannot tell which app it is, so no "+
+		"record of it could be counted — name the app of the orchestrator by its number", subject.Login)
 }
 
 // Status returns how the check runs of the commit stand. A commit with a check

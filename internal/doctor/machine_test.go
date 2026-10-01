@@ -55,10 +55,16 @@ type command struct {
 	dir  string
 }
 
-// newMachine returns a machine with nothing on it and nothing answering.
+// newMachine returns a machine with nothing on it and nothing answering, and with the one
+// answer every machine of the tests has: the host knows the owner of the repository of the
+// project of the tests. A report of a project asks the host for that account every time —
+// the lists of the gate are written as logins and are counted by the number under each of
+// them — so a machine that could not answer would be a machine whose report is a refusal
+// about an account the test never meant to put in question (docs.DESIGN.md §7h, §7i).
 func newMachine() *machine {
 	m := &machine{programs: map[string]string{}, answers: map[string]answer{}}
 	m.run = m.exec
+	m.prints("gh api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
 	return m
 }
 

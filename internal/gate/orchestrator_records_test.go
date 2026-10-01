@@ -3,6 +3,8 @@ package gate
 import (
 	"strings"
 	"testing"
+
+	"github.com/naghuale/crewflow/internal/forge"
 )
 
 // The powers of the three subjects of a project, as the host names the accounts of
@@ -36,9 +38,9 @@ import (
 // one record of (docs/DESIGN.md §7h, §7i).
 func apart() Facts {
 	facts := ready()
-	facts.Reviewers = []string{orchestrator}
-	facts.Reviews = []Review{approvedBy(orchestrator, second, false)}
-	facts.Owners = []string{owner}
+	facts.Reviewers = []forge.Subject{orchestratorApp}
+	facts.Reviews = []Review{approvedBy(orchestratorApp, second, false)}
+	facts.Owners = []forge.Subject{owner}
 	return facts
 }
 
@@ -48,7 +50,7 @@ func apart() Facts {
 // who looked at the result (docs/DESIGN.md §7h, §7i).
 func TestOR001TheApprovalOfTheExecutorIsNotAnApproval(t *testing.T) {
 	facts := apart()
-	facts.Reviews = []Review{approvedBy(executor, second, false)}
+	facts.Reviews = []Review{approvedBy(executorApp, second, false)}
 
 	verdict := Evaluate(facts)
 
@@ -56,7 +58,7 @@ func TestOR001TheApprovalOfTheExecutorIsNotAnApproval(t *testing.T) {
 		t.Errorf("Evaluate = %q (%s), want %q: the App of the executor writes a record and the gate counts no record of it as an approval",
 			verdict.Reason, verdict.Detail, ApprovalUntrusted)
 	}
-	if !strings.Contains(verdict.Detail, executor) {
+	if !strings.Contains(verdict.Detail, executorLogin) {
 		t.Errorf("Evaluate = %q, want the refusal to name the author of the record it does not count", verdict.Detail)
 	}
 }
@@ -69,7 +71,7 @@ func TestOR001TheApprovalOfTheExecutorIsNotAnApproval(t *testing.T) {
 func TestOR002TheAcceptanceOfTheExecutorIsNotAnAcceptance(t *testing.T) {
 	facts := apart()
 	facts.Labels = []string{ownerCheckLabel}
-	facts.OwnerAccepts = []OwnerAccept{{Author: executor, Commit: second}}
+	facts.OwnerAccepts = []OwnerAccept{{Author: executorApp, Commit: second}}
 
 	verdict := Evaluate(facts)
 
@@ -77,7 +79,7 @@ func TestOR002TheAcceptanceOfTheExecutorIsNotAnAcceptance(t *testing.T) {
 		t.Errorf("Evaluate = %q (%s), want %q: the only record of an acceptance is of the App of the executor",
 			verdict.Reason, verdict.Detail, OwnerAcceptanceUntrusted)
 	}
-	if !strings.Contains(verdict.Detail, executor) {
+	if !strings.Contains(verdict.Detail, executorLogin) {
 		t.Errorf("Evaluate = %q, want the refusal to name the author of the record it does not count", verdict.Detail)
 	}
 }
@@ -109,7 +111,7 @@ func TestOR004TheAcceptanceOfTheOwnerIsAnAcceptance(t *testing.T) {
 		t.Errorf("Evaluate = %+v, want the acceptance of the owner to be the acceptance of the result", verdict)
 	}
 	summary := Summarize(facts, verdict)
-	if summary.OwnerAccept == nil || summary.OwnerAccept.Author != owner {
+	if summary.OwnerAccept == nil || summary.OwnerAccept.Author != ownerLogin {
 		t.Errorf("the report of the change holds the acceptance %+v, want it to say whose record took the task in", summary.OwnerAccept)
 	}
 	if !summary.AcceptanceRequired || summary.AcceptanceLabel != ownerCheckLabel {
@@ -128,7 +130,7 @@ func TestOR006NeitherRecordOfTheOrchestratorIsTheDecisionOfTheOwner(t *testing.T
 		facts := apart()
 		facts.Files = append(facts.Files, "docs/DESIGN.md")
 		facts.Accepted = []Acceptance{{
-			Author: orchestrator,
+			Author: orchestratorApp,
 			Commit: second,
 			Reason: "the design of the gate is this task as well",
 		}}
@@ -138,14 +140,14 @@ func TestOR006NeitherRecordOfTheOrchestratorIsTheDecisionOfTheOwner(t *testing.T
 			t.Errorf("Evaluate = %q (%s), want %q: the file stays outside the boundaries until the owner says so",
 				verdict.Reason, verdict.Detail, OutOfScope)
 		}
-		if !strings.Contains(verdict.Detail, owner) {
+		if !strings.Contains(verdict.Detail, ownerLogin) {
 			t.Errorf("Evaluate = %q, want the refusal to name the owner whose record lifts it", verdict.Detail)
 		}
 	})
 	t.Run("ACCEPTED", func(t *testing.T) {
 		facts := apart()
 		facts.Labels = []string{ownerCheckLabel}
-		facts.OwnerAccepts = []OwnerAccept{{Author: orchestrator, Commit: second}}
+		facts.OwnerAccepts = []OwnerAccept{{Author: orchestratorApp, Commit: second}}
 
 		if verdict := Evaluate(facts); verdict.Reason != OwnerAcceptanceUntrusted {
 			t.Errorf("Evaluate = %q (%s), want %q: the acceptance of the orchestrator is not the acceptance of the owner",

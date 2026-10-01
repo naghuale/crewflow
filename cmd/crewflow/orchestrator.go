@@ -62,16 +62,16 @@ func orchestratorOf(ctx context.Context, set forge.Set) (forge.Identity, error) 
 	return forge.DescribeOrchestrator(ctx, set.Forge)
 }
 
-// reviewersOf are the accounts whose record of a review counts: the ones the file of the
-// project names, and — where it names none and the orchestrator works as an account of
-// the host of its own — the account it works as, because a record of a review in that
-// mode is written by it and by nobody else (docs/DESIGN.md §5, §7h, §7i).
+// reviewersOf are the subjects whose record of a review counts: the accounts the file of the
+// project names, and — where it names none and the orchestrator works as an account of the
+// host of its own — the account it works as, because a record of a review in that mode is
+// written by it and by nobody else (docs/DESIGN.md §5, §7h, §7i).
 //
 // An account the host would not name is an error and not the owner of the repository:
 // a gate that counted the approvals of the owner while the orchestrator wrote records
 // under its own account would count nothing, and would say so as though the owner had
 // not approved anything.
-func reviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]string, error) {
+func reviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]forge.Subject, error) {
 	reviewers, err := roles.ReviewersOf(ctx, cfg, set)
 	if err != nil {
 		return nil, err
@@ -83,10 +83,37 @@ func reviewersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]strin
 	// §7i, §7k). The load of the file sees the lists as they are written; here they are
 	// the ones a review is written and counted under, and the account of an App is in no
 	// file — so the rule is asked again with what the host answered.
-	if err := config.Separation(cfg.Orchestrator.Mode, roles.OwnersOf(cfg), reviewers, cfg.Project.Repo); err != nil {
+	// The rule of §7i has nothing to say in the shared mode — one login is both subjects
+	// in it by definition — so the owners are asked for only where the mode promises a
+	// division the accounts of the file do not make.
+	if cfg.Orchestrator.Mode != config.ModeSeparate {
+		return reviewers, nil
+	}
+	owners, err := roles.OwnersOf(ctx, cfg, set)
+	if err != nil {
 		return nil, err
 	}
+	if refused := config.Separation(cfg.Orchestrator.Mode, loginsOf(owners), loginsOf(reviewers), cfg.Project.Repo); refused != nil {
+		return nil, refused
+	}
 	return reviewers, nil
+}
+
+// ownersOf are the subjects whose records are the decisions of a person, with the default of
+// §5 filled in the same way as the reviewers.
+func ownersOf(ctx context.Context, cfg config.Config, set forge.Set) ([]forge.Subject, error) {
+	return roles.OwnersOf(ctx, cfg, set)
+}
+
+// loginsOf are the names the host writes the accounts under, as the rule of §7i is checked
+// against the file of the project as it is written; the subject behind each name is in the
+// section of `crewflow doctor` and in every refusal of the gate.
+func loginsOf(accounts []forge.Subject) []string {
+	names := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		names = append(names, account.Login)
+	}
+	return names
 }
 
 // gitEnvironment is what the commands of git of a review and of a merge are started

@@ -12,6 +12,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/secret"
@@ -106,14 +107,19 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 	if err != nil {
 		return gate.Facts{}, err
 	}
+	owners, err := ownersOf(ctx, cfg, set)
+	if err != nil {
+		return gate.Facts{}, err
+	}
 	number := taskOfChange(home, cfg, change)
 	return gate.Collect(ctx, gate.Deps{
 		Forge:           set.Forge,
 		CI:              set.CI,
 		Repository:      cfg.Project.Repo,
 		DefaultBranch:   cfg.Project.DefaultBranch,
+		Executor:        roles.ExecutorOf(cfg),
 		Reviewers:       reviewers,
-		Owners:          cfg.Merge.Owners,
+		Owners:          owners,
 		AcceptanceLabel: cfg.Acceptance.Label,
 		Task:            number,
 		TaskOf:          taskFactsOf(set, cfg),
@@ -229,26 +235,27 @@ func writeReviewRecord(ctx context.Context, set forge.Set, cfg config.Config, fa
 	return exitOK
 }
 
-// accountOfReview is the account a record of a review is written in, and whether it is
+// accountOfReview is the subject a record of a review is written as, and whether it is
 // one the gate counts: the record of a review is a comment, and it is an approval only
-// because an account the project reviews with wrote it (docs/DESIGN.md §7h).
-func accountOfReview(ctx context.Context, set forge.Set, cfg config.Config) (string, error) {
-	signed, ok := set.Forge.(forge.SignedIn)
-	if !ok {
-		return "", fmt.Errorf("the host of the project does not say which account it speaks as, " +
-			"so a record of a review would be written in the name of nobody")
-	}
-	account, err := signed.SignedIn(ctx)
+// because an account the project reviews with wrote it (docs.DESIGN.md §7h).
+//
+// It is a subject and not a login because that is what the gate will compare: the record
+// is written as the account of the App of the orchestrator, and whether it counts is
+// decided by the number of that App and not by the name of its account, which changes
+// whenever the App is renamed (docs/DESIGN.md §7h, §7i).
+func accountOfReview(ctx context.Context, set forge.Set, cfg config.Config) (forge.Subject, error) {
+	account, err := forge.SigningAs(ctx, set.Forge)
 	if err != nil {
-		return "", err
+		return forge.Subject{}, err
 	}
 	reviewers, err := reviewersOf(ctx, cfg, set)
 	if err != nil {
-		return "", err
+		return forge.Subject{}, err
 	}
-	if !slices.Contains(reviewers, account) {
-		return "", fmt.Errorf("a record of a review would be written as %s, which is not one of the reviewers of the project (%s): "+
-			"the gate would not count it, and a record nobody counts is a comment", account, strings.Join(reviewers, ", "))
+	if !slices.ContainsFunc(reviewers, func(reviewer forge.Subject) bool { return account.Same(reviewer) }) {
+		return forge.Subject{}, fmt.Errorf("a record of a review would be written as %s, which is not one of the reviewers of the project (%s): "+
+			"the gate would not count it, and a record nobody counts is a comment",
+			account.Named(), strings.Join(loginsOf(reviewers), ", "))
 	}
 	return account, nil
 }
@@ -257,7 +264,7 @@ func accountOfReview(ctx context.Context, set forge.Set, cfg config.Config) (str
 // as the account it was written in: the summary of the same command is then the
 // answer about the change as it stands afterwards and not as it stood before
 // (docs/DESIGN.md §7h).
-func withReview(facts gate.Facts, account, body string) gate.Facts {
+func withReview(facts gate.Facts, account forge.Subject, body string) gate.Facts {
 	facts.Reviews = append(facts.Reviews, gate.Review{
 		Author:    account,
 		CreatedAt: taskClock(),

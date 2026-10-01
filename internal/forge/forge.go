@@ -120,8 +120,11 @@ type ChangeRequest struct {
 
 // Comment is one comment under a change request, by a person or by an agent.
 type Comment struct {
-	// Author is who wrote it, by the name the host knows them under.
-	Author string
+	// Author is who wrote it, as the host keeps that account: its kind and the number
+	// under it. The gate counts a record by that subject and never by a login, because
+	// a host writes one account in a different line in every API and renames it with
+	// the App (docs/DESIGN.md §7h, §7i).
+	Author Subject
 	// Body is what was written.
 	Body string
 	// CreatedAt is when it was written, which orders the review of a run.

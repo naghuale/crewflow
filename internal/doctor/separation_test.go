@@ -17,7 +17,11 @@ import (
 //	DR-004 the accounts of each bot of the project are checked one by one — the key, the
 //	       installation and the rights of its app;
 //	DR-005 every debt of trust of the project is visible, and a project of a separate
-//	       login with both apps set up has none.
+//	       login with both apps set up has none;
+//	DR-008 both lists are shown as the correspondence they are — the login of the file and
+//	       the number the gate counts that account by;
+//	DR-009 a login of either list the host cannot name is a failure of the file, and the
+//	       report says which list to change.
 //
 // The records the gate counts are the cases OR-001…OR-008: four of them in
 // `internal/gate` and three in `internal/config`, and the debt of OR-007 is what this
@@ -59,11 +63,12 @@ func TestDR001TheSharedLoginIsNeverHidden(t *testing.T) {
 	}
 	var answer struct {
 		Authority struct {
-			Owner               string   `json:"owner"`
-			Orchestrator        string   `json:"orchestrator"`
-			Executor            string   `json:"executor"`
-			OwnerIsOrchestrator bool     `json:"owner_is_orchestrator"`
-			Overlap             []string `json:"overlap"`
+			Owner               string    `json:"owner"`
+			Orchestrator        string    `json:"orchestrator"`
+			Executor            string    `json:"executor"`
+			OwnerIsOrchestrator bool      `json:"owner_is_orchestrator"`
+			Overlap             []Subject `json:"overlap"`
+			Reviewers           []Subject `json:"reviewers"`
 		} `json:"authority"`
 		TrustDebt []string `json:"trust_debt"`
 	}
@@ -91,9 +96,10 @@ func TestDR007TheAccountsOfTheSharedModeAreAnOverlapAndNotAnError(t *testing.T) 
 	m := newMachine().has("git", "gh", "agent").
 		prints("git --version", "git version 2.47.1\n").
 		prints("gh --version", "gh version 2.62.0\n").
-		prints("gh auth status", "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n")
+		prints("gh auth status", "github.com\n  ✓ Logged in to github.com account octocat (keyring)\n").
+		prints("gh api users/octocat", `{"id": 1, "login": "octocat", "type": "User"}`)
 	config := writeConfig(t, baseConfig+
-		"\n[merge]\nreviewers = [\"naghuale\"]\nowners = [\"naghuale\", \"crewflow-executor[bot]\"]\n")
+		"\n[merge]\nreviewers = [\"naghuale\"]\nowners = [\"naghuale\", \"octocat\"]\n")
 
 	report := runOn(t, m, config)
 
@@ -108,7 +114,7 @@ func TestDR007TheAccountsOfTheSharedModeAreAnOverlapAndNotAnError(t *testing.T) 
 	if !authority.OwnerIsOrchestrator {
 		t.Error("the report says the owner and the orchestrator are two accounts, want one in the shared mode")
 	}
-	if !slices.Equal(authority.Overlap, []string{"naghuale"}) {
+	if got := loginsOfSubjects(authority.Overlap); !slices.Equal(got, []string{"naghuale"}) {
 		t.Errorf("the report holds the overlap %v, want the one account in both lists", authority.Overlap)
 	}
 	if !slices.Contains(report.TrustDebt, DebtOwnersReviewers) {
@@ -180,7 +186,7 @@ func TestDR003TheSeparateModeNeedsTheListsNotToMeet(t *testing.T) {
 		if !strings.Contains(line.Detail, "crewflow-orchestrator[bot]") {
 			t.Errorf("check %q detail = %q, want it to name the account that is in both lists", separationCheck, line.Detail)
 		}
-		if !slices.Equal(report.Authority.Overlap, []string{"crewflow-orchestrator[bot]"}) {
+		if got := loginsOfSubjects(report.Authority.Overlap); !slices.Equal(got, []string{"crewflow-orchestrator[bot]"}) {
 			t.Errorf("the report holds the overlap %v, want the account of the app", report.Authority.Overlap)
 		}
 		if !strings.Contains(checkOf(t, report, separationCheck).Hint, `mode = "shared"`) {
@@ -258,5 +264,88 @@ func TestDR005EveryDebtIsVisibleAndASeparateProjectHasNone(t *testing.T) {
 	}
 	if authority := report.Authority; authority.OwnerIsOrchestrator || len(authority.Overlap) != 0 {
 		t.Errorf("the report holds the separation %+v, want the three subjects apart and the lists not meeting", authority)
+	}
+}
+
+// TestDR008TheListsAreShownAsTheCorrespondenceTheyAre: the two lists of the gate are
+// written as logins and are counted by the number the host keeps each of those accounts
+// under, and a report that shows only the logins cannot say what the gate will compare —
+// so every account of both lists is shown with the name the file writes it under and the
+// kind and the number under it (docs.DESIGN.md §7h, §7i, §7k).
+func TestDR008TheListsAreShownAsTheCorrespondenceTheyAre(t *testing.T) {
+	m := machineWithTheOrchestrator(t)
+	config := writeConfig(t, m.orchestratorProject()+
+		"\n[merge]\nreviewers = [\"crewflow-orchestrator[bot]\"]\nowners = [\"naghuale\"]\n")
+
+	report := runOn(t, m, config)
+
+	authority := report.Authority
+	if len(authority.Reviewers) != 1 {
+		t.Fatalf("the report holds the reviewers %v, want the one account the file names", authority.Reviewers)
+	}
+	for _, want := range []string{"crewflow-orchestrator[bot]", "Bot", "5107053"} {
+		if got := authority.Reviewers[0].String(); !strings.Contains(got, want) {
+			t.Errorf("the report shows the reviewer as %q, want it to name %q", got, want)
+		}
+	}
+	if len(authority.Owners) != 1 || authority.Owners[0].Kind != "User" || authority.Owners[0].ID != 93920024 {
+		t.Errorf("the report holds the owners %v, want the owner of the repository with the number of that account",
+			authority.Owners)
+	}
+}
+
+// TestDR009AnAccountOfTheListsTheHostCannotNameIsAFailureOfTheFile: a login of
+// `[merge] owners` or `[merge] reviewers` that the host does not know, or holds as a kind
+// crewflow does not read, is a mistake in that file — and the report says so instead of
+// showing a section with a hole in it, because a gate that went on without that account
+// would count no records at all (docs.DESIGN.md §7h, §7i, §7k).
+func TestDR009AnAccountOfTheListsTheHostCannotNameIsAFailureOfTheFile(t *testing.T) {
+	cases := []struct {
+		name   string
+		answer string
+		// key is where the login stands in the file: the refusal has to name it, for a
+		// person has to know which list to change.
+		key string
+	}{
+		{
+			name:   "the host knows no such account",
+			answer: "gh: Not Found (HTTP 404)",
+			key:    "merge.owners[0]",
+		},
+		{
+			name:   "the account is an organization and not a person",
+			answer: `{"id": 1, "login": "naghuale", "type": "Organization"}`,
+			key:    "merge.owners[0]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := machineWithTheOrchestrator(t)
+			if strings.HasPrefix(tc.answer, "gh:") {
+				m.fails("gh api users/naghuale", tc.answer)
+			} else {
+				m.prints("gh api users/naghuale", tc.answer)
+			}
+			config := writeConfig(t, m.orchestratorProject()+"\n[merge]\nowners = [\"naghuale\"]\n")
+
+			report := runOn(t, m, config)
+
+			line := checkOf(t, report, separationCheck)
+			if line.Status != Fail {
+				t.Fatalf("check %q = %q (%s), want fail: the file names an account of nobody",
+					line.Name, line.Status, line.Detail)
+			}
+			for _, want := range []string{tc.key, "naghuale"} {
+				if !strings.Contains(line.Detail, want) {
+					t.Errorf("check %q detail = %q, want it to mention %q", line.Name, line.Detail, want)
+				}
+			}
+			if !strings.Contains(line.Hint, "merge.owners") {
+				t.Errorf("check %q hint = %q, want it to name the lists to change", line.Name, line.Hint)
+			}
+			if report.OK() {
+				t.Error("report.OK() = true, want false: a gate that cannot name the owners counts no records")
+			}
+		})
 	}
 }

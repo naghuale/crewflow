@@ -80,8 +80,11 @@ func (h *reviewHost) useSeparate(t *testing.T) {
 		t.Helper()
 	}
 	h.orchestrator = "crewflow-orchestrator[bot]"
+	h.orchestratorSubject = forge.Subject{
+		Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]",
+	}
 	for i := range h.comments {
-		h.comments[i].Author = h.orchestrator
+		h.comments[i].Author = h.orchestratorSubject
 	}
 }
 
@@ -170,9 +173,9 @@ func TestTheApprovalOfTheOrchestratorIsCountedAndTheAcceptanceOfItIsNot(t *testi
 	host.comments = nil
 	host.files = []string{"internal/gate/gate.go", "docs/DESIGN.md"}
 	host.comment(gate.ApproveOf(reviewHead, 7))
-	host.comments[0].Author = "crewflow-orchestrator[bot]"
+	host.comments[0].Author = host.orchestratorSubject
 	host.comment(gate.AcceptOf(reviewHead, "the design of the gate is this task as well"))
-	host.comments[1].Author = "crewflow-orchestrator[bot]"
+	host.comments[1].Author = host.orchestratorSubject
 	project := writeConfig(t, reviewApartConfig)
 	var stdout, stderr bytes.Buffer
 
@@ -200,7 +203,7 @@ func TestTheAcceptanceOfTheOwnerLiftsTheRefusalOfTheFile(t *testing.T) {
 	host.comments = nil
 	host.files = []string{"internal/gate/gate.go", "docs/DESIGN.md"}
 	host.comment(gate.ApproveOf(reviewHead, 7))
-	host.comments[0].Author = "crewflow-orchestrator[bot]"
+	host.comments[0].Author = host.orchestratorSubject
 	host.comment(gate.AcceptOf(reviewHead, "the design of the gate is this task as well"))
 	project := writeConfig(t, reviewApartConfig)
 	var stdout, stderr bytes.Buffer
@@ -401,13 +404,23 @@ func TestTheGitOfTheMachineIsTheOneOfTheCommands(t *testing.T) {
 // orchestrator works as is the one whose record of a review counts — and a host that
 // cannot name that account is a refusal, because a gate counting the approvals of the
 // owner would count nothing and would say so as though nobody had approved anything
-// (docs/DESIGN.md §5, §7h, §7i).
+// (docs.DESIGN.md §5, §7h, §7i).
+//
+// Every list of the file is a list of logins and every answer of these two functions is a
+// list of subjects: the gate counts records by the number the host keeps each account
+// under, so the login of the file is asked of the host once and the answer is an account.
 func TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothing(t *testing.T) {
+	orchestratorOfTest := forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]"}
 	cfg := config.Config{
 		Project:      config.Project{Repo: "naghuale/crewflow"},
 		Orchestrator: config.Orchestrator{Mode: config.ModeSeparate},
 	}
-	host := &reviewHost{orchestrator: "crewflow-orchestrator[bot]", signedIn: "crewflow-orchestrator[bot]"}
+	host := &reviewHost{
+		orchestrator:        "crewflow-orchestrator[bot]",
+		orchestratorSubject: orchestratorOfTest,
+		signedIn:            "crewflow-orchestrator[bot]",
+		subjects:            map[string]forge.Subject{ownerOfTheProject.Login: ownerOfTheProject},
+	}
 	set := forge.Set{Forge: host}
 
 	reviewers, err := reviewersOf(t.Context(), cfg, set)
@@ -415,7 +428,7 @@ func TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothin
 	if err != nil {
 		t.Fatalf("reviewersOf returned an error: %v", err)
 	}
-	if len(reviewers) != 1 || reviewers[0] != "crewflow-orchestrator[bot]" {
+	if len(reviewers) != 1 || !reviewers[0].Same(orchestratorOfTest) {
 		t.Errorf("the reviewers are %v, want the account of the orchestrator", reviewers)
 	}
 	// The file of the project says otherwise, and what it says stands: the gate counts
@@ -423,26 +436,28 @@ func TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothin
 	// has to be an account of its own, though: naming the owner among the reviewers of a
 	// separate project is refused before a review is written (OR-005).
 	cfg.Merge.Reviewers = []string{"maintainer"}
+	host.subjects["maintainer"] = forge.Subject{Kind: forge.KindUser, ID: 4242, Login: "maintainer"}
 	reviewers, err = reviewersOf(t.Context(), cfg, set)
-	if err != nil || len(reviewers) != 1 || reviewers[0] != "maintainer" {
+	if err != nil || len(reviewers) != 1 || !reviewers[0].Same(host.subjects["maintainer"]) {
 		t.Errorf("the reviewers are %v (%v), want the ones the file of the project names", reviewers, err)
 	}
 	cfg.Merge.Reviewers = []string{"naghuale"}
 	if _, err := reviewersOf(t.Context(), cfg, set); err == nil {
 		t.Error("reviewersOf with the owner among the reviewers of a separate project returned no error, want the refusal of OR-005")
 	}
-	// The shared mode asks the host nothing: the owner of the repository is the reviewer
-	// until the file says otherwise, and that is what the gate does with an empty list.
+	// The shared mode asks the host for the owner of the repository, which is the
+	// reviewer until the file says otherwise — the default of §5 is an account like any
+	// other, and the host is the only one who knows the number under that name (§5, §7i).
 	cfg.Orchestrator.Mode, cfg.Merge.Reviewers = config.ModeShared, nil
 	reviewers, err = reviewersOf(t.Context(), cfg, set)
-	if err != nil || len(reviewers) != 1 || reviewers[0] != "naghuale" {
-		t.Errorf("the reviewers are %v (%v), want the default of §5 and nothing asked of the host", reviewers, err)
+	if err != nil || len(reviewers) != 1 || !reviewers[0].Same(ownerOfTheProject) {
+		t.Errorf("the reviewers are %v (%v), want the owner of the repository under its number", reviewers, err)
 	}
 	// A host that names no account cannot be the reviewer of a project, and saying so is
 	// better than counting the records of somebody else.
-	silent := &reviewHost{}
+	silent := &reviewHost{subjects: map[string]forge.Subject{}}
 	if _, err := reviewersOf(t.Context(), cfg, set); err != nil {
-		t.Errorf("reviewersOf in the shared mode = %v, want no question asked of the host", err)
+		t.Errorf("reviewersOf in the shared mode = %v, want the default of §5", err)
 	}
 	cfg.Orchestrator.Mode = config.ModeSeparate
 	if _, err := reviewersOf(t.Context(), cfg, forge.Set{Forge: silent}); err == nil {

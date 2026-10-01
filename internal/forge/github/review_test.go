@@ -96,14 +96,17 @@ func TestChangedFiles(t *testing.T) {
 	}
 }
 
-// TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount is F-081 (01.10.2026): GraphQL
-// names an App by its slug alone — `crewflow-orchestrator` — and a person may have that
-// very slug as a login, so the two are one string there and the gate counts records by
-// the name of an account. The kind of the account is read with the name, and the suffix
-// the host gives accounts of that kind is put there by that kind and not read out of the
-// login: a record of the App and a record of a person with the App's slug are then two
-// different accounts (docs/DESIGN.md §7h, §7i).
-func TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount(t *testing.T) {
+// TestTheAuthorOfARecordIsTheSubjectTheHostKeepsItUnder is F-081 (01.10.2026) with the
+// answer the owner gave on 01.10: the record of a person is counted by the number of
+// that account (`user.id`), the record of an App by the number of that App
+// (`performed_via_github_app.id`), and the login — which GraphQL and REST write
+// differently for one and the same account, and which changes when an App is renamed —
+// is read and used for nothing but the report (docs/DESIGN.md §7h, §7i).
+//
+// Both records of comments-bot.json were written under the same login as GraphQL gives
+// it, and they are two different accounts: the first is the App of the orchestrator
+// (5140522), the second a person whose login is the slug of that App (339150227).
+func TestTheAuthorOfARecordIsTheSubjectTheHostKeepsItUnder(t *testing.T) {
 	m := newMachine().
 		prints("pr view", fixture(t, "comments-bot.json")).
 		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors.json"))
@@ -117,12 +120,17 @@ func TestTheAuthorOfARecordIsNamedWithTheKindOfTheAccount(t *testing.T) {
 	if len(comments) != 2 {
 		t.Fatalf("Comments(2) = %d records, want 2", len(comments))
 	}
-	// Both records were written under the same login as GraphQL gives it; what tells
-	// them apart is the kind of the account the REST API holds.
-	want := []string{"crewflow-orchestrator[bot]", "crewflow-orchestrator"}
+	want := []forge.Subject{
+		{Kind: forge.KindApp, ID: 5140522, Login: "crewflow-orchestrator[bot]"},
+		{Kind: forge.KindUser, ID: 339150227, Login: "crewflow-orchestrator"},
+	}
 	for i, author := range want {
-		if comments[i].Author != author {
-			t.Errorf("the author of the record %d is %q, want %q", i, comments[i].Author, author)
+		if !comments[i].Author.Same(author) {
+			t.Errorf("the author of the record %d is %+v, want %+v", i, comments[i].Author, author)
+		}
+		if comments[i].Author.Login != author.Login {
+			t.Errorf("the author of the record %d is written %q, want %q: a report names the account",
+				i, comments[i].Author.Login, author.Login)
 		}
 	}
 }
@@ -176,7 +184,10 @@ func TestARecordWhoseAuthorTheHostDoesNotNameIsARefusal(t *testing.T) {
 // commentAuthors is the answer of the REST API about the accounts the records of the
 // change in comments-bot.json were written by, with the account of both of them given as
 // asked: the shape of the answer is the recorded one of comment-authors.json, and each case
-// of the refusal above is that answer with one field of the account changed.
+// of the refusal above is that answer with one field of the account changed. The app of
+// the answer is the one the owner checked on 01.10 for the record of the orchestrator:
+// `performed_via_github_app.id` is 5140522, which is `orchestrator.github_app.app_id` of
+// the file of this project.
 func commentAuthors(login, kind string) string {
 	comment := func(id string, number int) string {
 		return fmt.Sprintf(`  {
@@ -185,6 +196,8 @@ func commentAuthors(login, kind string) string {
     "author_association": "NONE",
     "issue_url": "https://api.github.com/repos/naghuale/crewflow/issues/107",
     "user": {"id": 336252606, "login": %q, "type": %q, "site_admin": false},
+    "performed_via_github_app": {"id": 5140522, "slug": "crewflow-orchestrator",
+      "node_id": "A_kgDOBIeVZw"},
     "created_at": "2026-09-30T22:05:47Z",
     "updated_at": "2026-09-30T22:05:47Z"
   }`, number, id, login, kind)
@@ -192,6 +205,105 @@ func commentAuthors(login, kind string) string {
 	return "[\n" +
 		comment("IC_kwDOUv-WT88AAAABYORP4w", 5920542691) + ",\n" +
 		comment("IC_kwDOUv-WT88AAAABYORP5y", 5920542702) + "\n]"
+}
+
+// TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt: the file of a project names its
+// accounts by login, and the gate counts records by the number the host keeps each of them
+// under — so the adapter is asked once of every login the file names, and what it answers
+// is a person with the number of that account and an App with the number of that App
+// (docs/DESIGN.md §7h, §7i).
+func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
+	m, api := machineWithTwoApps(t)
+	api.answer["/users/naghuale"] = map[string]any{
+		"id": 93920024, "login": "naghuale", "type": "User",
+	}
+	m.prints("api users/crewflow-orchestrator%5Bbot%5D",
+		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
+	m.prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
+	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
+
+	cases := []struct {
+		name  string
+		login string
+		want  forge.Subject
+	}{
+		{
+			name:  "the account of the app of the orchestrator",
+			login: "crewflow-orchestrator[bot]",
+			want:  forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]"},
+		},
+		{
+			name:  "the owner of the project",
+			login: "naghuale",
+			want:  forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := a.Subject(t.Context(), tc.login)
+			if err != nil {
+				t.Fatalf("Subject(%q) returned an error: %v", tc.login, err)
+			}
+			if !got.Same(tc.want) {
+				t.Errorf("Subject(%q) = %+v, want %+v", tc.login, got, tc.want)
+			}
+			if got.Login != tc.want.Login {
+				t.Errorf("Subject(%q) is written %q, want %q: a report names the account the file names",
+					tc.login, got.Login, tc.want.Login)
+			}
+		})
+	}
+}
+
+// TestAnAccountOfAnAppOfAnotherProjectIsARefusal: the host answers `/users/<slug>[bot]`
+// with the account of an App and with nothing about that App, so a login of an App that is
+// neither the one of the executor nor the one of the orchestrator is an account whose
+// number crewflow cannot learn. It is a refusal and not an account of no number: a person
+// who wrote it into `[merge] reviewers` has to be told, because no record of it could ever
+// count (docs/DESIGN.md §7h, §7i).
+func TestAnAccountOfAnAppOfAnotherProjectIsARefusal(t *testing.T) {
+	m, api := machineWithTwoApps(t)
+	m.prints("api users/somebody-else%5Bbot%5D",
+		`{"id": 4242, "login": "somebody-else[bot]", "type": "Bot"}`)
+	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
+
+	_, err := a.Subject(t.Context(), "somebody-else[bot]")
+	if err == nil {
+		t.Fatal("Subject read an account of an app whose number it cannot learn")
+	}
+	for _, want := range []string{"somebody-else[bot]", "executor", "orchestrator"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not mention %q: a person has to know what to change", err, want)
+		}
+	}
+}
+
+// TestSigningAsIsTheSubjectTheRecordIsWrittenIn: the record of a review is an approval
+// only because of the account it is written in, and what the gate compares is the number
+// of that account — so the mode of the orchestrator is answered as a subject, with the
+// number of the App it works as (docs/DESIGN.md §7h, §7i).
+func TestSigningAsIsTheSubjectTheRecordIsWrittenIn(t *testing.T) {
+	m, api := machineWithTwoApps(t)
+	m.prints("api users/octocat", `{"id": 93920024, "login": "octocat", "type": "User"}`)
+
+	separate := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
+	got, err := separate.SigningAs(t.Context())
+	if err != nil {
+		t.Fatalf("SigningAs of the separate mode returned an error: %v", err)
+	}
+	want := forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]"}
+	if !got.Same(want) {
+		t.Errorf("SigningAs = %+v, want the subject of the app of the orchestrator %+v", got, want)
+	}
+
+	shared := New(repo, "", m.env(t))
+	got, err = shared.SigningAs(t.Context())
+	if err != nil {
+		t.Fatalf("SigningAs of the shared mode returned an error: %v", err)
+	}
+	if !got.Same(forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "octocat"}) {
+		t.Errorf("SigningAs = %+v, want the account of the login gh is signed in as", got)
+	}
 }
 
 // TestCommentsThatWereEdited is the fact a gate cannot do without: a record of a
