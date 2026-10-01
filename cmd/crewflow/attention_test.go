@@ -380,6 +380,94 @@ func TestRunTaskAttentionTakesAClosedTaskOutOfTheQueue(t *testing.T) {
 	}
 }
 
+// TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange: одобрение и
+// приёмку считает gate, и очередь показывает то же, что показали бы ворота. До правки
+// очередь считала записи под изменением своими двумя правилами (F-106): одобрение,
+// отредактированное после публикации, уходило из очереди как «принято», и задача, чей
+// PR ждёт ревью, из неё выпадала.
+//
+// Три случая: обычное одобрение выводит задачу из очереди, отредактированное — нет и
+// называет причину ворот, а приёмка помеченной задачи ждёт владельца.
+func TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange(t *testing.T) {
+	owner := forge.Subject{Kind: forge.KindUser, Login: "naghuale", ID: int64(len("naghuale"))}
+	for _, tc := range []struct {
+		name    string
+		labels  []string
+		under   []forge.Comment
+		wantOut bool
+		want    string
+	}{
+		{
+			name: "одобрение головы выводит задачу из очереди",
+			under: []forge.Comment{{
+				Author: owner, CreatedAt: time.Now().Add(-time.Hour), Body: gate.ApprovedOf("9f1c0de"),
+			}},
+			wantOut: true,
+		},
+		{
+			name: "отредактированное после публикации одобрение не считается",
+			under: []forge.Comment{{
+				Author: owner, CreatedAt: time.Now().Add(-time.Hour),
+				Body: gate.ApprovedOf("9f1c0de"), Edited: true,
+			}},
+			want: string(gate.ApprovalEdited),
+		},
+		{
+			name: "запись исполнителя не одобрение",
+			under: []forge.Comment{{
+				Author:    forge.Subject{Kind: forge.KindApp, ID: 5107052},
+				CreatedAt: time.Now().Add(-time.Hour),
+				Body:      gate.ApprovedOf("9f1c0de"),
+			}},
+			want: string(gate.ApprovalUntrusted),
+		},
+		{
+			name:   "принятый результат помеченной задачи выводит её из очереди",
+			labels: []string{"owner-check"},
+			under: []forge.Comment{
+				{Author: owner, CreatedAt: time.Now().Add(-time.Hour), Body: gate.ApprovedOf("9f1c0de")},
+				{Author: owner, CreatedAt: time.Now().Add(-time.Minute), Body: gate.AcceptedOf("9f1c0de")},
+			},
+			wantOut: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &host{opened: true, task: taskOf(43)}
+			host.task.Labels = tc.labels
+			host.under = tc.under
+			host.use(t)
+			project := host.config(t)
+			ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+			taskClock = func() time.Time { return ended.Add(time.Hour) }
+			var stdout, stderr bytes.Buffer
+
+			code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+			switch {
+			case tc.wantOut && code != exitOK:
+				t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)",
+					code, exitOK, stdout.String(), stderr.String())
+			case !tc.wantOut && code != exitFailure:
+				t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)",
+					code, exitFailure, stdout.String(), stderr.String())
+			}
+			if tc.wantOut {
+				if strings.Contains(stdout.String(), "ATTENTION REQUIRED") {
+					t.Errorf("crewflow task attention wrote %q, want no queue", stdout.String())
+				}
+				return
+			}
+			if !strings.Contains(stdout.String(), string(taskrun.AttentionAwaitsReview)) {
+				t.Errorf("crewflow task attention wrote %q, want %q: запись не считается",
+					stdout.String(), taskrun.AttentionAwaitsReview)
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Errorf("crewflow task attention wrote %q, want причину ворот %q", stdout.String(), tc.want)
+			}
+		})
+	}
+}
+
 // TestRunTaskAttentionOfATaskTheHostDoesNotHave: the third defect of the review of PR #118,
 // found on telecli (01.10). The repository moved, another one took the name, the issues were
 // renumbered — and the runs of tasks of the old repository stood in the queue as

@@ -93,7 +93,11 @@ func attentionHost(ctx context.Context, set forge.Set, cfg config.Config) (taskr
 	// The account the executor of a run works under is not a reviewer and not an owner,
 	// whatever the lists of the file of the project name: a run that approves its own
 	// change is not a review (docs/DESIGN.md §7h, §7i).
-	return hostOfAttention{set: set, reviewers: reviewers, owners: owners, executor: roles.ExecutorOf(cfg)}, nil
+	return hostOfAttention{
+		set: set, reviewers: reviewers, owners: owners, executor: roles.ExecutorOf(cfg),
+		repository: cfg.Project.Repo, branch: cfg.Project.DefaultBranch,
+		acceptance: cfg.Acceptance.Label,
+	}, nil
 }
 
 // hostOfAttention is the host of a project as the queue reads it. The accounts of the
@@ -105,6 +109,12 @@ type hostOfAttention struct {
 	reviewers []forge.Subject
 	owners    []forge.Subject
 	executor  forge.Subject
+	// repository, branch and acceptance are what the gate of §7h asks for beside the
+	// records: the project a change has to be of, the branch it merges into, and the
+	// label a task is marked with to have its result taken in by the owner (§5, §7f).
+	repository string
+	branch     string
+	acceptance string
 }
 
 // FactsOf is what the host of the project says about a task and about the change request of
@@ -126,7 +136,7 @@ func (h hostOfAttention) FactsOf(ctx context.Context, task, change int) (taskrun
 		return taskrun.HostFacts{}, fmt.Errorf("read task %d: %w", task, err)
 	}
 	facts := taskrun.HostFacts{Labels: found.Labels, Closed: isClosed(found.State)}
-	changeFacts, err := h.changeFacts(ctx, change)
+	changeFacts, err := h.changeFacts(ctx, change, task, found.Labels)
 	if err != nil {
 		// The labels of the task were read and the change request was not: the queue is
 		// told what it knows and what it does not, because an entry that hides a host it
@@ -139,11 +149,13 @@ func (h hostOfAttention) FactsOf(ctx context.Context, task, change int) (taskrun
 }
 
 // changeFacts is what the host of the project says about a change request: where it stands,
-// what is at its head, and whether a record of a review or of an acceptance of that head is
-// under it. The records are counted as the gate of §7h counts them, and the last one of a
-// kind stands: a request for changes written after an approval takes it back, and an
-// approval of a commit that has grown since is an approval of a commit that is not there.
-func (h hostOfAttention) changeFacts(ctx context.Context, number int) (*taskrun.ChangeFacts, error) {
+// what is at its head, and what stands under it — an approval of that head, an acceptance
+// of the result of the task, or the refusal of the gate about the records that are there.
+//
+// The task and its labels come with it because the acceptance of §7h is asked of a task
+// marked with the label of the owner and of no other: a change of a task nobody marks
+// waits for nobody's `ACCEPTED` (§5, §7f, §7h).
+func (h hostOfAttention) changeFacts(ctx context.Context, number, task int, labels []string) (*taskrun.ChangeFacts, error) {
 	change, err := h.set.Forge.ChangeRequest(ctx, number)
 	if err != nil {
 		return nil, fmt.Errorf("read the change request #%d: %w", number, err)
@@ -152,19 +164,29 @@ func (h hostOfAttention) changeFacts(ctx context.Context, number int) (*taskrun.
 	if err != nil {
 		return nil, fmt.Errorf("read what is written under the change request #%d: %w", number, err)
 	}
-	approved, reviewedAt := approvedAt(comments, change.HeadSHA, h.reviewers, h.executor)
-	accepted, acceptedAt := acceptedOf(comments, change.HeadSHA, h.owners, h.executor)
-	// The waiting of a person began when the last record under the change was written, and
-	// the two kinds of record are ordered by the same clock: an owner who accepted the
-	// result after the last review has been waiting since the acceptance was asked for,
-	// and a person reading the queue is told how long that is.
-	last := reviewedAt
-	if acceptedAt.After(last) {
-		last = acceptedAt
+	// The records under the change are counted by the gate of §7h and not by the queue:
+	// a record of a review is one thing, and two opinions about it are one too many
+	// (F-106, §6a). The gate is handed the change as the host holds it, the comments
+	// under it and the accounts whose records count — the same accounts a review and a
+	// merge are made of, because the queue reads the host as the orchestrator (§7i).
+	reaction := gate.React(gate.Under(change, comments, gate.Deps{
+		Repository:      h.repository,
+		DefaultBranch:   h.branch,
+		Executor:        h.executor,
+		Reviewers:       h.reviewers,
+		Owners:          h.owners,
+		AcceptanceLabel: h.acceptance,
+		Task:            task,
+		Labels:          labels,
+	}))
+	refusal := ""
+	if !reaction.Refusal.Ready {
+		refusal = reaction.Refusal.String()
 	}
 	return &taskrun.ChangeFacts{
 		Number: change.Number, State: change.State, Head: change.HeadSHA,
-		Approved: approved, Accepted: accepted, Last: last,
+		Approved: reaction.Approved, Accepted: reaction.Accepted,
+		Refusal: refusal, Last: reaction.Last,
 	}, nil
 }
 
@@ -202,64 +224,9 @@ func noticeUnderTheTask(cfg config.Config, configPath string) taskrun.SayAttenti
 	}
 }
 
-// approvedAt is whether the last record of a review under a change is an approval of the
-// head as it stands, and when that record was written. A record of anybody else, and a
-// record that was edited after it was published, is a comment and not an approval, whatever
-// it says (docs/DESIGN.md §7h, §7i).
-func approvedAt(comments []forge.Comment, head string, of []forge.Subject, executor forge.Subject) (bool, time.Time) {
-	approved, when := false, time.Time{}
-	for _, comment := range comments {
-		record, is := gate.Parse(comment.Body)
-		if !is || comment.Edited || comment.Author.Same(executor) || !among(comment.Author, of) {
-			continue
-		}
-		approved = record.Decision == gate.Approved && sameCommit(record.Commit, head)
-		when = comment.CreatedAt
-	}
-	return approved, when
-}
-
-// acceptedOf is whether the owner of the project took the result of the task in at the head
-// of the change as it stands, and when that record was written. The record is `ACCEPTED
-// <sha>` of one of `[merge] owners` and of nobody else: an orchestrator that works apart
-// from the owner is a reviewer of the project and not an owner of it (docs/DESIGN.md §7h,
-// §7i).
-func acceptedOf(comments []forge.Comment, head string, of []forge.Subject, executor forge.Subject) (bool, time.Time) {
-	accepted, when := false, time.Time{}
-	for _, comment := range comments {
-		commit, is := gate.ParseOwnerAccept(comment.Body)
-		if !is || comment.Edited || comment.Author.Same(executor) || !among(comment.Author, of) {
-			continue
-		}
-		accepted = sameCommit(commit, head)
-		when = comment.CreatedAt
-	}
-	return accepted, when
-}
-
 // isClosed is whether a tracker says of a task that it is closed, whatever the word of the
 // host stands for: a task that is closed is a task that is done, and a queue of what wants a
 // person has no business asking for anything under it (docs.DESIGN.md §7g).
 func isClosed(state string) bool {
 	return strings.EqualFold(strings.TrimSpace(state), "closed")
-}
-
-// among is whether an account is one of the list, by the kind of the account and the number
-// the host keeps it under: a host writes one account in a different line in every API, an
-// App is renamed together with its account, and a person may have the login an App goes by
-// (docs/DESIGN.md §7h, §7i).
-func among(account forge.Subject, accounts []forge.Subject) bool {
-	for _, one := range accounts {
-		if account.Same(one) {
-			return true
-		}
-	}
-	return false
-}
-
-// sameCommit is whether a record of a review is about the head of a change: the shas of a
-// host are one commit whatever their case, and a record about no commit at all is about
-// none (docs.DESIGN.md §7h).
-func sameCommit(one, other string) bool {
-	return one != "" && other != "" && strings.EqualFold(one, other)
 }

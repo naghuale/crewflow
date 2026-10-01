@@ -2,7 +2,43 @@ package gate
 
 import (
 	"time"
+
+	"github.com/naghuale/crewflow/internal/forge"
 )
+
+// Under is the facts of a change with the records written under it read out of the
+// comments the host holds: the head it stands at, and the reviews, the acceptances of
+// the owner and everything else in what is written there.
+//
+// It is what a caller that has read the change and its comments already — the queue of
+// attention of §6a, which asks nothing else about a change — hands to [React] instead
+// of gathering a second time what [Collect] would gather the same way. It is [Collect]
+// without the host, without git and without the checks: none of those three is a
+// question about whether somebody has looked at the result of a run (docs/DESIGN.md §6a,
+// §7h).
+func Under(change forge.ChangeRequest, comments []forge.Comment, deps Deps) Facts {
+	f := Facts{
+		Number:          change.Number,
+		URL:             change.URL,
+		Open:            change.State == "open",
+		Draft:           change.Draft,
+		Repository:      change.Repository,
+		WantRepository:  deps.Repository,
+		TargetBranch:    change.BaseBranch,
+		WantBranch:      deps.DefaultBranch,
+		Head:            change.HeadSHA,
+		Executor:        deps.Executor,
+		Reviewers:       deps.Reviewers,
+		Owners:          deps.Owners,
+		AcceptanceLabel: deps.AcceptanceLabel,
+		Labels:          deps.Labels,
+		Task:            deps.Task,
+	}
+	if f.Repository == "" {
+		f.Repository = f.WantRepository
+	}
+	return f.underComments(comments)
+}
 
 // Reaction is what the host of a change says about it to a caller that is not the
 // gate: whether a record of a review of the head stands, whether the owner took the

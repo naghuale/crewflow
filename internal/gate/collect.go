@@ -112,10 +112,6 @@ func Collect(ctx context.Context, deps Deps, number int) Facts {
 	if f.Repository == "" {
 		f.Repository = f.WantRepository
 	}
-	// What is written under the change is read whatever the state of it is: a person
-	// looking at a change that was merged asks who approved it, and a summary that
-	// said "no record of a review" under a merged change would be lying about a fact
-	// the host holds (docs/DESIGN.md §7h).
 	f.reviews(ctx, deps, number)
 	if change.State != "open" {
 		return f
@@ -133,17 +129,30 @@ func Collect(ctx context.Context, deps Deps, number int) Facts {
 	return f
 }
 
-// reviews are the records under the change: the ones that approve or ask for
-// changes, the ones in which a person takes a file outside the boundaries of the
-// task into their own hands, and the ones in which the owner takes the result of
-// the task as it stands in. All three are read as they are written and each is
-// counted only of the accounts of the project that may write it (docs/DESIGN.md §7h).
+// reviews is what is written under the change, read from the host: the comments of the
+// change request, or the reason they could not be read. A change nobody read the
+// comments of cannot be judged, and the gate is told so instead of being handed a
+// change with no records under it (docs.DESIGN.md §7h).
 func (f *Facts) reviews(ctx context.Context, deps Deps, number int) {
 	comments, err := deps.Forge.Comments(ctx, number)
 	if err != nil {
 		*f = f.unavailable(fmt.Sprintf("read what is written under the change request #%d: %v", number, err))
 		return
 	}
+	*f = f.underComments(comments)
+}
+
+// underComments is the facts with the records under the change read out of the comments
+// of it: the ones that approve or ask for changes, the ones in which a person takes a
+// file outside the boundaries of the task into their own hands, and the ones in which
+// the owner takes the result of the task as it stands in. All three are read as they are
+// written, and each is counted only of the accounts of the project that may write it
+// (docs.DESIGN.md §7h).
+//
+// It is the part of [Collect] that reads no host, so that a caller who has already read
+// the comments — the queue of attention of §6a — reaches the same records without asking
+// the host a second time.
+func (f Facts) underComments(comments []forge.Comment) Facts {
 	for _, comment := range comments {
 		if record, is := Parse(comment.Body); is {
 			f.Reviews = append(f.Reviews, Review{
@@ -176,6 +185,7 @@ func (f *Facts) reviews(ctx context.Context, deps Deps, number int) {
 			})
 		}
 	}
+	return f
 }
 
 // taskOf are the paths the task of the change was to change and the words it is marked

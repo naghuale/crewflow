@@ -281,6 +281,11 @@ type Attention struct {
 	// would be lying about the work of the project, and the problem is said in the entry
 	// instead of being passed over (§7h, §6a).
 	Problem string `json:"problem,omitempty"`
+	// Refused is what the gate of §7h refused about the change of the run, in the words
+	// of the gate: a change whose last approval was edited after it was published still
+	// waits for a review, and the row says why that review will not be counted (F-106,
+	// §6a, §7h). It is nothing where the records under the change count.
+	Refused string `json:"refused,omitempty"`
 }
 
 // Waited is how long the entry has been in its state, as a length of time rather than as
@@ -383,11 +388,18 @@ type ChangeFacts struct {
 	Head string `json:"head"`
 	// Approved says that a record of a review of the current head of the change is under
 	// it, written by an account that reviews it — not by the executor of a run, and not a
-	// record that was edited afterwards (§7h, §7i).
+	// record that was edited afterwards (§7h, §7i). The queue takes it from the gate of
+	// §7h and does not count records its own way (F-106).
 	Approved bool `json:"approved"`
 	// Accepted says that the owner took the result of the task in at the current head of
 	// the change, with `ACCEPTED <sha>` (§7h).
 	Accepted bool `json:"accepted"`
+	// Refusal is what the gate of §7h says about the records under the change where it
+	// counts none of them: an approval that was edited after it was published approves
+	// nothing, and the queue says the reason of the gate rather than a sentence of its
+	// own — a task that waits for a review names the reason the review will not be
+	// counted (F-106, §6a, §7h).
+	Refusal string `json:"refusal,omitempty"`
 	// Last is when the last record of a review or of an acceptance was written, and is
 	// what the waiting of the owner is counted from.
 	Last time.Time `json:"last,omitempty"`
@@ -818,7 +830,13 @@ func (a *Attention) finished(env AttentionEnv, repo string, state State, last At
 // awaiting is a task whose change request is open and which a person is waited for: the
 // orchestrator while no record of a review of the head of the change is under it, and the
 // owner where the result of the task is his to accept (§6a, §7h).
+//
+// The refusal of the gate about the records under the change goes into the entry where
+// the queue asks for one of them: a change that waits for a review whose approval was
+// edited away still waits for a review, and a person who sends another one has to know
+// why the first was not counted (F-106, §6a, §7h).
 func (a *Attention) awaiting(env AttentionEnv, state State, last Attempt, facts HostFacts, change *ChangeFacts) bool {
+	a.Refused = change.Refusal
 	if env.AcceptanceLabel != "" && facts.marked(env.AcceptanceLabel) {
 		switch {
 		case change.Accepted:
@@ -1005,6 +1023,9 @@ func detailOf(one Attention) string {
 	}
 	if one.Problem != "" {
 		said = append(said, "the host could not be read: "+one.Problem)
+	}
+	if one.Refused != "" {
+		said = append(said, "not counted: "+one.Refused)
 	}
 	if one.Unsaid != "" {
 		said = append(said, "not left under the task: "+one.Unsaid)
