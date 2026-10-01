@@ -35,6 +35,20 @@ rules, boundaries and responsibilities, on any project, with no loss of quality.
 It is project-, agent- and language-agnostic: the gates, requirements and executor are plain
 commands in `crewflow.toml`.
 
+## The model
+
+crewflow follows a model of development with AI agents, and the whole model is one sentence, quoted
+here in the words of the model rather than translated:
+
+> Всё, что можно доказать автоматически, должно выполняться автоматически. Всё, что нельзя доказать
+> автоматически, остаётся решением человека.
+
+[docs/MODEL.md](docs/MODEL.md) (in Russian) says what follows from it and why: the core principles
+C1–C8, the roles, the levels of autonomy A0–A4, human decisions R1–R6, the levels of maturity
+M0–M5 — and an honest table of what crewflow does with each of them today. The design is how the
+model is built, the [project rules](PROJECT_RULES.md) are how we work now, and the code is what
+actually works.
+
 ## Status
 
 Used daily on real projects (telecli, a Telegram client for the terminal, and crewflow itself).
@@ -62,9 +76,6 @@ In progress:
 
 - ⏳ `crewflow init` and recovery of an interrupted task
 
-The model this project follows — why agent development works the way it does — is in
-[docs/MODEL.md](docs/MODEL.md) (in Russian): the core principles C1–C8, the roles, the levels of
-autonomy, human decisions R1–R6, and an honest table of what crewflow does with each of them today.
 The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian). The steps of the
 process itself, in order, are in [CREWFLOW_CHECKLIST.md](CREWFLOW_CHECKLIST.md) (in Russian): every
 item links to the rule it comes from.
