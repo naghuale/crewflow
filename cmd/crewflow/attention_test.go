@@ -128,14 +128,23 @@ func TestRunTaskAttentionJSON(t *testing.T) {
 
 	run([]string{"task", "attention", "-config", project, "-json"}, &stdout, &stderr)
 
-	var answer taskrun.Queue
-	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
-		t.Fatalf("crewflow task attention -json wrote %q, which is not an answer: %v", stdout.String(), err)
+	// The answer is the canonical document of §6a: the version of the format and the
+	// moment it was made are in the root of it, and the queue is under `attention`.
+	answer := documentOf(t, stdout.Bytes())
+	if answer.Version != taskrun.Format {
+		t.Errorf("the version of the format = %d, want %d", answer.Version, taskrun.Format)
 	}
-	if len(answer.Entries) != 1 {
-		t.Fatalf("the answer holds %+v, want the one task that wants a person", answer.Entries)
+	if !answer.GeneratedAt.Equal(ended.Add(2 * time.Hour)) {
+		t.Errorf("the document was made at %s, want the moment of the clock of the command",
+			answer.GeneratedAt)
 	}
-	one := answer.Entries[0]
+	if answer.Repo != "naghuale/crewflow" {
+		t.Errorf("the document is of the project %q, want naghuale/crewflow", answer.Repo)
+	}
+	if answer.Attention == nil || len(answer.Attention.Entries) != 1 {
+		t.Fatalf("the document holds %+v, want the one task that wants a person", answer.Attention)
+	}
+	one := answer.Attention.Entries[0]
 	switch {
 	case one.Task != 43:
 		t.Errorf("the answer is about the task %d, want 43", one.Task)
@@ -253,7 +262,7 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	var answer []map[string]any
-	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+	if err := json.Unmarshal(documentEntries(t, stdout.Bytes()), &answer); err != nil {
 		t.Fatalf("crewflow task list -json wrote %q, which is not an answer: %v", stdout.String(), err)
 	}
 	if len(answer) != 1 {
@@ -273,6 +282,14 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 	}
 	if since, is := entry["waiting_since"].(string); !is || since == "" {
 		t.Errorf("the answer holds waiting_since = %v, want the moment the run went quiet", entry["waiting_since"])
+	}
+	// The queue of the document is the very queue the block over the table was written
+	// from: одна очередь, а не две (docs/DESIGN.md §6a, F-105).
+	document := documentOf(t, stdout.Bytes())
+	if document.Attention == nil || len(document.Attention.Entries) != 1 ||
+		document.Attention.Entries[0].Task != 43 {
+		t.Errorf("the document holds the queue %+v, want the one record the block over the table was written from",
+			document.Attention)
 	}
 }
 
@@ -584,36 +601,85 @@ type attentionRecord struct {
 	actor  string
 }
 
-// attentionOfAnswer is what an answer of `-json` говорит об attention, по задачам и в
+// documentOf is the canonical document of §6a as a command wrote it, and it fails the test
+// where the answer is not one: программа, читающая состояние процесса, читает один формат
+// (docs/DESIGN.md §6a).
+func documentOf(t *testing.T, answer []byte) taskrun.Document {
+	t.Helper()
+	var document taskrun.Document
+	if err := json.Unmarshal(answer, &document); err != nil {
+		t.Fatalf("the answer %s is not a document of the format: %v", answer, err)
+	}
+	if document.Version != taskrun.Format {
+		t.Errorf("the answer %s holds the version %d, want %d", answer, document.Version, taskrun.Format)
+	}
+	if document.GeneratedAt.IsZero() {
+		t.Errorf("the answer %s holds no moment of its own, want generated_at", answer)
+	}
+	return document
+}
+
+// documentEntries is the list of the records of a document without the root around it: a
+// test that reads the fields of a record must not have to know where the record itself is.
+func documentEntries(t *testing.T, answer []byte) []byte {
+	t.Helper()
+	var document struct {
+		Entries []map[string]any `json:"entries"`
+	}
+	if err := json.Unmarshal(answer, &document); err != nil {
+		t.Fatalf("the answer %s is not a document: %v", answer, err)
+	}
+	entries, err := json.Marshal(document.Entries)
+	if err != nil {
+		t.Fatalf("the records of the answer %s: %v", answer, err)
+	}
+	return entries
+}
+
+// attentionOfAnswer is what an answer of `-json` says об attention, по задачам и в
 // порядке номеров: блок внимания и записи списка прогонов читаются одинаково, и человек
 // проверяет их глазами именно так.
+//
+// The document is one for both commands, and the attention of it is told twice: by the
+// queue of the project and by the records of the runs, and a program that reads either
+// reads the same thing (docs/DESIGN.md §6a, CL-007…CL-009).
 func attentionOfAnswer(t *testing.T, answer []byte) map[int]attentionRecord {
 	t.Helper()
-	var queue struct {
-		Entries []taskrun.Attention `json:"entries"`
+	records := map[int]attentionRecord{}
+	for _, one := range entriesOfAnswer(t, answer) {
+		if one.state == "" {
+			continue
+		}
+		records[one.task] = one
 	}
-	if err := json.Unmarshal(answer, &queue); err == nil && len(queue.Entries) > 0 {
-		records := map[int]attentionRecord{}
+	if queue := documentOf(t, answer).Attention; queue != nil {
 		for _, one := range queue.Entries {
 			records[one.Task] = attentionRecord{one.Task, string(one.State), one.Reason, one.NextActor}
 		}
-		return records
 	}
-	var runs []struct {
-		Task           int    `json:"task"`
-		AttentionState string `json:"attention_state"`
-		Reason         string `json:"reason"`
-		NextActor      string `json:"next_actor"`
+	return records
+}
+
+// entriesOfAnswer is the attention each record of a document says of its own task, read by
+// the words of the format and not by the struct of the package: программа читает JSON, и
+// тест должен проверять то, что читает она.
+func entriesOfAnswer(t *testing.T, answer []byte) []attentionRecord {
+	t.Helper()
+	var document struct {
+		Entries []struct {
+			Task           int    `json:"task"`
+			AttentionState string `json:"attention_state"`
+			Reason         string `json:"reason"`
+			NextActor      string `json:"next_actor"`
+		} `json:"entries"`
 	}
-	if err := json.Unmarshal(answer, &runs); err != nil {
-		t.Fatalf("the answer %s is not an answer: %v", answer, err)
+	if err := json.Unmarshal(answer, &document); err != nil {
+		t.Fatalf("the answer %s is not a document: %v", answer, err)
 	}
-	records := map[int]attentionRecord{}
-	for _, one := range runs {
-		if one.AttentionState == "" {
-			continue
-		}
-		records[one.Task] = attentionRecord{one.Task, one.AttentionState, one.Reason, one.NextActor}
+	records := make([]attentionRecord, 0, len(document.Entries))
+	for _, one := range document.Entries {
+		records = append(records,
+			attentionRecord{one.Task, one.AttentionState, one.Reason, one.NextActor})
 	}
 	return records
 }

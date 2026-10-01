@@ -68,6 +68,9 @@ Works today:
   in full from `crewflow task attention` — a run that ended with an open PR, a run that
   stands, a change without a review, a result the owner has to accept, a run waiting for a
   decision of a person, and everything escalated after a day with one record per key
+- ✅ one canonical answer for a program: `task attention -json` and `task list -json` write the
+  same document with `version` and `generated_at`, `attention_state` and `reason` are closed
+  lists, and the block for a person is printed from the same records
 - ✅ two identities for the orchestrator too, `shared` or a second GitHub App, and a gate that
   counts the records of the owner apart from the records of the orchestrator
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
@@ -183,7 +186,7 @@ project the tasks are counted on, who ran each of them and whose name it worked 
 (`EXECUTOR`, `opencode · bot`), how its last try came out, how long ago that try began
 (`AGE`), the attempt (`RUN`, `57-2`, and `—` where there was only one) and the change
 request (`CHANGE`). It reads nothing but the local state, and nothing it prints changes what
-the next run does: `-json` is the same answer it has always been.
+the next run does.
 
 ## A run that stands
 
@@ -268,9 +271,42 @@ does not have at all — the repository moved and another one took the name — 
 project, not an expectation: it comes out as `task-missing`, is never escalated, never gets a
 comment written under a task that is not there, and the row says where the run journal stayed.
 And a host that could not be read is not the same thing: that entry is `unknown` and names the
-problem, because crewflow does not know whether anybody has looked at the result. In `-json` of both commands each
-entry of the queue carries `attention_state`, `waiting_since`, `next_actor`, `reason`, `priority`,
-`actable`, and, where a person is being asked for something, `channel`, `resource` and `action`.
+problem, because crewflow does not know whether anybody has looked at the result.
+
+## The answer for a program
+
+`task attention -json` and `task list -json` write **one document**, so that a program reads the
+state of the process in one format whichever command it asked — the queue, the list, and later
+`status` and the statistics all build out of it, and none of them names a thing its own way.
+
+```json
+{
+  "version": 1,
+  "generated_at": "2026-10-02T17:04:11+10:00",
+  "repo": "naghuale/crewflow",
+  "branch": "main",
+  "entries": [ { "task": 43, "run": "43-1", "attention_state": "stands", "reason": "no-progress", "…": "…" } ],
+  "attention": { "entries": [ { "task": 43, "attention_state": "stands", "…": "…" } ] }
+}
+```
+
+`version` says which build of crewflow wrote the answer and grows only when the meaning of a
+field changes; `generated_at` is the moment the answer was made, and every `waiting_since` and
+`waiting_seconds` in it is counted to that moment. `task list -all` puts the runs of every
+project of the machine into one such document, and every record names its own project.
+
+`attention_state` and `reason` are **closed lists** — the eight states and twenty reasons of
+§6a of the design — because a program switches on those words. A reason crewflow cannot name
+from the list is not written as a code: it stays in the `subject` of the record for a person to
+read, and the code stays `blocked`, which is what it is. The lines above the table and the
+record under the task are printed from the very records the document holds.
+
+The format also **reserves** the fields that later tasks fill: `task_facts` (`resume`,
+`checkpoint`, `repository_id`, `depends_on`, `priority`, `milestone`, `lock_mode`, `holder`) and,
+in a record of the attention, `resource` with its `resource_type`, `channel` and `action`. A
+field nobody has filled yet is not written at all, and the table of §6a says which task fills
+which.
+
 See §6a of the design.
 
 ## The gate

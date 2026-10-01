@@ -261,6 +261,12 @@ type Attention struct {
 	Channel  string `json:"channel,omitempty"`
 	Resource string `json:"resource,omitempty"`
 	Action   string `json:"action,omitempty"`
+	// ResourceType is which kind of a resource of the project a wait is about — the
+	// minutes of CI, a window of a secret store, a slot of the scheduler — as the source
+	// of the wait names it. It is reserved and not worked out: the model of resources is a
+	// task of its own (#78), and a kind crewflow names itself is a kind a program acts on
+	// wrongly (§6a, §7e).
+	ResourceType string `json:"resource_type,omitempty"`
 	// NextActor is who the queue waits for.
 	NextActor string `json:"next_actor"`
 	// Priority is how loudly the entry asks, and Actable is whether anything may be done
@@ -1383,9 +1389,12 @@ func named(reason string) string {
 }
 
 // refusalOf is the reason of a refused run as the queue names it: the name the state of the
-// task holds, and the refusal itself where the state holds none.
+// task holds where that name is a code of §6a, and `blocked` where it is not — a refusal a
+// program cannot act on by its name is not a reason of the format, and the reason stays a
+// code, while the words of the refusal stay in the subject of the entry, where a person
+// reads them (docs/DESIGN.md §6a, §7e).
 func refusalOf(reason string) string {
-	if name := named(reason); name != "" {
+	if name := named(reason); KnownReason(name) {
 		return name
 	}
 	return ReasonBlocked

@@ -358,12 +358,12 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		// The answer of a command is what an orchestrator reads, and a state file
 		// that could not be read and a list that was left short are not part of it:
-		// they go beside it, where the answer stays whole.
-		entries := runs.Entries
-		if entries == nil {
-			entries = []taskrun.Entry{}
-		}
-		if err := printJSON(stdout, entries); err != nil {
+		// they go beside it, where the answer stays whole. The answer itself is the
+		// canonical document of §6a — the same one `task attention -json` writes — so a
+		// program that reads the state of the process reads one format whatever command
+		// it asked (docs/DESIGN.md §6a).
+		document := runs.Document(taskClock())
+		if err := printJSON(stdout, document); err != nil {
 			return failed(stderr, err)
 		}
 		if err := runs.Notes(stderr); err != nil {
@@ -434,7 +434,11 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 		return failed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, queue); err != nil {
+		// Очередь отвечает в том же документе, что и список прогонов: одна версия
+		// формата, один момент, от которого считаны все ожидания, и один набор записей
+		// внимания — программа не разбирает, какую из двух команд она спрашивала
+		// (docs/DESIGN.md §6a).
+		if err := printJSON(stdout, queue.Document(taskClock())); err != nil {
 			return failed(stderr, err)
 		}
 	} else if queue.Interrupted {

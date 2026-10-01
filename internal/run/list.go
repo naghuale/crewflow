@@ -137,6 +137,58 @@ type Entry struct {
 	// nobody, and it is worked out where the list is read, because a mark stored in the
 	// state would outlive the waiting it was written for.
 	Attention *Attention `json:"-"`
+	// TaskFacts is what is known about the task apart from the run of it: the point a run
+	// of it goes on from, the stable number of the repository, the milestone, the priority
+	// and the tasks it waits for, and the lock of the machine on its worktree. It is
+	// nothing today, because the format of §6a reserves the fields of it for the tasks
+	// that fill them — #117, #120, #49, #56 — and a field crewflow can only guess at is a
+	// field a program acts on wrongly (docs/DESIGN.md §6a, §7e).
+	//
+	// It is a block of its own and not a dozen fields of the record: the priority of the
+	// task and the priority of the entry of the queue are two different things under one
+	// word, and a record that says `priority` twice says nothing about either (§6a).
+	TaskFacts *TaskFacts `json:"task_facts,omitempty"`
+}
+
+// TaskFacts is what the format of §6a knows about a task besides the runs of it: the point
+// a run of it goes on from, the stable number of the repository it is of, and what the
+// tracker of the project holds about it — the milestone, the priority, the tasks it waits
+// for — together with the lock of the machine on its worktree and the run that holds it.
+//
+// Every field of it is reserved: the table of §6a names them in advance, so that a program
+// which reads the document of a build that does not fill one of them yet reads the same
+// words and not another set of them. They are not written until the task that owns them
+// fills them, and none of them is ever worked out of a guess (docs/DESIGN.md §6a, §7c, §7e).
+type TaskFacts struct {
+	// Resume is the command that goes on from the point the last run of the task stands
+	// at, and is nothing where the task has no point to go on from (#117, §7i).
+	Resume string `json:"resume,omitempty"`
+	// Checkpoint is the point of the task itself: the step of crewflow to go on from, the
+	// head of the branch it stood at, when it was written and what came of the request
+	// (#117, §7i). It is nothing for a task whose run is not waiting for a decision of a
+	// person, and a point older than `[executor] resume_within` is still said here with
+	// the answer it was refused: what may be done about it is `crewflow task run`.
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// RepositoryID is the stable number the host of the project holds the repository
+	// under. A run whose number is not the number of the repository it is listed under is
+	// a run of a repository that moved or was renamed, whatever the name of it is now
+	// (#120, IV-021, §7g).
+	RepositoryID string `json:"repository_id,omitempty"`
+	// DependsOn are the tasks the tracker says this one waits for: their runs do not
+	// stand in for this one and it is not escalated for them (#49, §7f).
+	DependsOn []int `json:"depends_on,omitempty"`
+	// Priority is the priority the tracker holds the task at, and not the priority of the
+	// entry of the queue, which is worked out of the state of the process and is written
+	// as the `priority` of the attention record (§6a, #49).
+	Priority string `json:"priority,omitempty"`
+	// Milestone is the milestone of the tracker the task belongs to, and it is what
+	// `crewflow status` counts the work of a project by (#49).
+	Milestone string `json:"milestone,omitempty"`
+	// LockMode is the mode of the lock of the machine on the worktree of the task — one
+	// process on one worktree, and a gate marked `exclusive` on one machine at a time —
+	// and Holder is the run of the project that holds it (#56, §7c).
+	LockMode string `json:"lock_mode,omitempty"`
+	Holder   string `json:"holder,omitempty"`
 }
 
 // Project is what a project of the machine is doing: its runs by what the last try of
@@ -228,9 +280,11 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		Subject         string          `json:"subject,omitempty"`
 		Channel         string          `json:"channel,omitempty"`
 		Resource        string          `json:"resource,omitempty"`
+		ResourceType    string          `json:"resource_type,omitempty"`
 		Action          string          `json:"action,omitempty"`
 		Next            string          `json:"next,omitempty"`
 		LongWaiting     bool            `json:"long_waiting,omitempty"`
+		TaskFacts       *TaskFacts      `json:"task_facts,omitempty"`
 	}{
 		Repo:            ownerAndRepo(e.Repo),
 		Task:            e.Task,
@@ -247,6 +301,7 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		Executor:        e.Executor,
 		Change:          e.Change,
 		Identity:        e.Identity,
+		TaskFacts:       e.TaskFacts,
 	}
 	if one := e.Attention; one != nil {
 		state, since := one.State, one.Since
@@ -255,7 +310,8 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		answer.WaitingSince, answer.WaitingSeconds = &since, &waited
 		answer.NextActor, answer.Priority, answer.Actable = one.NextActor, one.Priority, one.Actable
 		answer.Subject, answer.Channel = one.Subject, one.Channel
-		answer.Resource, answer.Action, answer.Next = one.Resource, one.Action, one.Next
+		answer.Resource, answer.ResourceType = one.Resource, one.ResourceType
+		answer.Action, answer.Next = one.Action, one.Next
 		answer.LongWaiting = one.LongWaiting
 	}
 	data, err := json.Marshal(answer)

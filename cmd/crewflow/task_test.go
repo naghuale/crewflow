@@ -658,6 +658,13 @@ func TestRunTaskListJSON(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
+	// The answer is the canonical document of §6a: the version of the format and the
+	// moment of it are in the root, and the records of the runs are under `entries`.
+	document := documentOf(t, stdout.Bytes())
+	if document.Repo != "naghuale/crewflow" || document.Branch != "main" || document.Total != 1 {
+		t.Errorf("the document is of %q on %q with %d tasks, want naghuale/crewflow on main with one",
+			document.Repo, document.Branch, document.Total)
+	}
 	var entries []struct {
 		Task            int     `json:"task"`
 		Title           string  `json:"title"`
@@ -672,7 +679,7 @@ func TestRunTaskListJSON(t *testing.T) {
 			URL    string `json:"url"`
 		} `json:"change"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
+	if err := json.Unmarshal(documentEntries(t, stdout.Bytes()), &entries); err != nil {
 		t.Fatalf("crewflow task list -json wrote %q, which is not a list: %v", stdout.String(), err)
 	}
 	if len(entries) != 1 {
@@ -810,6 +817,67 @@ func TestRunTaskListOfEveryProjectOnTheMachine(t *testing.T) {
 	}
 	if unwanted := "also:"; strings.Contains(stdout.String(), unwanted) {
 		t.Errorf("crewflow task list -all wrote %q, want nothing about %q: all of it is there", stdout.String(), unwanted)
+	}
+}
+
+// TestRunTaskListAllJSONIsOneDocumentOfTheMachine: `-all` спрашивается из любой папки и
+// показывает прогоны всех проектов машины. В `-json` это один документ формата §6a с
+// одним списком записей, и у каждой записи назван её проект: программа, читающая два
+// проекта разом, читает один формат и не гадает, из какого пришла запись. Проекта у
+// документа нет — он о всей машине, и очередь в нём нет: у каждого проекта свой хостинг
+// (docs/DESIGN.md §6, §6a).
+func TestRunTaskListAllJSONIsOneDocumentOfTheMachine(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	_, other := host.otherProject(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of this project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	host.task = taskOf(50)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "run", "50", "-config", other}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of the other project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	// The folder crewflow was called in is of no project at all: -all is asked from
+	// any folder, and the state of every project is in one place.
+	t.Chdir(t.TempDir())
+
+	if code := run([]string{"task", "list", "-all", "-json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task list -all -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+
+	document := documentOf(t, stdout.Bytes())
+	if document.Repo != "" {
+		t.Errorf("the document is of the project %q, want no one: a list of the whole machine is of no project", document.Repo)
+	}
+	if document.Attention != nil {
+		t.Errorf("the document holds the queue %+v, want none: a queue is the answer of one project about one host",
+			document.Attention)
+	}
+	// Both projects of the machine are in one list of records, and each record says
+	// which project it is of.
+	said := stdout.String()
+	for _, want := range []string{`"repo": "naghuale/crewflow"`, `"repo": "naghuale/telecli"`,
+		`"task": 43`, `"task": 50`} {
+		if !strings.Contains(said, want) {
+			t.Errorf("crewflow task list -all -json wrote a document without %s, want the runs of every project in one answer",
+				want)
+		}
+	}
+	if len(document.Entries) != 2 {
+		t.Errorf("the document holds %d records, want the one run of each of the two projects", len(document.Entries))
+	}
+	for _, one := range entriesOfAnswer(t, stdout.Bytes()) {
+		if one.state != "" {
+			t.Errorf("the record of the task %d holds the attention %q, want none: a list of the whole machine has no queue",
+				one.task, one.state)
+		}
 	}
 }
 
@@ -1104,8 +1172,19 @@ func TestRunTaskListOfAStateItCannotRead(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
-	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "[") {
-		t.Errorf("crewflow task list -json wrote %q, want the list and nothing else", stdout.String())
+	// The state crewflow could not read is not part of the answer: it is named in the
+	// root of the document and beside it in stderr, and the records of the runs it did
+	// read are whole (docs/DESIGN.md §6a).
+	document := documentOf(t, stdout.Bytes())
+	if len(document.Unreadable) != 1 || document.Unreadable[0] != broken {
+		t.Errorf("the document names the states it could not read as %+v, want only %q", document.Unreadable, broken)
+	}
+	if len(document.Entries) != 1 {
+		t.Errorf("the document holds %d records, want the one run it did read", len(document.Entries))
+	}
+	if document.Attention != nil && len(document.Attention.Unreadable) != 0 {
+		t.Errorf("the queue of the document holds %+v, want the states crewflow could not read said once, in the root",
+			document.Attention.Unreadable)
 	}
 	if want := "not read: " + broken + "\n"; stderr.String() != want {
 		t.Errorf("crewflow task list -json wrote %q to stderr, want %q", stderr.String(), want)
