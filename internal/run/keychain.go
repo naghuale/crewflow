@@ -51,7 +51,12 @@ func (r *runner) nextAttempt() (int, error) {
 // visible while it stands there (F-039, §6). What it stood at — the key of the App of
 // the host — is what the state of the task says it was standing at, and it is what a
 // list of runs shows as the reason of the silence.
-func (r *runner) blockedOnApproval(files *AttemptFiles, err error) (Result, error) {
+//
+// The state of the task holds the point to go on from as well (§7i): a person who comes
+// back to a run that stood in front of a window of the system does the one thing that is
+// his to do in it and goes on with `crewflow task resume`, and a run that was made to be
+// started again by hand because of a window of macOS is what F-091 is about.
+func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err error) (Result, error) {
 	ended := r.env.Now()
 	state, loadErr := LoadState(r.journals.StatePath(r.task.Number))
 	if loadErr != nil {
@@ -65,6 +70,19 @@ func (r *runner) blockedOnApproval(files *AttemptFiles, err error) (Result, erro
 	state.Attempts[last].Identity = Identity{Mode: r.cfg.Identity.Mode}
 	state = state.Ended(ended, Blocked)
 	attempt := state.Attempts[last]
+	// What the run is asking for, and the point to go on from, are said before the state
+	// is written: both are what the journal of the attempt holds and what a continuation
+	// is checked against, and a run that cannot say the head of its branch writes no
+	// point — a point crewflow cannot check later is not a point to go on from.
+	point, pointErr := r.pointFor(ctx, state)
+	if pointErr != nil {
+		r.note(files.ErrorJournal, pointErr)
+	} else {
+		r.pointedAt(point, WaitTimeout)
+		point.sayEvent(files.Out, EventAuthorizationRequired)
+		point.sayEvent(files.Out, EventAuthorizationTimeout)
+		state.Checkpoint = r.point
+	}
 	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state); keepErr != nil {
 		_ = files.takeAway()
 		return Result{}, keepErr
@@ -79,6 +97,104 @@ func (r *runner) blockedOnApproval(files *AttemptFiles, err error) (Result, erro
 		return result, closeErr
 	}
 	return result.spent(Blocked), nil
+}
+
+// deniedOnAuthorization is what a run that went on from the point of the task does when
+// the person refuses the window of the system: the work of the task stays in the worktree
+// it was done in, the attempt ends here as `blocked` with the words of the machine, and
+// the point keeps the refusal — so that the next continuation says that it was refused
+// instead of asking the same person the same question again (§7i).
+//
+// crewflow does not decide what a refusal of the keychain means: what it knows for
+// certain is that the answer came and was not "yes", and the words of macOS go into the
+// state and the journal as they are. What a refusal is refused for is the *continuation*,
+// not the task: a person who needs the task done signs this build or runs it in the mode
+// of the owner, and both are decisions of the owner (R4, §7f).
+func (r *runner) deniedOnAuthorization(files *AttemptFiles, err error) (Result, error) {
+	ended := r.env.Now()
+	state, loadErr := LoadState(r.journals.StatePath(r.task.Number))
+	if loadErr != nil {
+		_ = files.takeAway()
+		return Result{}, loadErr
+	}
+	last := len(state.Attempts) - 1
+	state = state.Ended(ended, Blocked)
+	attempt := state.Attempts[last]
+	r.pointedAt(r.point, WaitDenied)
+	r.point.sayEvent(files.Out, EventAuthorizationDenied)
+	state.Checkpoint = r.point
+	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state); keepErr != nil {
+		_ = files.takeAway()
+		return Result{}, keepErr
+	}
+	result := r.resultOf(attempt, ended, files)
+	result.Reason = fmt.Sprintf("%s: %v", reasonApproval, err)
+	result.ErrorJournal = r.noteError(files.ErrorJournal, errors.New(result.Reason))
+	if closeErr := files.Close(); closeErr != nil {
+		return result, closeErr
+	}
+	return result.spent(Blocked), nil
+}
+
+// pointFor is the point a run writes when it stopped in front of a decision of a person:
+// the step to go on from, the head of the branch the run stood at, the task as crewflow
+// read it, and the three facts of the request — where it is asked, of which resource of
+// the project and for what action (§7i).
+//
+// A new point is written over the one before it and not kept next to it: a run of a task
+// stops once at a decision of a person, and the point that matters is the one the last
+// run of the task stopped at. The head and the task of it are read again, so a point that
+// was written before the branch moved is refused by the continuation and not by a guess
+// here (docs/DESIGN.md §7i).
+func (r *runner) pointFor(ctx context.Context, state State) (*Checkpoint, error) {
+	head, err := r.head(ctx, state.Worktree)
+	if err != nil {
+		return nil, err
+	}
+	return &Checkpoint{
+		Task:       r.task.Number,
+		Step:       stepReadKey,
+		Head:       head,
+		Assignment: fingerprint(r.task),
+		At:         r.env.Now(),
+		Channel:    ChannelKeychain,
+		Resource:   SubjectExecutorKey,
+		Action:     ActionHumanExecute,
+	}, nil
+}
+
+// pointedAt is the point of the run with the answer of the request written into it, and it
+// is kept on the run itself: the report of the run, the state of the task and the refusal
+// of the next continuation all read the same fact, and three copies of it would be three
+// things that can disagree (§7h).
+func (r *runner) pointedAt(point *Checkpoint, outcome string) {
+	if point == nil {
+		return
+	}
+	if outcome == WaitTimeout {
+		// A wait that came out again is a new request of the same person, and the
+		// point is written afresh: a person who comes back tomorrow to a point of
+		// yesterday is a person who comes back to a refusal (§7i).
+		point.At = r.env.Now()
+	}
+	point.Outcome, point.DecidedAt = outcome, r.env.Now()
+	r.point = point
+}
+
+// answered is the state of the task with what came of the request the run was stopped at
+// written into it, and the event of it written into the journal of the attempt while it
+// is open. A run that was not going on from a point has no request to answer, and the
+// state is handed back as it was (§7i).
+func (r *runner) answered(state State, files *AttemptFiles, outcome, event string) State {
+	if r.point == nil {
+		return state
+	}
+	point := *r.point
+	point.Outcome, point.DecidedAt = outcome, r.env.Now()
+	r.point = &point
+	point.sayEvent(files.Out, event)
+	state.Checkpoint = &point
+	return state
 }
 
 // takeRunAway is what a run does with the worktree and the branch it made when it is cut
@@ -136,6 +252,8 @@ func (r *runner) resultOf(attempt Attempt, ended time.Time, files *AttemptFiles)
 		Session:      r.session,
 		Attempt:      attempt.Number,
 		Continued:    r.req.Continue != "",
+		Resumed:      r.req.Resume,
+		Checkpoint:   r.point,
 		AutoResumed:  r.auto,
 		Identity:     Identity{Mode: r.identity.Mode, Description: r.identity.Description},
 		StartedAt:    attempt.StartedAt,

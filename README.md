@@ -62,6 +62,8 @@ Works today:
 - ✅ two identities for the executor, `owner` or a GitHub App `bot`, shown in every report
 - ✅ a run that stands is visible: `stalled` with the length of the silence in `task list`,
   an event in the journal of the attempt and one record under the task per episode
+- ✅ a run that waited for you keeps its place: a checkpoint in the state of the task, the event
+  of the request, and `crewflow task resume` to go on from it — you do the decision, not the run
 - ✅ the attention queue: what of the project needs you right now, on top of `task list` and
   in full from `crewflow task attention` — a run that ended with an open PR, a run that
   stands, a change without a review, a result the owner has to accept, a run waiting for a
@@ -78,7 +80,9 @@ Works today:
 
 In progress:
 
-- ⏳ `crewflow init` and recovery of an interrupted task
+- ⏳ `crewflow init` and recovery of a task that was interrupted mid-work (`task resume` covers
+  a run that was stopped at a decision of yours; a run cut off in the middle of the work still
+  needs `-continue`)
 
 The design and the plan are in [docs/DESIGN.md](docs/DESIGN.md) (in Russian). The steps of the
 process itself, in order, are in [CREWFLOW_CHECKLIST.md](CREWFLOW_CHECKLIST.md) (in Russian): every
@@ -126,6 +130,17 @@ the attempt, in the report and in `-json`. A run refused the key before its exec
 the worktree and the branch it made away with it, so the next `task run` of the task simply starts
 again. Nothing is stored outside the keychain.
 
+When nobody answered the window, the run leaves a **checkpoint** in the state of the task — the
+step to go on from, the commit the branch stands at, the task as crewflow read it — and the event
+of the request (`HUMAN_AUTHORIZATION_REQUIRED`) with the channel, the resource and the action. You
+press "Always Allow", you run `crewflow task resume <N>`, and the run goes on in the same worktree
+and the same session; you do not repeat the run. The continuation refuses and names its reason if
+the head of the branch moved, if the task changed, if the checkpoint is older than a day, or if
+you refused the request — a refusal is not asked again, and then `crewflow task run <N>` is the
+way. Nothing polls: every attempt to read the key without the access opens a window of macOS of
+its own, so the key is read only when you name the command, and even a refusal of the checkpoint
+does not open a window.
+
 ## Use
 
 Put a `crewflow.toml` in the root of your repository (see [the example](crewflow.toml)), then:
@@ -134,6 +149,7 @@ Put a `crewflow.toml` in the root of your repository (see [the example](crewflow
 crewflow doctor            # tools, requirements, access, the identity of the executor and of the orchestrator
 crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
+crewflow task resume 12    # go on from the point a run stopped at, after a decision of yours
 crewflow review 14         # may PR #14 be merged, and if not, why not
 crewflow review 14 -approve   # write REVIEW: APPROVED <full sha> on the head
 crewflow merge 14         # fast-forward main to that sha, and prove where main is
@@ -232,6 +248,12 @@ A reason that is known is never "standing": a run at the keychain window *waits*
 (`blocked`, `human-authorization-required`, the channel and the action), and a run whose silence
 has no reason at all *stands* — and standing is the one state that always wants a person, because
 nothing is known to be broken and nothing is known to be going on.
+
+The action it names is the command that goes on: press "Always Allow" in the window of the system
+and run `crewflow task resume 41` — the run continues in its own worktree and session, and you do
+not repeat anything but the decision. A run whose request you refused is named differently, with
+`crewflow task run 41`: a refused point is not one to continue, and a queue that keeps naming a
+command that always says no is a queue nobody reads.
 
 A reaction takes a task out of the queue: a merged or closed pull request, a review of the head
 the change stands at, the owner's `ACCEPTED`, a task the host has closed. A run of a task the host

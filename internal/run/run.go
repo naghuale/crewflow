@@ -160,6 +160,12 @@ type Request struct {
 	// whether the last one was interrupted or the review asked for changes
 	// (docs/DESIGN.md §7).
 	Continue string
+	// Resume says that this run goes on from the point of the task and not from a
+	// message of the orchestrator: a run of the task stood at a decision of a person,
+	// the person did the only thing that was his to do, and the run goes on from the
+	// same worktree with the task in hand. [Resume] is how a caller asks for it, and a
+	// caller that sets it here gets exactly what that function does (docs/DESIGN.md §7i).
+	Resume bool
 }
 
 // Result is everything a person and an orchestrator are told about a run.
@@ -181,6 +187,13 @@ type Result struct {
 	Identity Identity `json:"identity"`
 	// Continued says that this attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
+	// Resumed says that this attempt went on from the point of the task and not from a
+	// message of the orchestrator, and Checkpoint is that point with what came of the
+	// request for which it was written. A person reads both: the report of a run has to
+	// say whether the work went on from where it stood or from the beginning again
+	// (docs/DESIGN.md §7i).
+	Resumed    bool        `json:"resumed,omitempty"`
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
 	// AutoResumed is the habit crewflow went on by itself for in this attempt, and is
 	// empty for a first run and for a continuation the orchestrator asked for. A
 	// report says it because a run that was answered by itself is not a run two
@@ -232,6 +245,15 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 	if err := r.readTask(ctx); err != nil {
 		return Result{}, err
 	}
+	// The point of the task is read and checked before the worktree of it is looked at
+	// and long before the key of the app is asked for: a continuation that cannot go on
+	// has to say why without a window of the system opening for an answer crewflow
+	// already knows (§7i).
+	if req.Resume {
+		if err := r.checkpoint(ctx); err != nil {
+			return Result{}, err
+		}
+	}
 	if err := r.prepare(ctx); err != nil {
 		return Result{}, err
 	}
@@ -249,6 +271,32 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 		r.resume = resume{}
 	}
 }
+
+// Resume goes on from the point of the task: the worktree and the branch of the run that
+// stopped there, the task in hand and nothing else to say. It is what a person runs after
+// doing the one thing that was his to do in the window of the system — "Always Allow" — so
+// that a run of the mode of the bot is not started again by hand from the beginning
+// (docs/DESIGN.md §7i, MODEL IV-028).
+//
+// The point is checked before anything of the run happens, and every refusal of it names
+// its reason: the head of the branch moved, the task changed, the point is older than
+// [CheckpointValid], or the person refused the request and a refusal is not asked again.
+// A refusal creates nothing — no attempt, no journal, no worktree — and asks the machine
+// for nothing but the commit the worktree stands at: every attempt to read the key of the
+// app without the access opens a window of the system, and crewflow never opens one on its
+// own (docs/DESIGN.md §7i).
+func Resume(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Request) (Result, error) {
+	req.Resume = true
+	req.Continue = resumedMessage
+	return Run(ctx, env, cfg, set, req)
+}
+
+// resumedMessage is what the executor of a continuation is told before the task itself:
+// the decision the run was stopped at came through, the work of the task is where the run
+// left it, and nothing of that run is to be started over (docs/DESIGN.md §7i).
+const resumedMessage = "The decision of the person this run was stopped at came through, so the run goes on " +
+	"from that point. The work of the task is in this worktree as the run left it: do not start the task over " +
+	"and do not repeat what the run already did."
 
 // runner is one run of one task, and what it has found out about it so far.
 type runner struct {
@@ -295,6 +343,11 @@ type runner struct {
 	// unless the run goes on by itself: it is worked out while the journal of the
 	// attempt is still open, so that the journal holds the line about it.
 	resume resume
+	// point is where this run stands if it goes on from the point of the task: the
+	// step to go on from, the head of the branch and the request that was made, and
+	// what came of it. It is read and checked before the run does anything, and it is
+	// empty for every run that is not a continuation from it (docs/DESIGN.md §7i).
+	point *Checkpoint
 	// alive is the sign of life of the run: when it last showed one, what it was and
 	// what it stands at. The state of the task is written from it at every step of
 	// crewflow, and the watch of the run reads it while the executor works
@@ -403,8 +456,11 @@ func (r *runner) ownRights() error {
 // prepare makes the worktree of the task, or finds the one a continuation goes on
 // in. A first run starts from a fresh default branch: a task that is worked on
 // without it would stand on whatever the folder of the person happened to hold.
+//
+// A continuation from the point of the task goes on in the worktree the run left as well
+// as a `-continue` does, and is refused by the point before it gets here (docs/DESIGN.md §7i).
 func (r *runner) prepare(ctx context.Context) error {
-	if r.req.Continue != "" {
+	if r.req.Continue != "" || r.req.Resume {
 		return r.findWorktree()
 	}
 	if _, err := os.Stat(r.worktree); err == nil {
@@ -515,6 +571,7 @@ func (r *runner) stateOf(before State, started time.Time, step, reason string) S
 		Executor:     r.profile.Name(),
 		Session:      r.session,
 		Continued:    r.req.Continue != "",
+		Resumed:      r.req.Resume,
 		AutoResumed:  r.auto,
 		Process:      process,
 		Identity:     Identity{Mode: r.cfg.Identity.Mode, Description: r.identity.Description},
@@ -662,7 +719,15 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 			// attempt of §7 that is written down without an executor having run
 			// (§7i).
 			stopWatch()
-			return r.blockedOnApproval(files, err)
+			return r.blockedOnApproval(ctx, files, err)
+		}
+		if r.point != nil {
+			// The run went on from the point of the task and the person refused the
+			// window of the system this time: the work of the task stays where it is,
+			// the attempt ends here, and the point keeps the refusal, so that the next
+			// continuation says that it was refused instead of asking again (§7i).
+			stopWatch()
+			return r.deniedOnAuthorization(files, err)
 		}
 		// A run that never started its executor leaves nothing behind: neither the
 		// journal of an attempt that was not made, nor the worktree and the branch it
@@ -674,6 +739,12 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		stopWatch()
 		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(before, kept), r.takeRunAway(ctx))
 	}
+	// The key of the app of the host was read and a token is signed with it, so a
+	// request the run was stopped at came through. The state of the task says so and
+	// the journal of the attempt holds the event of it, in the same place the run said
+	// what it waited for: a person who reads the journal of a continuation afterwards
+	// sees what was decided and when (§7i).
+	state = r.answered(state, files, WaitCompleted, EventAuthorizationCompleted)
 	// The run is going to get the task ready for its executor, and that is the sign of
 	// life the state of the task holds from here on: whatever the run stood at before
 	// this — the window of the keychain, the time of the machine to answer — is behind it.

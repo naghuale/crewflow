@@ -47,6 +47,11 @@ const (
 // §7a.1, §7d).
 const recoveryOff = "recovery: disabled"
 
+// theHeadOfTheTest is the commit the worktree of a task of a test stands at, and the head
+// the point of a run that was stopped at a decision of a person holds: a continuation is
+// refused when the worktree stands anywhere else (docs.DESIGN.md §7i).
+const theHeadOfTheTest = "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"
+
 // TestRunTaskOpenedTheChangeRequest is the case a person waits for: the run opened
 // the change request of its branch, and the report says where it is, what a person
 // has to look at, and where the journal of the run is.
@@ -1500,10 +1505,12 @@ type host struct {
 	// home is the root of what crewflow keeps on this machine, worktrees the root
 	// the worktrees of its tasks are made under, and git the folder of the repository
 	// of the project as git names it: the local ignore of the scratch of a run is
-	// written into it.
+	// written into it. head is what the worktree of a task stands at, which the point
+	// a run was stopped at is checked against (§7i).
 	home      string
 	worktrees string
 	git       string
+	head      string
 	// records are the lines crewflow left under the tasks of the project, in order: a
 	// run that stands is written about under its task, and what a person reads there is
 	// what a schedule of an orchestrator is for (docs.DESIGN.md §6).
@@ -1541,6 +1548,7 @@ func (h *host) use(t *testing.T) {
 	h.home = filepath.Join(home, ".crewflow")
 	h.worktrees = filepath.Join(t.TempDir(), "worktrees")
 	h.git = filepath.Join(t.TempDir(), "git")
+	h.head = theHeadOfTheTest
 	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Tracker: h, Forge: h}, nil
 	}
@@ -1620,6 +1628,12 @@ func (h *host) exec(_ context.Context, name string, args []string, dir string) (
 		case len(args) > 2 && args[0] == "diff":
 			return []byte(h.changed), nil, 0, nil
 		case len(args) > 1 && args[0] == "rev-parse":
+			// What commit the worktree of the task stands at, which the point a run
+			// was stopped at is checked against, and which a test moves when it wants
+			// to say that the branch has gone on without the run (§7i).
+			if len(args) > 1 && args[1] == "HEAD" {
+				return []byte(h.head + "\n"), nil, 0, nil
+			}
 			// Where the repository of the project is, which a run asks for to keep
 			// the scratch of the task out of it.
 			return []byte(h.git + "\n"), nil, 0, nil

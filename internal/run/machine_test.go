@@ -94,6 +94,12 @@ type looking struct {
 	done chan struct{}
 }
 
+// theHead is the commit the worktree of a task of a test stands at, which is what the
+// point of a run that stopped at a decision of a person is checked against and what a
+// test moves when it wants to say that the branch has gone on without it
+// (docs/DESIGN.md §7i).
+const theHead = "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"
+
 // answer is what a command of the machine does when it runs.
 type answer struct {
 	stdout string
@@ -145,8 +151,11 @@ func newMachine(t *testing.T) *machine {
 		looked: make(chan looking),
 	}
 	// Git is asked where the repository of the project is, because the scratch of a
-	// run is kept out of it, and the answer is a folder of the test.
+	// run is kept out of it, and what commit the worktree of a task stands at, because
+	// the point a run stops at is checked against it. Both are folders and commits of
+	// the test.
 	m.answers["git rev-parse --git-common-dir"] = answer{stdout: m.git}
+	m.answers["git rev-parse HEAD"] = answer{stdout: theHead}
 	m.has(m.repo)
 	return m
 }

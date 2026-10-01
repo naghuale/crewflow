@@ -60,6 +60,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "run":
 		return runTaskRun(args[1:], stdout, stderr)
+	case "resume":
+		return runTaskResume(args[1:], stdout, stderr)
 	case "check":
 		return runTaskCheck(args[1:], stdout, stderr)
 	case "watch":
@@ -133,6 +135,77 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 		RepoDir:  *repoDir,
 		Continue: *continueMessage,
 	})
+	if err != nil {
+		failed(stderr, err)
+	}
+	if *asJSON {
+		if printErr := printJSON(stdout, result); printErr != nil {
+			return failed(stderr, printErr)
+		}
+	} else if result.Task != 0 {
+		printResult(stdout, result)
+	}
+	if err != nil {
+		return exitFailure
+	}
+	if !result.OK() {
+		return exitFailure
+	}
+	return exitOK
+}
+
+// runTaskResume is `crewflow task resume <N>`: it goes on from the point the last run of
+// the task stopped at — the worktree, the branch and the task in hand are the ones that run
+// left — after a person did the only thing that was his to do, which is answer the window of
+// the keychain of macOS in "Always Allow" (docs/DESIGN.md §7i).
+//
+// It is the whole of what a person has to do after a window of the system: he does not
+// repeat the run. There is no polling behind it — every attempt to read the key of the app
+// without the access opens a window of macOS of its own, so nothing here reads the key
+// until a person has named the command, and the point is checked before the key is asked
+// for: a person who is told that the run cannot go on is told it without a window opening.
+//
+// The code of the command is the code of `task run`: zero only when the run opened the
+// change request of its branch, and a refusal of the point is a failure with its reason
+// named, because a reason a person cannot read is a reason they will ask about again.
+func runTaskResume(args []string, stdout, stderr io.Writer) int {
+	flags := taskFlags("resume", stderr)
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	repoDir := flags.String("repo", "", "the repository the worktree is made from, the folder crewflow was called in when empty")
+	asJSON := flags.Bool("json", false, "print the outcome as JSON, for the orchestrator")
+	number, code := takeNumber("resume", args, flags, stderr)
+	if code != exitOK {
+		return code
+	}
+	wanted, named := taskNumber(stderr, "resume", number)
+	if !named {
+		return exitUsage
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := cfg.ExpandPath(crewflowHome)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	// The line about the window of the keychain of macOS goes to the terminal of the
+	// person and to the journal of the attempt at once, as it does for a run: a
+	// continuation that stands in front of that window is a run like any other
+	// (docs/DESIGN.md §7i).
+	notices := secret.NewNotices(stderr)
+	set, err := taskRoles(cfg, roleEnv(*configPath, notices))
+	if err != nil {
+		return failed(stderr, err)
+	}
+
+	ctx, stop := stoppedBy()
+	defer stop()
+	env := taskRunEnv(home)
+	env.ConfigPath = *configPath
+	env.Notices = notices
+	result, err := taskrun.Resume(ctx, env, cfg, set, taskrun.Request{Number: wanted, RepoDir: *repoDir})
 	if err != nil {
 		failed(stderr, err)
 	}
@@ -756,9 +829,12 @@ func printResult(w io.Writer, result taskrun.Result) {
 		fmt.Fprintf(w, "executor: %s\n", result.Identity.Description)
 	}
 	fmt.Fprintf(w, "task %d: %s, attempt %d\n", result.Task, result.Outcome, result.Attempt)
-	if result.Continued {
+	if result.Continued && result.Session != "" {
 		fmt.Fprintf(w, "  went on in the session %s of the last run\n", result.Session)
 	}
+	// A run that went on from the point of the task says so, and a run that stands at a
+	// decision of a person says what that decision is and what to do about it.
+	printedCheckpoint(w, result)
 	// A run that went on by itself is said in the report, because the orchestrator
 	// reads whether it has to continue the task by hand, and a run nobody asked for
 	// has to be visible as one (docs/DESIGN.md §7a).
@@ -790,6 +866,39 @@ func printResult(w io.Writer, result taskrun.Result) {
 	fmt.Fprintf(w, "  branch %s\n", result.Branch)
 	fmt.Fprintf(w, "  worktree %s\n", result.Worktree)
 	fmt.Fprintf(w, "  journal %s\n", result.Journal)
+}
+
+// printedCheckpoint is what a report of a run says about the point of the task: where the
+// run went on from and what came of the request, or — where the run stands at a window of the
+// system — that the decision is the person's and what to do about it. A run that was stopped at
+// a window of the system is not one a person is to start again by hand: he does the necessary
+// action and goes on with the command (docs/DESIGN.md §7i, MODEL IV-028).
+func printedCheckpoint(w io.Writer, result taskrun.Result) {
+	point := result.Checkpoint
+	if point == nil {
+		return
+	}
+	switch {
+	case result.Resumed && point.Outcome == taskrun.WaitDenied:
+		fmt.Fprintf(w, "  it went on from the checkpoint %s of %s and the owner refused it on %s: "+
+			"sign this build, or run the task as the owner, and start the task anew with `crewflow task run %d`\n",
+			point.Step, point.At.Format(time.RFC3339), point.DecidedAt.Format(time.RFC3339), result.Task)
+	case result.Resumed:
+		fmt.Fprintf(w, "  it went on from the checkpoint %s of %s (head %s), and the request came out as %s\n",
+			point.Step, point.At.Format(time.RFC3339), shortCommit(point.Head), point.Outcome)
+	case point.Outcome == taskrun.WaitTimeout:
+		fmt.Fprintf(w, "  it waits for a decision only you can make: do it, then go on with "+
+			"`crewflow task resume %d`\n", result.Task)
+	}
+}
+
+// shortCommit is a commit as a report of a run names it: the first seven letters are as
+// much of a commit as a person reads and compares.
+func shortCommit(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
 }
 
 // printReadiness is the answer of a check for a person: whether the task may be run,

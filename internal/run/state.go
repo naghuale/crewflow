@@ -59,6 +59,12 @@ type State struct {
 	// whether the task is in the queue at all is worked out at every read — and it is
 	// what keeps one record to a key and a day rather than one a minute (§6a, §7h).
 	Notice *Notice `json:"notice,omitempty"`
+	// Checkpoint is where the run of the task stands when it needs a decision of a
+	// person, and what came of the request. It is the last point a run of this task
+	// wrote and not a queue of points: one run of a task stops once, and the run that
+	// goes on from the point either answers the request or refuses it (docs/DESIGN.md
+	// §7i).
+	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
 }
@@ -178,6 +184,12 @@ type Attempt struct {
 	Outcome Kind `json:"outcome"`
 	// Continued says that the attempt went on in the session of an earlier one.
 	Continued bool `json:"continued"`
+	// Resumed says that the attempt went on from the point of the task: a run stood at
+	// a decision of a person, the person did the necessary action, and this attempt is
+	// the continuation of that run. It is not `Continued`, which is a run that goes on
+	// in a session that exists; nothing of a run stopped in front of a window of the
+	// system had started an executor (docs/DESIGN.md §7i).
+	Resumed bool `json:"resumed,omitempty"`
 	// AutoResumed is the habit an attempt went on by itself for, and is empty for a
 	// first run and for a continuation the orchestrator asked for. It is what keeps a
 	// task from being resumed by itself twice for the same habit: the second time
@@ -234,6 +246,9 @@ type StartOf struct {
 	Session  string
 	// Continued says that the attempt goes on in the session of an earlier one.
 	Continued bool
+	// Resumed says that the attempt goes on from the point of the task, after a person
+	// did the only thing that was his to do (docs/DESIGN.md §7i).
+	Resumed bool
 	// AutoResumed is the habit crewflow went on by itself for, when nobody asked it
 	// to: an attempt the orchestrator continued is not one, and says nothing here.
 	AutoResumed string
@@ -271,6 +286,7 @@ func (s State) NextAttempt(start StartOf) State {
 		Identity:     start.Identity,
 		Outcome:      Running,
 		Continued:    start.Continued,
+		Resumed:      start.Resumed,
 		AutoResumed:  start.AutoResumed,
 	}
 	if start.Process.Pid > 0 {

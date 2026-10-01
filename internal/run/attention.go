@@ -624,7 +624,7 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 	case Interrupted:
 		one.stopped(last)
 	case Blocked, BlockedPermission, BlockedSecret:
-		one.refused(last, silence)
+		one.refused(last, silence, state.Checkpoint)
 	default:
 		if !one.finished(env, repo, state, last, outcome, facts) {
 			return Attention{}, false
@@ -700,7 +700,7 @@ func (a *Attention) stopped(last Attempt) {
 // refused is a run that was refused something and ended: a permission, a secret, or a
 // decision of a person that only a person may give. A refusal in front of a window of the
 // system is a wait for that window and is said as one (ES-006, §7i).
-func (a *Attention) refused(last Attempt, silence Stall) {
+func (a *Attention) refused(last Attempt, silence Stall, point *Checkpoint) {
 	switch last.Outcome {
 	case BlockedPermission:
 		a.State, a.Reason, a.Priority = AttentionBlocked, ReasonBlockedPermission, High
@@ -720,11 +720,27 @@ func (a *Attention) refused(last Attempt, silence Stall) {
 		a.State, a.Reason = AttentionBlocked, ReasonHumanAuthorization
 		a.Channel, a.Resource, a.Action = window.Channel, SubjectExecutorKey, window.Action
 		a.Subject, a.NextActor, a.Actable = SubjectExecutorKey, ActorOwner, ActNow
-		a.Next = resumeCommand(a.Task)
+		a.answerOf(point)
 	case named(last.Reason) == ReasonHumanAuthorization:
 		a.State, a.Reason = AttentionBlocked, ReasonHumanAuthorization
 		a.Subject, a.NextActor, a.Actable = "", ActorOwner, ActUnknown
 	}
+}
+
+// answerOf is what may be done about a run that was refused a decision of a person: the
+// command that goes on from the point the run stands at — or, where the person refused
+// that request, the run of the task anew, because `crewflow task resume` refuses a
+// refused point and a queue that keeps naming a command that always says no is a queue
+// that cries wolf (docs/DESIGN.md §6a, §7i).
+func (a *Attention) answerOf(point *Checkpoint) {
+	if point != nil && point.Outcome == WaitDenied {
+		a.Next = runCommand(a.Task)
+		a.Hint = fmt.Sprintf("this build of crewflow was refused the key of the app on %s: "+
+			"sign it, or run the task as the owner, and the run will ask the window again",
+			saidAt(point.DecidedAt))
+		return
+	}
+	a.Next = resumeCommand(a.Task)
 }
 
 // gone is a run of a task the host of the project does not have: the repository moved, or
@@ -1146,10 +1162,17 @@ func continueCommand(task int) string {
 }
 
 // resumeCommand is the command that goes on from the point a run stood at, with the context
-// of the run kept. `crewflow task resume` is a task of its own (#117): the queue names the
-// command a person is to run and writes none of it here (§6a).
+// of the run kept: the worktree of the task and the task in hand are the ones the run left,
+// and a person has done the only thing that was his to do (docs/DESIGN.md §6a, §7i).
 func resumeCommand(task int) string {
 	return fmt.Sprintf("crewflow task resume %d", task)
+}
+
+// runCommand is the command that runs a task from the beginning, which is what is left of a
+// task whose point is not one to go on from: its point was refused, or it is older than the
+// term of a point (§7i).
+func runCommand(task int) string {
+	return fmt.Sprintf("crewflow task run %d", task)
 }
 
 // ownerDecision is what a task that waits for the owner is to be given: his decision under
