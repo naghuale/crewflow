@@ -113,6 +113,39 @@ func (r Runs) Document(at time.Time) Document {
 	return document.canonical()
 }
 
+// Document is the canonical document of the attention of every project of the machine: one
+// document, the records of every project in it, and the project named in every record.
+//
+// It is worked out of the state of the runs and of nothing else — no tracker, no host, no
+// network — because у каждого проекта машины свой хостинг и свой файл проекта, а папка, из
+// которой спросили, может проектом вовсе не быть (docs/DESIGN.md §6, §6a). What a run
+// that is over looks like is said in the words of the state of it: изменение, слитое мимо
+// crewflow, стоит в этой таблице `finished-unseen`, пока `crewflow task attention` в своём
+// проекте не уберёт его, спросив хостинг. It also leaves no record under any task: очередь
+// одного проекта пишет под его задачами от имени его оркестратора, и у всей машины
+// оркестратора нет (§6a, §7g, §7i).
+func (r Runs) AttentionOfEveryProject(at time.Time) Document {
+	var records []Attention
+	var unread Unreads
+	var unreadable []string
+	var interrupted bool
+	for _, queue := range r.Attention {
+		records = append(records, queue.Entries...)
+		unread = append(unread, queue.Unread...)
+		unreadable = append(unreadable, queue.Unreadable...)
+		interrupted = interrupted || queue.Interrupted
+	}
+	return Document{
+		Version:     Format,
+		GeneratedAt: at,
+		Runs:        []Entry{},
+		Attention:   records,
+		Unread:      unread,
+		Unreadable:  unreadable,
+		Interrupted: interrupted,
+	}.canonical()
+}
+
 // canonical is the document with the codes of §6a in it: a state or a reason out of the
 // closed lists is not a code of the format and is not written into it, and everything else
 // in the records stays as it was read. The words of a refusal are not lost by it — они

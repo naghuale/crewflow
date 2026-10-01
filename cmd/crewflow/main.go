@@ -95,7 +95,8 @@ Subcommands:
   task check <N> Say whether a task may be run, and what it is missing when it may not
   task watch <N> Show what the executor of a task is doing, as it is doing it
   task list      List the runs of the project, and of the whole machine with -all
-  task attention The tasks of the project that want a person right now (§6a)
+  task attention The tasks of the project that want a person right now, the whole
+                  machine with -all (§6a)
   task check-stalled  The runs that stand, and one record under each task (§6)
   review <PR>    Say whether a change may be merged, and why it may not (§7h)
   merge <PR>     Merge a change the gate allows: fast-forward of the approved commit (§7h)
@@ -109,7 +110,7 @@ Subcommands:
   crewflow task check <N> [-config path] [-json]
   crewflow task watch <N> [-config path] [-attempt K]
   crewflow task list [-all] [-json] [-config path] [-repo path]
-  crewflow task attention [-json] [-config path]
+  crewflow task attention [-all] [-json] [-config path]
   crewflow task check-stalled [-json] [-config path]
   crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
   crewflow merge <PR> [-config path] [-repo path] [-json]

@@ -68,9 +68,10 @@ Works today:
   in full from `crewflow task attention` — a run that ended with an open PR, a run that
   stands, a change without a review, a result the owner has to accept, a run waiting for a
   decision of a person, and everything escalated after a day with one record per key
-- ✅ one canonical answer for a program: `task attention -json` and `task list -json` write the
-  same document with `version` and `generated_at`, `attention_state` and `reason` are closed
-  lists, and the block for a person is printed from the same records
+- ✅ one canonical answer for a program: `task attention -json`, `task list -json` and
+  `task attention -all -json` write the same document with `version` and `generated_at` and two
+  named lists — `runs` and `attention`, `attention_state` and `reason` are closed lists, and the
+  block for a person is printed from the same records
 - ✅ two identities for the orchestrator too, `shared` or a second GitHub App, and a gate that
   counts the records of the owner apart from the records of the orchestrator
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
@@ -162,6 +163,7 @@ crewflow task list         # runs of this project, the ones that want you on top
 crewflow task list -all    # every run of every project on this machine
 crewflow task check-stalled   # the runs that stand — for the orchestrator's schedule
 crewflow task attention     # what of this project needs you right now — same queue for a schedule
+crewflow task attention -all  # what of every project on this machine needs you, out of the state alone
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 ```
 
@@ -277,7 +279,8 @@ problem, because crewflow does not know whether anybody has looked at the result
 
 `task attention -json` and `task list -json` write **one document**, so that a program reads the
 state of the process in one format whichever command it asked — the queue, the list, and later
-`status` and the statistics all build out of it, and none of them names a thing its own way.
+`status` and the statistics all build out of it, and none of them names a thing its own way. Two
+named lists in it, and no nesting: `runs` are the runs, `attention` is what wants a person.
 
 ```json
 {
@@ -285,15 +288,28 @@ state of the process in one format whichever command it asked — the queue, the
   "generated_at": "2026-10-02T17:04:11+10:00",
   "repo": "naghuale/crewflow",
   "branch": "main",
-  "entries": [ { "task": 43, "run": "43-1", "attention_state": "stands", "reason": "no-progress", "…": "…" } ],
-  "attention": { "entries": [ { "task": 43, "attention_state": "stands", "…": "…" } ] }
+  "runs": [ { "task": 43, "run": "43-1", "outcome": "stalled",
+              "attention": { "attention_state": "stands", "reason": "no-progress", "…": "…" } } ],
+  "attention": [ { "repo": "naghuale/crewflow", "task": 43,
+                   "attention_state": "stands", "reason": "no-progress", "…": "…" } ]
 }
 ```
 
+`task list -json` fills both lists — the attention of a run is told in the run itself, under the
+name `attention`, so a program reads a task either way. `task attention -json` fills `attention`
+and leaves `runs` empty and named. `task list -all` and `task attention -all` put every project
+of the machine into one such document, and every record names its own project.
+
 `version` says which build of crewflow wrote the answer and grows only when the meaning of a
 field changes; `generated_at` is the moment the answer was made, and every `waiting_since` and
-`waiting_seconds` in it is counted to that moment. `task list -all` puts the runs of every
-project of the machine into one such document, and every record names its own project.
+`waiting_seconds` in it is counted to that moment.
+
+`task attention -all` is the one answer about the machine and not about a project, and it says
+so before its block: every project has its own tracker, its own host and its own file, so `-all`
+reads the state of the runs and nothing else — no host is asked, and no record is left under a
+task, because the record is written as the orchestrator of a project and the machine has none.
+What that costs is in the same line: a change merged past crewflow stays `finished-unseen` in
+that table until `crewflow task attention` in its own project asks its host and takes it out.
 
 `attention_state` and `reason` are **closed lists** — the eight states and twenty reasons of
 §6a of the design — because a program switches on those words. A reason crewflow cannot name

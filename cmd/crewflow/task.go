@@ -390,10 +390,16 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 // task, the state, the priority and the reason — and not again for a day while the key is
 // the same, so that a schedule that runs every minute leaves one line under a task and not
 // one a minute. The code is not zero while anything in the queue wants a person.
+//
+// `-all` is that queue of every project of the machine in one document, with the project
+// named in every record: у каждого проекта свой хостинг и свой файл проекта, поэтому
+// читается одно состояние прогонов и ничего больше, и запись под задачей не оставляется
+// ни в одном из них (§6a, §7g).
 func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("attention", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the queue as JSON, for the orchestrator")
+	all := flags.Bool("all", false, "show what of every project on this machine needs a person, from any folder")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -401,6 +407,11 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "crewflow task attention: unexpected argument %q\n\n", flags.Arg(0))
 		usage(stderr)
 		return exitUsage
+	}
+	ctx, stop := stoppedBy()
+	defer stop()
+	if *all {
+		return attentionOfEveryProject(ctx, *configPath, *asJSON, stdout, stderr)
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -414,12 +425,10 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	ctx, stop := stoppedBy()
-	defer stop()
 	// The state of the tasks is read first and the host is asked about the roles of the
 	// project only where the queue is worked out of it: a project whose host is not there
 	// is answered from the state alone, and says so in the entries it could not ask
-	// about (docs.DESIGN.md §6a).
+	// about (docs/DESIGN.md §6a).
 	//
 	// Пока очередь читается, команда молчит: чтение ходит в чужой сервис, и минута
 	// молчания в терминале выглядит как зависшая команда. Если чтение длится дольше
@@ -444,7 +453,7 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	} else if queue.Interrupted {
 		// Человек остановил команду на середине чтения, и то, что успело прочитаться,
 		// не является ответом ни о чём: печатать его — значит утверждать о работе проекта
-		// по половине данных (F-098, docs.DESIGN.md §6a).
+		// по половине данных (F-098, docs/DESIGN.md §6a).
 		fmt.Fprintln(stdout, "interrupted: the state was not read, so nothing is said about the runs of this project")
 	} else if err := queue.Write(stdout, taskScreen(stdout, taskClock())); err != nil {
 		return failed(stderr, err)
@@ -464,6 +473,90 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	// could not read is a thing a person has to find out about — the code of the command
 	// says so in обоих случаях, whatever crewflow managed to write under the task.
 	return exitFailure
+}
+
+// attentionOfEveryProject is `crewflow task attention -all`: what of every project of the
+// machine wants a person, in one document and with the project named in every record.
+//
+// The queue of a project is worked out of the state of its runs and out of the host of that
+// project. Here there is no project to ask: у каждого проекта машины свой трекер, свой
+// хостинг и свой файл, и ответ «о всей машине», спрашивающий чужой хостинг о чужом
+// проекте, — не ответ ни о чём (§6a, §7g). So the state is read and the host is not asked,
+// and what that costs is said in the same block: изменение, слитое мимо crewflow, стоит в
+// такой таблице `finished-unseen`, пока `crewflow task attention` в своём проекте не уберёт
+// его, спросив хостинг (docs/DESIGN.md §6).
+//
+// The silence of §7a and the thresholds of §6a are the ones of the file of the project of the
+// folder, and a folder of no project names none of them: прогон, который идёт и молчит, в
+// папке без файла проекта стоящим не называется, и очередь без порогов не эскалирует и не
+// выносит в начало за то, что заждалась (docs/DESIGN.md §6). Nothing is left under any task
+// either: запись под задачей пишется от имени оркестратора проекта, а у всей машины
+// оркестратора нет (§6a, §7i).
+func attentionOfEveryProject(ctx context.Context, configPath string, asJSON bool, stdout, stderr io.Writer) int {
+	env, err := attentionEnvOfTheFolder(configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := whereCrewflowKeeps()
+	if err != nil {
+		return failed(stderr, err)
+	}
+	reading := saysItReads(stderr, readSilence)
+	env.Reading = reading.begin
+	queues, err := taskrun.QueuesOfEveryProject(ctx, home, env)
+	reading.stop()
+	if err != nil {
+		return failed(stderr, err)
+	}
+	document := taskrun.MachineOf(queues).AttentionOfEveryProject(taskClock())
+	if asJSON {
+		if err := printJSON(stdout, document); err != nil {
+			return failed(stderr, err)
+		}
+	} else {
+		fmt.Fprintln(stdout, attentionOfTheMachine)
+		if err := taskrun.QueuesOf(queues).Write(stdout, taskScreen(stdout, taskClock())); err != nil {
+			return failed(stderr, err)
+		}
+		if err := taskrun.QueuesOf(queues).Notes(stderr); err != nil {
+			return failed(stderr, err)
+		}
+	}
+	if len(document.Attention) == 0 && len(document.Unread) == 0 {
+		if !asJSON {
+			fmt.Fprintln(stdout, "nothing wants a person: the runs of every project of this machine are working or are over")
+		}
+		return exitOK
+	}
+	// Что-то на машине ждёт человека, и код команды говорит об этом так же, как у очереди
+	// одного проекта (docs/DESIGN.md §6a).
+	return exitFailure
+}
+
+// attentionOfTheMachine is the line над блоком `-all`: она нужна потому, что ответ о всей
+// машине — не ответ ни о каком проекте, и без неё человек прочитал бы сказанное о
+// состоянии прогонов как решение по каждой из задач (docs/DESIGN.md §6a).
+const attentionOfTheMachine = "every project of this machine, out of the state of its runs: " +
+	"no host was read and no record was left under a task — `crewflow task attention` in a project reads its host"
+
+// attentionEnvOfTheFolder is the machine and the file of the project of the folder a question
+// about the whole machine is asked in: the clock, the question whether a run is going, the
+// silence of §7a and the thresholds of §6a — where the folder has a project file, and nothing
+// at all where it has none. A question about the whole machine is asked from any folder, and a
+// folder of no project says nothing about how long the work beside it may go on (§6).
+func attentionEnvOfTheFolder(configPath string) (taskrun.AttentionEnv, error) {
+	empty := taskrun.AttentionEnv{ListEnv: taskrun.ListEnv{
+		Now:     taskClock,
+		Running: taskMachine.Alive,
+	}}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		// A folder of no project is not a refusal: it says that nothing is escalated and
+		// that nothing is put on top for having waited, and both of those are answers a
+		// person may act on (§6, §6a).
+		return empty, nil
+	}
+	return attentionEnv(cfg)
 }
 
 // hostOfTheProject is the host of the project as the queue of attention asks about it.
@@ -487,7 +580,7 @@ func hostOfTheProject(ctx context.Context, cfg config.Config, configPath string)
 
 // hostUnreachable is a host of a project crewflow could not reach or could not read the
 // accounts of: it says why for every task, and the queue puts that into the entries it could
-// not work out of the host (docs.DESIGN.md §7h).
+// not work out of the host (docs/DESIGN.md §7h).
 type hostUnreachable struct{ err error }
 
 // FactsOf is the failure itself, and nothing else: there is no fact of a host that is not

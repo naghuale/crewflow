@@ -118,6 +118,78 @@ func TestTheListOfTheWholeMachineIsOneDocument(t *testing.T) {
 	}
 }
 
+// TestTheAttentionOfEveryProjectIsOneDocumentOfTheMachine: `-all` у очереди — тот же
+// документ, в котором записи всех проектов машины, и проект назван в каждой записи.
+//
+// The queue of every project is worked out of its state alone: у каждого проекта свой хостинг
+// и своя очередь, а спрашивать чужой хостинг о чужом проекте — значит ответить неправдой о
+// работе чужого репозитория (§6, §6a, §7g).
+func TestTheAttentionOfEveryProjectIsOneDocumentOfTheMachine(t *testing.T) {
+	home := t.TempDir()
+	ended := monday.Add(8 * time.Hour)
+	// Два проекта, у каждого прогон, который открыл изменение и которого никто не смотрел,
+	// и прогон, который стоит: обе причины видны из состояния и без хостинга.
+	for _, project := range []struct {
+		repo    string
+		ended   int
+		standin int
+	}{
+		{repo: "naghuale-crewflow", ended: 43, standin: 44},
+		{repo: "naghuale-tele", ended: 7, standin: 8},
+	} {
+		writeState(t, home, project.repo, project.ended, "открыл изменение", &Change{Number: 90},
+			try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+		writeState(t, home, project.repo, project.standin, "стоит", nil,
+			try{startedAt: ended, outcome: Running, pid: 100, lastAt: ended.Add(-47 * time.Minute),
+				lastStep: "go test ./..."})
+	}
+	at := ended.Add(time.Hour)
+	queues, err := QueuesOfEveryProject(t.Context(), home, attentionEnvOf(at, 100))
+	if err != nil {
+		t.Fatalf("QueuesOfEveryProject returned an error: %v", err)
+	}
+	if len(queues) != 2 {
+		t.Fatalf("the machine holds the queues %v, want one of each of the two projects", queues)
+	}
+
+	document := MachineOf(queues).AttentionOfEveryProject(at)
+
+	if document.Repo != "" || len(document.Runs) != 0 {
+		t.Errorf("the document is of %q with %d runs, want no project and no runs: ответ о всей машине",
+			document.Repo, len(document.Runs))
+	}
+	// The document holds every record of every project, and each of them names its own
+	// project: без этого программа не знала бы, чей это прогон (§6a).
+	ofProject := map[string][]int{}
+	for _, one := range document.Attention {
+		ofProject[one.Repo] = append(ofProject[one.Repo], one.Task)
+		for _, check := range []struct {
+			what  string
+			value string
+		}{{"attention_state", string(one.State)}, {"reason", one.Reason}} {
+			if (check.what == "reason" && !KnownReason(check.value)) ||
+				(check.what != "reason" && !KnownState(AttentionState(check.value))) {
+				t.Errorf("the record of the task %d holds %s = %q, want a code of the closed list",
+					one.Task, check.what, check.value)
+			}
+		}
+	}
+	for project, tasks := range ofProject {
+		slices.Sort(tasks)
+		ofProject[project] = tasks
+	}
+	want := map[string][]int{"naghuale/crewflow": {43, 44}, "naghuale/tele": {7, 8}}
+	if !reflect.DeepEqual(ofProject, want) {
+		t.Errorf("the document holds the records %+v,\nwant %+v: every project of the machine in one document",
+			ofProject, want)
+	}
+	// Список прогонов назван и пуст, а не отсутствует: программа читает документ, не
+	// спрашивая, есть ли поле (§6a).
+	if !strings.Contains(answerAs(t, document), `"runs": []`) {
+		t.Errorf("the document wrote %s, want an empty list of runs and not a null", answerAs(t, document))
+	}
+}
+
 // TestTheClosedListOfStatesIsTheStatesTheQueueSortsBy: перечень состояний §6a закрытый, и
 // очередь сортирует им ровно этим списком. Слово, которого в перечне нет, места в очереди
 // не имеет, а состояние, у которого места нет, формату не принадлежит — иначе каждый, кто

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -496,6 +497,104 @@ type Queue struct {
 // номеров задач, как их перечисляет человек. It is a list of its own and not of entries of
 // the queue: то, что не прочитано, не стоит в очереди ни за кем (docs/DESIGN.md §6a, §7h).
 type Unreads []Unread
+
+// Queues are the queues of the machine, by the project each is of and in the order of those
+// names: у каждого проекта своя очередь, и ответ о всей машине — это список очередей, а не
+// одна очередь без проекта (docs/DESIGN.md §6a).
+type Queues map[string]Queue
+
+// QueuesOf is the queues of the machine as a caller holds them, whatever came out of reading
+// them: it is the machine's own answer, and a command that prints the attention of every
+// project prints it from here (docs/DESIGN.md §6a).
+func QueuesOf(queues map[string]Queue) Queues {
+	return Queues(queues)
+}
+
+// MachineOf is the answer of the whole machine as the state of its runs and the queues worked
+// out of it are held: the list of the queues of every project, in the order of the names of
+// the projects. It is what `crewflow task attention -all` answers from (docs/DESIGN.md §6a).
+func MachineOf(queues map[string]Queue) Runs {
+	return Runs{Attention: queues}
+}
+
+// QueuesOfEveryProject is the queue of every project of the machine, worked out of the state
+// of its runs and of nothing else: no tracker, no host, no network. It is asked from any
+// folder, and у каждого проекта машины свой трекер, свой хостинг и свой файл, поэтому
+// спрашивать чужой хостинг о чужом проекте было бы ответом ни о чём (§6, §6a, §7g).
+//
+// Nothing is left under any task here and no record is told to have been left: запись под
+// задачей пишется от имени оркестратора того проекта, а у всей машины оркестратора нет
+// (§6a, §7i). The env is the same for every project of the call: the silence of §7a and the
+// thresholds of §6a of the file of the folder the question was asked in, and none of them
+// where there is no such file (§6).
+func QueuesOfEveryProject(ctx context.Context, home string, env AttentionEnv) (Queues, error) {
+	queues := Queues{}
+	for _, project := range projectsOfTheMachine(home) {
+		queue, err := AttentionQueue(ctx, home, project, env, nil)
+		if err != nil {
+			return nil, err
+		}
+		queues[project] = queue
+	}
+	return queues, nil
+}
+
+// projectsOfTheMachine are the projects crewflow has run anything of on this machine, by the
+// names their states are kept under and in the order of those names: a person reads the answer
+// of the machine in the order of its projects, and a program reads the same order in the
+// records (docs/DESIGN.md §6).
+func projectsOfTheMachine(home string) []string {
+	names, err := os.ReadDir(filepath.Join(home, "state"))
+	if err != nil {
+		// A machine crewflow has run nothing on has no folder of states yet, and that is
+		// nothing wrong with the machine: there is no run to want anybody (docs/DESIGN.md §6).
+		return nil
+	}
+	var projects []string
+	for _, name := range names {
+		if name.IsDir() {
+			projects = append(projects, name.Name())
+		}
+	}
+	slices.Sort(projects)
+	return projects
+}
+
+// Notes is what every queue of the machine could not say about the tasks of the projects of
+// it: the state files crewflow could not read, one per line, each with the project it is of.
+// It goes to the standard error beside the answer, because the answer of a command is the
+// thing an orchestrator reads, and a state file it could not read is not an answer (§6a).
+func (q Queues) Notes(w io.Writer) error {
+	for _, project := range slices.Sorted(maps.Keys(q)) {
+		if err := q[project].Notes(w); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Write is the block of what wants a person of every project of the machine, each of them
+// with the project named above it: a person reads a queue of one project without its name and
+// a queue of the whole machine cannot — две очереди рядом без имён проектов читаются как одна
+// очередь с двенадцатью задачами в ней (docs/DESIGN.md §6a).
+func (q Queues) Write(w io.Writer, screen Screen) error {
+	for _, project := range slices.Sorted(maps.Keys(q)) {
+		queue := q[project]
+		if len(queue.Entries) == 0 && len(queue.Unread) == 0 {
+			continue
+		}
+		if _, err := fmt.Fprintf(w, "%s\n", painted(ownerAndRepo(project), bold, screen)); err != nil {
+			return fmt.Errorf("write the queue of the project %s: %w", project, err)
+		}
+		if err := queue.Write(w, screen); err != nil {
+			return err
+		}
+		if err := queue.Unread.Write(w, screen); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // Unread is one run of the project whose host could not be read, and what was being waited
 // for there — то, что crewflow знал о прогоне до чтения хостинга. It is not an entry of the

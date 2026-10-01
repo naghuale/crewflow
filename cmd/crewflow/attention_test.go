@@ -600,6 +600,87 @@ func TestRunTaskAttentionAndTaskListGiveTheSameAttention(t *testing.T) {
 	}
 }
 
+// TestRunTaskAttentionAllJSONIsOneDocumentOfTheMachine: `-all` — очередь внимания всех
+// проектов машины в одном документе, с проектом в каждой записи. Задача говорит, что `-all`
+// кладёт записи всех проектов машины в один документ, и очередь — второе представление
+// состояния процесса, а не только список (docs/DESIGN.md §6a).
+//
+// Ответ считан из состояния прогонов и ничего не спрашивает: у каждого проекта свой трекер и
+// свой хостинг, а папка, из которой спросили, может проектом вовсе не быть, поэтому запись
+// под задачей здесь не оставляется ни в одном проекте — и человек об этом узнаёт из строки
+// над блоком (docs/DESIGN.md §6, §7g).
+func TestRunTaskAttentionAllJSONIsOneDocumentOfTheMachine(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	_, other := host.otherProject(t)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of this project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	host.task = taskOf(50)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "run", "50", "-config", other}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("the run of the other project = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+
+	// The folder crewflow was called in is of no project at all: -all is asked from any
+	// folder, and the state of every project is in one place.
+	t.Chdir(t.TempDir())
+
+	if code := run([]string{"task", "attention", "-all", "-json"}, &stdout, &stderr); code != exitFailure {
+		t.Fatalf("crewflow task attention -all -json = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+
+	document := documentOf(t, stdout.Bytes())
+	if document.Repo != "" {
+		t.Errorf("the document is of the project %q, want no one: the attention of the machine is of no project",
+			document.Repo)
+	}
+	if len(document.Runs) != 0 {
+		t.Errorf("the document holds the runs %+v, want none and named: очередь не перечисляет прогоны", document.Runs)
+	}
+	// Every project of the machine is in one document, and every record says which project
+	// it is of — иначе программа, читающая два проекта разом, не знала бы, чей это прогон.
+	ofProject := map[string]int{}
+	for _, one := range document.Attention {
+		ofProject[one.Repo] = one.Task
+		switch {
+		case one.State != taskrun.AttentionFinishedUnseen:
+			t.Errorf("the record of the task %d of %s is %q, want %q: прогон закончился, и его не смотрели",
+				one.Task, one.Repo, one.State, taskrun.AttentionFinishedUnseen)
+		case one.Reason != taskrun.ReasonRunCompleted:
+			t.Errorf("the reason of the record of the task %d of %s = %q, want %q",
+				one.Task, one.Repo, one.Reason, taskrun.ReasonRunCompleted)
+		}
+	}
+	if want := map[string]int{"naghuale/crewflow": 43, "naghuale/telecli": 50}; !reflect.DeepEqual(ofProject, want) {
+		t.Errorf("the document holds the records %+v,\nwant %+v: записи всех проектов машины в одном документе",
+			ofProject, want)
+	}
+
+	// Человеку то же самое — с проектом над каждой очередью и со строкой о том, чего этот
+	// ответ не читал: блок без неё читался бы как решение по каждой из задач (§6a).
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "attention", "-all"}, &stdout, &stderr); code != exitFailure {
+		t.Fatalf("crewflow task attention -all = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	said := stdout.String()
+	for _, want := range []string{attentionOfTheMachine, "naghuale/crewflow", "naghuale/telecli",
+		"ATTENTION REQUIRED", "#43", "#50", taskrun.ReasonRunCompleted} {
+		if !strings.Contains(said, want) {
+			t.Errorf("crewflow task attention -all wrote %q, want it to mention %q", said, want)
+		}
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("crewflow task attention -all wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
 // attentionRecord is one answer об attention, as a program reads it: task, attention_state,
 // reason и next_actor — те четыре поля, по которым две команды обязаны совпадать
 // (CL-007…CL-009, docs/DESIGN.md §6a).
