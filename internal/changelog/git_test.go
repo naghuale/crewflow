@@ -122,13 +122,3 @@ func (g *gitOfTheTest) gone(name string) bool {
 	_, err := os.Stat(filepath.Join(g.dir, filepath.FromSlash(name)))
 	return os.IsNotExist(err)
 }
-
-// asExitError is [errors.As] for an exit of a program, said once for the tests of this
-// file.
-func asExitError(err error, into **exec.ExitError) bool {
-	failed, ok := err.(*exec.ExitError)
-	if ok {
-		*into = failed
-	}
-	return ok
-}
