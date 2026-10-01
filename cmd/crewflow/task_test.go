@@ -1438,6 +1438,32 @@ timeout = "1h"
 root = "WORKTREES/{repo}"
 `
 
+// separateConfig is the crewflow.toml of a project whose orchestrator works under an account
+// of the host of its own: the App of it is named by its number, and the login of that App is
+// among the reviewers of the project. It is the mode this repository works in, and the one a
+// second construction of the roles of a project gets wrong (§7i).
+const separateConfig = `
+[project]
+repo = "naghuale/crewflow"
+language = "en"
+
+[executor]
+command = ["opencode", "run", "{prompt}"]
+
+[orchestrator]
+mode = "separate"
+
+[orchestrator.github_app]
+app_id = 5140522
+
+[merge]
+reviewers = ["crewflow-orchestrator[bot]"]
+owners = ["naghuale"]
+
+[worktrees]
+root = "WORKTREES/{repo}"
+`
+
 // taskOf is a whole task of a test.
 func taskOf(number int) forge.Task {
 	return forge.Task{
@@ -1487,6 +1513,13 @@ type host struct {
 	// project whose file names nobody it knows (docs.DESIGN.md §6a, §7i).
 	under     []forge.Comment
 	noSubject bool
+	// merged says that the change request of the run is in the state of a change that went
+	// in, and closed that the task of the test is closed: the two reactions of the host that
+	// take a run out of the queue of attention (F-061, §6a, §7g).
+	merged bool
+	// app is the App the host of the test knows, and the login of every other App is
+	// refused the way the host of GitHub refuses an App it was not given (§7i).
+	app int64
 }
 
 // use makes the task command run on this host, and puts the machine back when the
@@ -1497,6 +1530,7 @@ func (h *host) use(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		taskRoles = roles.New
+		reviewRoles = roles.AsOrchestrator
 		taskRunEnv = taskrun.System
 		taskMachine = proc.System()
 		taskClock = time.Now
@@ -1508,6 +1542,13 @@ func (h *host) use(t *testing.T) {
 	h.worktrees = filepath.Join(t.TempDir(), "worktrees")
 	h.git = filepath.Join(t.TempDir(), "git")
 	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		return forge.Set{Tracker: h, Forge: h}, nil
+	}
+	// The queue of attention asks the host as the orchestrator of the project and not as
+	// the executor of a run, so the roles of the orchestrator are a host of the test as
+	// well: a command that reached the host of a person would read the tracker of a project
+	// that is not the one of the test (docs/DESIGN.md §6a, §7i).
+	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Tracker: h, Forge: h}, nil
 	}
 	taskRunEnv = func(home string) taskrun.Env {
@@ -1541,6 +1582,13 @@ func testHome() string {
 func (h *host) config(t *testing.T) string {
 	t.Helper()
 	return writeConfig(t, strings.ReplaceAll(taskConfig, "WORKTREES", h.worktrees))
+}
+
+// configAs is the file of a project of the test written out of one of the settings of it,
+// with its worktrees in a folder of the test.
+func (h *host) configAs(t *testing.T, settings string) string {
+	t.Helper()
+	return writeConfig(t, strings.ReplaceAll(settings, "WORKTREES", h.worktrees))
 }
 
 // otherProject is a checkout of another project in a folder of the test, and the file
@@ -1645,10 +1693,15 @@ func (h *host) CommentTask(_ context.Context, number int, body string) error {
 }
 
 // ChangeRequest returns a request by its number: the change request of the run of the
-// test where it opened one, and nothing where it did not.
+// test where it opened one, and nothing where it did not. A host of a test whose change
+// went in says so, and that is what takes a run out of the queue of attention (§6a).
 func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
 	if !h.opened {
 		return forge.ChangeRequest{}, fmt.Errorf("could not find change request #%d", number)
+	}
+	state := "open"
+	if h.merged {
+		state = "merged"
 	}
 	return forge.ChangeRequest{
 		Number:     44,
@@ -1656,7 +1709,7 @@ func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest
 		HeadBranch: "crewflow/43-task",
 		HeadSHA:    "9f1c0de",
 		BaseBranch: "main",
-		State:      "open",
+		State:      state,
 	}, nil
 }
 
@@ -1676,7 +1729,34 @@ func (h *host) Subject(_ context.Context, login string) (forge.Subject, error) {
 	if h.noSubject {
 		return forge.Subject{}, errors.New("the host of the test does not say what an account of it is")
 	}
+	// A host knows the App it was given and refuses the login of every other one, in the
+	// words of §7i: an App that is neither the one of the executor nor the one of the
+	// orchestrator is an App of somebody else's project, and counting records of it would
+	// be counting records of a stranger.
+	if number, isApp := appOfTest[login]; isApp {
+		if h.app != 0 && h.app != number {
+			return forge.Subject{}, fmt.Errorf("the account %q is the account of an app that is neither the app "+
+				"of the executor nor the app of the orchestrator of this project", login)
+		}
+		return forge.Subject{Kind: forge.KindApp, Login: login, ID: number}, nil
+	}
 	return forge.Subject{Kind: forge.KindUser, Login: login, ID: int64(len(login))}, nil
+}
+
+// appOfTest are the Apps a host of a test knows by their login, as the two of this project
+// are: the one of the executor of a run and the one of the orchestrator (§7i).
+var appOfTest = map[string]int64{
+	"crewflow-executor[bot]":     5107052,
+	"crewflow-orchestrator[bot]": 5140522,
+}
+
+// as is the host of a test as the project gave it one App: the two roles of a project are
+// two constructions of the roles, and a command that builds them another way is talking
+// about a host that does not know the account it is asking about (§7i).
+func (h *host) as(app int64) *host {
+	other := *h
+	other.app = app
+	return &other
 }
 
 // Doctor says nothing: a test of the command has a host of its own already.

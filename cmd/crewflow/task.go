@@ -381,7 +381,7 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 // the host was not read. A queue that says "nobody is waiting" because the host was out of
 // reach would be lying about the work of the project (docs/DESIGN.md §6a, §7h).
 func hostOfTheProject(ctx context.Context, cfg config.Config, configPath string) taskrun.Host {
-	set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+	set, err := reviewRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
 	if err != nil {
 		return hostUnreachable{err}
 	}

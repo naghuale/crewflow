@@ -75,11 +75,18 @@ func attentionHost(ctx context.Context, set forge.Set, cfg config.Config) (taskr
 	if set.Tracker == nil || set.Forge == nil {
 		return nil, nil
 	}
-	reviewers, err := roles.ReviewersOf(ctx, cfg, set)
+	// The accounts of the project are worked out by the same two functions a review is
+	// worked out by, and over the same roles: the queue counts the records a review counts,
+	// and in the mode of an account of its own the host has to know the app of the
+	// orchestrator to say which account that is. A queue that built the roles another way
+	// refuses the login of the orchestrator and then answers about every run of the project
+	// "the host could not be read" — the review of PR #118 saw exactly that on a live run
+	// (docs.DESIGN.md §7h, §7i).
+	reviewers, err := reviewersOf(ctx, cfg, set)
 	if err != nil {
 		return nil, err
 	}
-	owners, err := roles.OwnersOf(ctx, cfg, set)
+	owners, err := ownersOf(ctx, cfg, set)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +116,7 @@ func (h hostOfAttention) FactsOf(ctx context.Context, task, change int) (taskrun
 	if err != nil {
 		return taskrun.HostFacts{}, fmt.Errorf("read task %d: %w", task, err)
 	}
-	facts := taskrun.HostFacts{Labels: found.Labels}
+	facts := taskrun.HostFacts{Labels: found.Labels, Closed: isClosed(found.State)}
 	changeFacts, err := h.changeFacts(ctx, change)
 	if err != nil {
 		// The labels of the task were read and the change request was not: the queue is
@@ -158,14 +165,18 @@ func (h hostOfAttention) changeFacts(ctx context.Context, number int) (*taskrun.
 // no tracker, and the answer says so rather than letting a schedule believe that a notice
 // is there (docs/DESIGN.md §6a, §7g).
 //
-// The roles of the project are built the first time there is something to leave under a
+// The roles of the project are the roles of its orchestrator — the same ones a review and a
+// merge are made of — and they are built the first time there is something to leave under a
 // task, and not before: a project whose host is not reachable, or a queue with nothing
-// escalated in it, is answered without a network at all.
+// escalated in it, is answered without a network at all. A record of the queue is a word to
+// the orchestrator and is written as him: in the mode of an account of its own the App of the
+// executor is refused by the host of an issue, and a notice that cannot be written is no
+// notice at all (docs.DESIGN.md §6a, §7g, §7i).
 func noticeUnderTheTask(cfg config.Config, configPath string) taskrun.SayAttention {
 	var built *forge.Set
 	return func(ctx context.Context, one taskrun.Attention) (bool, string) {
 		if built == nil {
-			set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+			set, err := reviewRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
 			if err != nil {
 				return false, err.Error()
 			}
@@ -215,6 +226,13 @@ func acceptedOf(comments []forge.Comment, head string, of []forge.Subject, execu
 		when = comment.CreatedAt
 	}
 	return accepted, when
+}
+
+// isClosed is whether a tracker says of a task that it is closed, whatever the word of the
+// host stands for: a task that is closed is a task that is done, and a queue of what wants a
+// person has no business asking for anything under it (docs.DESIGN.md §7g).
+func isClosed(state string) bool {
+	return strings.EqualFold(strings.TrimSpace(state), "closed")
 }
 
 // among is whether an account is one of the list, by the kind of the account and the number

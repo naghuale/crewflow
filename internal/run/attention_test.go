@@ -110,6 +110,113 @@ func TestAReviewOfTheChangeIsAResponseAndLeavesTheQueue(t *testing.T) {
 	_ = old
 }
 
+// TestTheReactionOfTheHostTakesTheRunOutOfTheQueue: the review of PR #118 on a live run.
+// A change request that is merged or closed is the reaction, and a task the host closed is
+// done: a queue that keeps a merged change in it for two days is the zombie this task is
+// named after, and it is worse than the one of a standing run, because the run is over and
+// the queue cannot see it (F-061, §6a).
+func TestTheReactionOfTheHostTakesTheRunOutOfTheQueue(t *testing.T) {
+	const repo = "naghuale-crewflow"
+	ended := monday.Add(8*time.Hour + 42*time.Minute)
+	head := "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+	change := &Change{Number: 113, URL: "https://example.com/113"}
+	reviewer := hostOfTest{}
+	for _, tc := range []struct {
+		name  string
+		facts HostFacts
+		want  bool
+	}{
+		{
+			name:  "an open change and no record of a review after the run",
+			facts: HostFacts{Change: &ChangeFacts{Number: 113, State: "open", Head: head}},
+			want:  true,
+		},
+		{
+			name:  "a change the host merged",
+			facts: HostFacts{Change: &ChangeFacts{Number: 113, State: "merged", Head: head}},
+			want:  false,
+		},
+		{
+			name:  "a change the host closed",
+			facts: HostFacts{Change: &ChangeFacts{Number: 113, State: "closed", Head: head}},
+			want:  false,
+		},
+		{
+			name:  "a task the host closed behind an open change",
+			facts: HostFacts{Closed: true, Change: &ChangeFacts{Number: 113, State: "open", Head: head}},
+			want:  false,
+		},
+		{
+			name:  "a task the host closed, where the run opened no change",
+			facts: HostFacts{Closed: true},
+			want:  false,
+		},
+		{
+			name:  "a task the host has open, where the run opened no change",
+			facts: HostFacts{Change: &ChangeFacts{Number: 0, State: "open", Head: head}},
+			want:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			writeState(t, home, repo, 43, "the run of a task", change,
+				try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+			reviewer[43] = tc.facts
+
+			queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), reviewer)
+
+			_, inQueue := queue.Wanted(43)
+			if inQueue != tc.want {
+				t.Errorf("the task is in the queue: %v, want %v (%+v)", inQueue, tc.want, queue.Entries)
+			}
+		})
+	}
+}
+
+// TestARunThatWasClearedLeavesNoRecordUnderTheTask: a run whose change went in is not in
+// the queue, and crewflow writes nothing under its task about a wait that is over — the
+// records of the queue of attention are about what is still waited for (docs/DESIGN.md §6a).
+func TestARunThatWasClearedLeavesNoRecordUnderTheTask(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8*time.Hour + 42*time.Minute)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113, URL: "https://example.com/113"},
+		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	said := &saidUnderTheTask{}
+	host := hostOfTest{43: HostFacts{
+		Change: &ChangeFacts{Number: 113, State: "merged", Head: "abc"},
+	}}
+
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), host, said.sayAttention)
+
+	if len(queue.Entries) != 0 {
+		t.Errorf("the queue holds %+v, want nothing: the change of the task went in", queue.Entries)
+	}
+	if len(said.lines) != 0 {
+		t.Errorf("crewflow left %q under a task whose change is merged, want nothing", said.lines)
+	}
+}
+
+// TestAHostThatCouldNotBeReadLeavesTheEntryWithoutAClaim: the second defect of the review of
+// PR #118. Where the host could not be read, crewflow cannot say whether somebody has
+// already looked at the result of the run, and an entry that said "act now" about a change
+// that went in a week ago is a zombie of its own (F-061, docs.DESIGN.md §6a).
+func TestAHostThatCouldNotBeReadLeavesTheEntryWithoutAClaim(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8*time.Hour + 42*time.Minute)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113, URL: "https://example.com/113"},
+		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+
+	one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{})
+
+	if one.Actable != ActUnknown {
+		t.Errorf("the entry says %q, want %q: the host could not be read and crewflow does not know "+
+			"whether the result of the run was looked at", one.Actable, ActUnknown)
+	}
+	if one.Problem == "" {
+		t.Error("the entry says nothing about the host it could not read, want the reason of it")
+	}
+}
+
 // TestAnApprovedTaskOfTheLabelOfTheOwnerWaitsForTheOwner: the wait of ES-002 and ES-003. A
 // change of a task marked `owner-check` is approved and the owner has not taken the result
 // in, so the next one is the owner — and the wait began when the change was approved and
@@ -590,22 +697,34 @@ func TestTheEntryOfAListCarriesTheStateOfTheAttention(t *testing.T) {
 	}
 }
 
-// TestTheHostIsAskedOnlyWhereARunOpenedAChange: a queue that asked the host about every
-// task of the project would put a network in the middle of a list of runs, and a run that
-// opened no change request has nothing on the host to say about it (§6, §6a).
-func TestTheHostIsAskedOnlyWhereARunOpenedAChange(t *testing.T) {
+// TestTheHostIsAskedOnlyWhereAWaitMayBeCleared: a queue that asked the host about every
+// task of the project would put a network in the middle of a list of runs, and a task that
+// wants nobody has nothing to ask about. A run that is going is not asked about either:
+// nobody reacts to a change while the run that opened it works (§6, §6a).
+func TestTheHostIsAskedOnlyWhereAWaitMayBeCleared(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-crewflow"
 	ended := monday.Add(8 * time.Hour)
+	// A run that ended with its change request, a run that ended without one, a run that is
+	// going, and a run that worked out.
 	writeState(t, home, repo, 43, "opened a change", &Change{Number: 113},
 		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
 	writeState(t, home, repo, 44, "opened nothing", nil,
 		try{startedAt: monday, endedAt: ended, outcome: TimedOut})
+	writeState(t, home, repo, 45, "is going", nil,
+		try{startedAt: monday, outcome: Running, pid: 100, lastAt: ended, lastStep: stepExecutor})
+	writeState(t, home, repo, 46, "worked out", nil,
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
 	host := &hostThatCounts{}
 
-	queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), host)
+	queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Minute), 100), host)
 
-	if len(host.asked) != 1 || host.asked[0] != 43 {
-		t.Errorf("the host was asked about %v, want the task 43 alone: a run that opened no change has nothing to ask about", host.asked)
+	if len(host.asked) != 2 || host.asked[0] != 43 || host.asked[1] != 44 {
+		t.Errorf("the host was asked about %v, want the tasks 43 and 44: a reaction may clear what has ended, "+
+			"and a run that is going or a task that wants nobody is not read from the host", host.asked)
+	}
+	if changes := host.changes; changes[0] != 113 || changes[1] != 0 {
+		t.Errorf("the host was asked about the changes %v, want 113 and nothing: a run that opened no change "+
+			"has no change to ask about, only a task", changes)
 	}
 }
 
@@ -767,9 +886,13 @@ func queueOf(t *testing.T, home, repo string, env AttentionEnv, host Host, said 
 
 // attentionOnly is the one entry of the queue of a project, and it fails the test where the
 // queue holds nothing.
-func attentionOnly(t *testing.T, home, repo string, env AttentionEnv) Attention {
+func attentionOnly(t *testing.T, home, repo string, env AttentionEnv, host ...Host) Attention {
 	t.Helper()
-	queue := queueOf(t, home, repo, env, nil)
+	var asked Host
+	if len(host) > 0 {
+		asked = host[0]
+	}
+	queue := queueOf(t, home, repo, env, asked)
 	if len(queue.Entries) != 1 {
 		t.Fatalf("the queue holds %v, want one task in it", tasksOfQueue(queue))
 	}
@@ -801,15 +924,20 @@ func (h hostOfTest) FactsOf(_ context.Context, task, _ int) (HostFacts, error) {
 	return facts, nil
 }
 
-// hostThatCounts is the host of a project that remembers which tasks it was asked about.
+// hostThatCounts is the host of a project that remembers which tasks it was asked about
+// and which change request it was asked about with each of them.
 type hostThatCounts struct {
-	asked []int
+	asked   []int
+	changes []int
 }
 
-// FactsOf is one task asked of the host, and one fact about it: a run that opened a change
-// request, and nothing more.
+// FactsOf is one task asked of the host: the change request of the run where there is one,
+// and nothing about the change where the run opened none.
 func (h *hostThatCounts) FactsOf(_ context.Context, task, change int) (HostFacts, error) {
-	h.asked = append(h.asked, task)
+	h.asked, h.changes = append(h.asked, task), append(h.changes, change)
+	if change == 0 {
+		return HostFacts{}, nil
+	}
 	return HostFacts{Change: &ChangeFacts{Number: change, State: "open", Head: "abc"}}, nil
 }
 

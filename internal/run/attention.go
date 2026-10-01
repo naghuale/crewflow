@@ -317,7 +317,9 @@ type AttentionEnv struct {
 // rest of it unknown, because a queue that guesses is a queue a person cannot act on.
 type Host interface {
 	// FactsOf returns what the host of the project knows about the task and about the
-	// change request of the run of it, which is the one with that number.
+	// change request of the run of it, which is the one with that number — and nothing
+	// about the change where the number is zero, because a run that opened none has no
+	// change to ask about.
 	FactsOf(ctx context.Context, task, change int) (HostFacts, error)
 }
 
@@ -328,13 +330,18 @@ type Host interface {
 // rather than letting a schedule believe that a notice is there (§6, §7g).
 type SayAttention func(ctx context.Context, one Attention) (said bool, problem string)
 
-// HostFacts is what the host of a project is known to say about a task: the words it is
-// marked with, and the change request of the run of it with what is written under it. A
-// host nobody asked is the zero of this type, and every field of it says so.
+// HostFacts is what the host of a project is known to say about a task: where the task
+// stands, the words it is marked with, and the change request of the run of it with what
+// is written under it. A host nobody asked is the zero of this type, and every field of it
+// says so.
 type HostFacts struct {
-	// Asked says that the host answered. Where it did not, the labels below are nothing
-	// and the queue concludes nothing out of their absence.
+	// Asked says that the host answered. Where it did not, everything below is nothing and
+	// the queue concludes nothing out of their absence.
 	Asked bool `json:"-"`
+	// Closed says that the task is closed on the tracker, which is a fact of the work and
+	// not a verdict about it: a task the host closed is a task that is done, whoever closed
+	// it and whatever stood in the way of its run (§7g).
+	Closed bool `json:"closed,omitempty"`
 	// Labels are the words the host marks the task with, the label of the acceptance of
 	// the owner among them ([acceptance] label, §7f).
 	Labels []string `json:"labels,omitempty"`
@@ -472,10 +479,21 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			queue.Unreadable = append(queue.Unreadable, path)
 			continue
 		}
-		facts := askHost(ctx, host, state)
-		one, wanted := AttentionOf(env, queue.Repo, state, facts)
+		// The state of the task is read on its own first: a run that is working asks for
+		// nobody, and a project of a hundred tasks is asked about the ones that wait and
+		// not about the rest (§6).
+		one, wanted := AttentionOf(env, queue.Repo, state, HostFacts{})
 		if !wanted {
 			continue
+		}
+		if endedRun(lastAttemptOf(state)) {
+			// Only a run that has ended can be cleared by a reaction of the host — a
+			// change merged, a task closed, a record of a review — and a queue that asked
+			// about a run that is going would put a network in the middle of a list.
+			one, wanted = AttentionOf(env, queue.Repo, state, askHost(ctx, host, state))
+			if !wanted {
+				continue
+			}
 		}
 		if one.State == AttentionEscalated {
 			one.Said, one.Unsaid = leaveRecord(ctx, env, say, path, state, one)
@@ -486,15 +504,32 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 	return queue, nil
 }
 
-// askHost is what the host of the project says about a task, and whether the host was
-// asked at all: only a task with a change request of its own is asked about, because a run
-// that opened none has nothing on the host to say about it, and a queue that asked about
-// every task would put a network in the middle of a list of runs (§6).
+// lastAttemptOf is the last attempt of a task, and nothing at all where the task has none.
+func lastAttemptOf(state State) Attempt {
+	if len(state.Attempts) == 0 {
+		return Attempt{}
+	}
+	return state.Attempts[len(state.Attempts)-1]
+}
+
+// endedRun is whether the last attempt of a task has ended, which is what a reaction of the
+// host may still be about: nobody reacts to a change while the run that opened it works.
+func endedRun(last Attempt) bool {
+	return last.Number > 0 && last.Outcome != Running
+}
+
+// askHost is what the host of the project says about a task: its change request where the
+// run opened one, and the task itself in every case, because a task the host has closed is
+// done whoever closed it (§7g).
 func askHost(ctx context.Context, host Host, state State) HostFacts {
-	if host == nil || state.Change == nil {
+	if host == nil {
 		return HostFacts{}
 	}
-	facts, err := host.FactsOf(ctx, state.Number, state.Change.Number)
+	change := 0
+	if state.Change != nil {
+		change = state.Change.Number
+	}
+	facts, err := host.FactsOf(ctx, state.Number, change)
 	if err != nil {
 		// A host that cannot be read is a host that is not there, and the queue says so
 		// in the entry instead of concluding that the task wants nobody (§7h).
@@ -573,6 +608,12 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 		if !one.finished(env, state, last, outcome, facts) {
 			return Attention{}, false
 		}
+	}
+	if facts.Problem != "" {
+		// The host could not be read, and crewflow cannot say whether somebody has already
+		// looked at the result of the run: an entry that said "act now" about a change that
+		// went in a week ago is a zombie of its own, and the oldest kind there is (F-061).
+		one.Actable = ActUnknown
 	}
 	one.measured(env, now)
 	return one, true
@@ -683,7 +724,18 @@ func (a *Attention) finished(env AttentionEnv, state State, last Attempt, outcom
 			// for has happened, and the task is not waiting for anything (§7h).
 			return false
 		}
+		if facts.Closed {
+			// The task behind an open change is closed: whoever closed it has dealt with
+			// it, and a queue that keeps asking for a review of a task nobody has open is
+			// a queue that cries wolf until a person stops reading it (§7g).
+			return false
+		}
 		return a.awaiting(env, state, last, facts, change)
+	}
+	if facts.Closed {
+		// The host says the task is closed and there is no change request to ask about:
+		// the work of the task is over, and nobody waits for anything in it (§7g).
+		return false
 	}
 	if !wantsAttention(outcome) && state.Change == nil {
 		// A run that came out of it well and opened no change request asks for nobody,
@@ -928,6 +980,10 @@ func NoticeUnder(one Attention) string {
 		orNothing(one.Subject), one.NextActor, Idle(one.Waited()))
 	if one.LastStep != "" {
 		said += ", the last step: " + one.LastStep
+	}
+	if one.Problem != "" {
+		said += ". The host could not be read, and crewflow does not know whether the result of the run " +
+			"was looked at: " + one.Problem
 	}
 	if one.Next != "" {
 		said += ". What may be done about it: " + one.Next

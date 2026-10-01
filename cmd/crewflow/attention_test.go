@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/gate"
 	taskrun "github.com/naghuale/crewflow/internal/run"
@@ -291,6 +292,90 @@ func TestRunTaskAttentionOfAProjectWithNoHostSaysWhatTheStateHolds(t *testing.T)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("crewflow task attention wrote %q to stderr, want nothing", stderr.String())
+	}
+}
+
+// TestRunTaskAttentionReadsTheHostAsTheOrchestratorOfTheProject: the second defect of the
+// review of PR #118. A project in the mode of an account of its own names the App of its
+// orchestrator in `[orchestrator] github_app app_id` and its login in `[merge] reviewers`,
+// and the host of the project only knows that App where the roles of the project were built
+// as its orchestrator: the queue answered "the account is the account of an app that is
+// neither the app of the executor nor the app of the orchestrator of this project" for
+// every task of the repository, and every run of it looked like a task nobody had looked at
+// (docs/DESIGN.md §7h, §7i).
+func TestRunTaskAttentionReadsTheHostAsTheOrchestratorOfTheProject(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	// The host of the test knows one App, the one of the orchestrator, and refuses the login
+	// of every other App the way the host of GitHub refuses an App it was not given: the two
+	// roles of the project of the test hand out two different hosts, exactly as the two
+	// constructions of crewflow do.
+	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		return forge.Set{Tracker: host, Forge: host.as(5107052)}, nil
+	}
+	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		return forge.Set{Tracker: host, Forge: host.as(5140522)}, nil
+	}
+	project := host.configAs(t, separateConfig)
+	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)", code, exitFailure, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "the host could not be read") {
+		t.Errorf("crewflow task attention wrote %q, want the queue to have read the host: "+
+			"the roles of the project are the roles of its orchestrator, as a review is made of", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), string(taskrun.AttentionAwaitsReview)) {
+		t.Errorf("crewflow task attention wrote %q, want the change of the run waiting for a review", stdout.String())
+	}
+}
+
+// TestRunTaskAttentionTakesAMergedChangeOutOfTheQueue: a live run of the build of this branch
+// left nine merged changes of this repository in the queue as `escalated · finished-unseen`
+// with a wait of a day and a half — the queue must read the reaction of the host (F-061).
+func TestRunTaskAttentionTakesAMergedChangeOutOfTheQueue(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43), merged: true}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-66*time.Hour))
+	taskClock = func() time.Time { return ended.Add(66 * time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code != exitOK {
+		t.Fatalf("crewflow task attention = %d, want %d: a merged change is the reaction (stdout: %q, stderr: %q)",
+			code, exitOK, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), string(taskrun.AttentionEscalated)) {
+		t.Errorf("crewflow task attention wrote %q, want no queue at all", stdout.String())
+	}
+	if len(host.records) != 0 {
+		t.Errorf("crewflow left %q under a task whose change is merged, want nothing", host.records)
+	}
+}
+
+// TestRunTaskAttentionTakesAClosedTaskOutOfTheQueue: a task the host has closed is done,
+// whoever closed it and whatever stood in the way of its run (§7g).
+func TestRunTaskAttentionTakesAClosedTaskOutOfTheQueue(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.task.State = "closed"
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-3*time.Hour))
+	taskClock = func() time.Time { return ended.Add(3 * time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)", code, exitOK, stdout.String(), stderr.String())
+	}
+	if strings.Contains(stdout.String(), "ATTENTION REQUIRED") {
+		t.Errorf("crewflow task attention wrote %q, want no queue: the host has closed the task", stdout.String())
 	}
 }
 
