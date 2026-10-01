@@ -99,7 +99,7 @@ func TestAReviewOfTheChangeIsAResponseAndLeavesTheQueue(t *testing.T) {
 			writeState(t, home, repo, 43, "the queue of attention", change,
 				try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 
-			queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{43: tc.facts})
+			queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), &hostOfTest{facts: map[int]HostFacts{43: tc.facts}})
 
 			_, inQueue := queue.Wanted(43)
 			if inQueue != tc.want {
@@ -120,7 +120,7 @@ func TestTheReactionOfTheHostTakesTheRunOutOfTheQueue(t *testing.T) {
 	ended := monday.Add(8*time.Hour + 42*time.Minute)
 	head := "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
 	change := &Change{Number: 113, URL: "https://example.com/113"}
-	reviewer := hostOfTest{}
+	reviewer := &hostOfTest{}
 	for _, tc := range []struct {
 		name  string
 		facts HostFacts
@@ -161,7 +161,7 @@ func TestTheReactionOfTheHostTakesTheRunOutOfTheQueue(t *testing.T) {
 			home := t.TempDir()
 			writeState(t, home, repo, 43, "the run of a task", change,
 				try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
-			reviewer[43] = tc.facts
+			reviewer.facts = map[int]HostFacts{43: tc.facts}
 
 			queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), reviewer)
 
@@ -182,9 +182,9 @@ func TestARunThatWasClearedLeavesNoRecordUnderTheTask(t *testing.T) {
 	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113, URL: "https://example.com/113"},
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 	said := &saidUnderTheTask{}
-	host := hostOfTest{43: HostFacts{
+	host := &hostOfTest{facts: map[int]HostFacts{43: {
 		Change: &ChangeFacts{Number: 113, State: "merged", Head: "abc"},
-	}}
+	}}}
 
 	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), host, said.sayAttention)
 
@@ -210,7 +210,7 @@ func TestAHostThatCouldNotBeReadLeavesNoEntryAndNamesTheHole(t *testing.T) {
 	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113, URL: "https://example.com/113"},
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 
-	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{})
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), &hostOfTest{})
 
 	if _, inQueue := queue.Wanted(43); inQueue {
 		t.Errorf("в очереди %v, want без задачи 43: неизвестное не является требованием внимания",
@@ -236,7 +236,7 @@ func TestATaskTheHostDoesNotHaveIsAFactAndNotAWait(t *testing.T) {
 	ended := monday.Add(8*time.Hour + 42*time.Minute)
 	writeState(t, home, repo, 53, "проверки навыков агента", &Change{Number: 61, URL: "https://example.com/61"},
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
-	host := hostOfTest{53: HostFacts{Missing: true}}
+	host := &hostOfTest{facts: map[int]HostFacts{53: {Missing: true}}}
 	at := ended.Add(66 * time.Hour)
 	said := &saidUnderTheTask{}
 
@@ -294,7 +294,7 @@ func TestATrackerThatCouldNotBeReadIsNotAMissingTask(t *testing.T) {
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 	said := &saidUnderTheTask{}
 
-	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{}, said.sayAttention)
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), &hostOfTest{}, said.sayAttention)
 
 	if _, inQueue := queue.Wanted(53); inQueue {
 		t.Errorf("в очереди %v, want без задачи 53: сетевой отказ не повод требовать внимания",
@@ -327,10 +327,10 @@ func TestAnApprovedTaskOfTheLabelOfTheOwnerWaitsForTheOwner(t *testing.T) {
 		&Change{Number: 113, URL: "https://example.com/113"},
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 	change := &ChangeFacts{Number: 113, State: "open", Head: "abc", Approved: true, Last: approved}
-	host := hostOfTest{43: HostFacts{
+	host := &hostOfTest{facts: map[int]HostFacts{43: {
 		Labels: []string{"owner-check", "risky"},
 		Change: change,
-	}}
+	}}}
 	at := approved.Add(3 * time.Hour)
 
 	queue := queueOf(t, home, repo, attentionEnvOf(at), host)
@@ -486,12 +486,12 @@ func TestAQ005TheOrderOfTheQueueIsTheOrderTheOwnerWrote(t *testing.T) {
 	writeState(t, home, repo, 4, "завершён, не просмотрен", nil,
 		try{startedAt: now.Add(-3 * time.Hour), endedAt: now.Add(-3 * time.Hour), outcome: TimedOut})
 	head := "1111111111111111111111111111111111111111"
-	host := hostOfTest{
+	host := &hostOfTest{facts: map[int]HostFacts{
 		2: {Labels: []string{"owner-check"},
 			Change: &ChangeFacts{Number: 12, State: "open", Head: head, Approved: true, Last: now.Add(-2 * time.Hour)}},
 		3: {Change: &ChangeFacts{Number: 13, State: "open", Head: head}},
 		4: {},
-	}
+	}}
 
 	queue := queueOf(t, home, repo, attentionEnvOf(now, 100), host)
 
@@ -633,7 +633,7 @@ func TestARunTheHostCouldNotBeReadIsNotAttention(t *testing.T) {
 		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
 	said := &saidUnderTheTask{}
 
-	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{}, said.sayAttention)
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), &hostOfTest{}, said.sayAttention)
 
 	if len(queue.Entries) != 0 {
 		t.Errorf("очередь держит %+v, want ничего: хостинг не прочитан", tasksOfQueue(queue))
@@ -669,7 +669,7 @@ func TestACancelledReadIsNotAttentionAndIsSaidAsInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
-	queue, err := CheckAttention(ctx, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{}, nil)
+	queue, err := CheckAttention(ctx, home, repo, attentionEnvOf(ended.Add(time.Hour)), &hostOfTest{}, nil)
 
 	if err != nil {
 		t.Fatalf("CheckAttention вернула ошибку: %v", err)
@@ -773,6 +773,90 @@ func TestTheBlockOfTheQueueIsAtTheTopOfAListOfRuns(t *testing.T) {
 	}
 	if strings.Index(said, "ATTENTION REQUIRED") > strings.Index(said, "TASK") {
 		t.Errorf("the list wrote\n%s\nwant the block of the queue over the table of the runs", said)
+	}
+}
+
+// TestTheQueueRemembersThatTheWorkIsOverAndAsksNoMoreAboutIt: скорость и правда в одном
+// правиле. Слитьё изменения — это факт хостинга, и очередь, спросившая о нём однажды,
+// помнит его: расписание оркестратора ходит каждую минуту и не должна спрашивать про один
+// и тот же слитый прогон снова (F-061, §6a).
+//
+// Память имеет срок: смена или задача могут быть открыты заново, и очередь узнаёт об этом
+// только тем, что спрашивает. Через сутки она спрашивает и, если изменение открыто снова,
+// показывает задачу в очереди — память о «завершено» не переживает правду хостинга.
+func TestTheQueueRemembersThatTheWorkIsOverAndAsksNoMoreAboutIt(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	journals := newJournals(home, repo)
+	head := "1111111111111111111111111111111111111111"
+	// Первое чтение: хостинг говорит, что изменение слито, и очередь запоминает это.
+	merged := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{Number: 113, State: "merged", Head: head}}}}
+	queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), merged)
+
+	state, err := LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("load the state of the task: %v", err)
+	}
+	if state.Settled == nil || state.Settled.By != ReasonChangeMerged {
+		t.Fatalf("the state holds %+v, want %q remembered: правда хостинга помнится, а не перечитывается",
+			state.Settled, ReasonChangeMerged)
+	}
+	if !state.Settled.At.Equal(monday.Add(9 * time.Hour)) {
+		t.Errorf("the state remembers it at %s, want 9h: when the host said it", state.Settled.At)
+	}
+
+	// Второе чтение, через минуту: хостинг молчит о слитых, потому что о нём не
+	// спрашивают — и очередь всё равно не показывает прогон.
+	silent := &hostThatCounts{}
+	queue := queueOf(t, home, repo, attentionEnvOf(monday.Add(9*time.Hour+time.Minute)), silent)
+
+	if len(silent.asked) != 0 {
+		t.Errorf("the host was asked about %v, want nobody: слитое помнится", silent.asked)
+	}
+	if _, inQueue := queue.Wanted(43); inQueue {
+		t.Errorf("the queue holds %v, want nothing: the change went in", tasksOfQueue(queue))
+	}
+
+	// Через сутки память протухает, и очередь спрашивает хостинг снова: изменение могли
+	// открыть заново.
+	reopened := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{Number: 113, State: "open", Head: head}}}}
+	queue = queueOf(t, home, repo, attentionEnvOf(monday.Add(9*time.Hour+25*time.Hour)), reopened)
+
+	if len(reopened.asked) != 1 {
+		t.Errorf("the host was asked about %v, want once: память о завершённом имеет срок", reopened.asked)
+	}
+	one, wanted := queue.Wanted(43)
+	if !wanted {
+		t.Fatalf("the queue holds %v, want the task 43: изменение открыто снова, и это правда хостинга",
+			tasksOfQueue(queue))
+	}
+	if one.EscalatedFrom != AttentionAwaitsReview {
+		t.Errorf("the state = %q of %q, want the reopened change waiting for a review like any other",
+			one.State, one.EscalatedFrom)
+	}
+}
+
+// TestTheQueueRemembersThatTheHostClosedTheTaskToo: закрытая хостингом задача — тот же
+// факт и та же память. «Задача закрыта» и «изменение слито» — два разных события, и
+// очередь помнит, какое именно (docs.DESIGN.md §6a, §7g).
+func TestTheQueueRemembersThatTheHostClosedTheTaskToo(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	journals := newJournals(home, repo)
+
+	queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)),
+		&hostOfTest{facts: map[int]HostFacts{43: {Closed: true}}})
+
+	state, err := LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("load the state of the task: %v", err)
+	}
+	if state.Settled == nil || state.Settled.By != ReasonTaskClosed {
+		t.Errorf("the state holds %+v, want %q remembered", state.Settled, ReasonTaskClosed)
 	}
 }
 
@@ -906,7 +990,7 @@ func TestAHostThatCannotBeReadSaysSo(t *testing.T) {
 	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113},
 		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
 
-	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{})
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), &hostOfTest{})
 
 	if len(queue.Entries) != 0 {
 		t.Errorf("the queue holds %v, want nothing: the host was not read", tasksOfQueue(queue))
@@ -1078,7 +1162,7 @@ func TestTheQueueSaysWhatItCouldNotReadAndDoesNotPutItInTheBlockOfAttention(t *t
 	writeState(t, home, repo, 3, "слит позже", &Change{Number: 22},
 		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
 
-	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour), 100), hostOfTest{})
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour), 100), &hostOfTest{})
 
 	var out bytes.Buffer
 	if err := queue.Write(&out, screenAt(ended.Add(time.Hour))); err != nil {
@@ -1130,14 +1214,23 @@ func tasksOfQueue(queue Queue) []int {
 }
 
 // hostOfTest is the host of a project in a test: what it says about the task with that
-// number, and nothing about any other.
-type hostOfTest map[int]HostFacts
+// number, and nothing about any other. It remembers which tasks it was asked about, because
+// «спросили или нет» is a part of what the queue promises: помнит ли она, что хостинг уже
+// сказал (F-061, F-105, §6a).
+type hostOfTest struct {
+	facts map[int]HostFacts
+	asked []int
+}
 
 // FactsOf is what the host of the test says about a task. A task it knows nothing about is
 // a task the host could not be read for, and the queue is told so rather than concluding
 // that the task wants nobody.
-func (h hostOfTest) FactsOf(_ context.Context, task, _ int) (HostFacts, error) {
-	facts, known := h[task]
+func (h *hostOfTest) FactsOf(_ context.Context, task, _ int) (HostFacts, error) {
+	h.asked = append(h.asked, task)
+	if h.facts == nil {
+		return HostFacts{}, fmt.Errorf("the host of the test knows no task %d", task)
+	}
+	facts, known := h.facts[task]
 	if !known {
 		return HostFacts{}, fmt.Errorf("the host of the test knows no task %d", task)
 	}

@@ -59,14 +59,44 @@ type State struct {
 	// whether the task is in the queue at all is worked out at every read — and it is
 	// what keeps one record to a key and a day rather than one a minute (§6a, §7h).
 	Notice *Notice `json:"notice,omitempty"`
-	// Checkpoint is where the run of the task stands when it needs a decision of a
+// Checkpoint is where the run of the task stands when it needs a decision of a
 	// person, and what came of the request. It is the last point a run of this task
 	// wrote and not a queue of points: one run of a task stops once, and the run that
-	// goes on from the point either answers the request or refuses it (docs/DESIGN.md
+	// goes on from the point either answers the request or refuses it (docs.DESIGN.md
 	// §7i).
 	Checkpoint *Checkpoint `json:"checkpoint,omitempty"`
+	// Settled is what the host of the project said about a run whose work is over: its
+	// change went in or was closed, or the task itself was closed on the tracker.
+	//
+	// It is a fact of the host and not a verdict about the task (§6a): то, что crewflow
+	// прочитал однажды, помнится, иначе расписание, которое ходит в хостинг каждую
+	// минуту, спрашивало бы про один и тот же слитый прогон снова и снова — а список
+	// прогонов, который не читает хостинг вовсе, показывал бы слитое как результат,
+	// который никто не смотрел (F-061, F-105, §6, §6a).
+	//
+	// У памяти есть срок: свежая значит «спросим ещё раз». Изменение или задачу можно
+	// открыть заново, и очередь, помнящая «завершено» навсегда, держала бы reopened
+	// задачу вне её до следующего чтения хостинга — поэтому срок задан не памятью, а
+	// проверкой (§6a).
+	Settled *Settled `json:"settled,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
+}
+
+// Settled is what the host said about a run whose work is over, and when it said it: the
+// change request of the run went in or was closed, or the task itself was closed. It is
+// what a queue remembers so that it does not ask the host about the same finished run on
+// every turn of a schedule, and what a list of runs reads to leave it out (docs/DESIGN.md
+// §6, §6a).
+type Settled struct {
+	// By is what the host said, in the words of §6a: `change-merged`, `change-closed`
+	// or `task-closed`. It is kept because a person reading a state file has to be able
+	// to tell «изменение влито» от «задача закрыта»: это два разных события жизни
+	// проекта, и очередь обязана знать, какое из них произошло (§6a, §7g).
+	By string `json:"by"`
+	// At is when the host said it, and what the shelf life of the memory is counted
+	// from.
+	At time.Time `json:"at"`
 }
 
 // Notice is the record crewflow left under a task about the queue of attention, and the
@@ -357,13 +387,33 @@ func (s State) Noticed(at time.Time, key string) State {
 
 // NoticedWithin is whether a record of this key of the queue was left under the task
 // within `after` of `now`, and a key that was never left is a record that is due
-// (docs/DESIGN.md §6a). A limit of no length says that a task nobody has been told about
+// (docs.DESIGN.md §6a). A limit of no length says that a task nobody has been told about
 // is told about whenever the queue is read.
 func (s State) NoticedWithin(now time.Time, after time.Duration, key string) bool {
 	if s.Notice == nil || s.Notice.Key != key {
 		return false
 	}
 	return after <= 0 || now.Sub(s.Notice.At) < after
+}
+
+// SettledWithin is whether the host said, within `after` of `now`, that the work of the
+// task is over, and whether crewflow may therefore go on without asking about it again
+// (docs/DESIGN.md §6a).
+//
+// A memory older than the shelf life is not a memory: смена или задача могли быть открыты
+// заново, и очередь узнаёт об этом только тем, что спрашивает (F-105, §6a).
+func (s State) SettledWithin(now time.Time, after time.Duration) bool {
+	if s.Settled == nil {
+		return false
+	}
+	return after <= 0 || now.Sub(s.Settled.At) < after
+}
+
+// SettledBy is the state of the task with what the host said about its work remembered:
+// the fact a queue and a list of runs both read instead of asking again (§6a).
+func (s State) SettledBy(at time.Time, by string) State {
+	s.Settled = &Settled{By: by, At: at}
+	return s
 }
 
 // Journals is where the journal of every run and the state of every task are kept:

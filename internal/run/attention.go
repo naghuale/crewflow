@@ -177,6 +177,21 @@ const (
 	// и очередь говорит «прервано», а не перечисляет то, что успела прочитать и не
 	// поняла (F-098, §6a).
 	ReasonReadInterrupted = "read-interrupted"
+
+	// The reasons of the fact crewflow remembers о прогоне, чья работа кончена. They
+	// are not reasons of a wait — nobody waits for a merged change — but the words of
+	// what the host said, kept beside the state so that a queue and a list of runs can
+	// both read it without asking again (§6a, §7g).
+	// ReasonChangeMerged is a change request of the task that went into the default
+	// branch of the project.
+	ReasonChangeMerged = "change-merged"
+	// ReasonChangeClosed is a change request of the task that was closed without going
+	// in: whoever closed it has dealt with it, and the work of the task is over
+	// whatever became of the change (§7h).
+	ReasonChangeClosed = "change-closed"
+	// ReasonTaskClosed is a task the tracker of the project has closed: it is done,
+	// whoever closed it and whatever stood in the way of its run (§7g).
+	ReasonTaskClosed = "task-closed"
 )
 
 // The channel of `human-authorization-required` in the window of the keychain of macOS,
@@ -562,10 +577,15 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 		if !wanted {
 			continue
 		}
-		if endedRun(lastAttemptOf(state)) {
+		if endedRun(lastAttemptOf(state)) && !settledWithin(env, state) {
 			// Only a run that has ended can be cleared by a reaction of the host — a
 			// change merged, a task closed, a record of a review — and a queue that asked
 			// about a run that is going would put a network in the middle of a list.
+			//
+			// A run whose work the host already called over is not asked about again while
+			// the memory of that is fresh: a schedule of an orchestrator asks every minute,
+			// и девять слитых прогонов этого репозитория держали её на сети вместо
+			// ответа (F-061, §6a).
 			facts := askHost(ctx, host, state)
 			if facts.Problem != "" {
 				// Хостинг не прочитан, и очередь не знает ни о чём, что его ждёт. Такая
@@ -578,6 +598,14 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 					Reason: reasonOfRead(ctx, facts.Problem), Problem: facts.Problem,
 				})
 				queue.Interrupted = queue.Interrupted || interrupted(ctx, facts.Problem)
+				continue
+			}
+			// Что хостинг сказал о завершении работы, помнится рядом с прогоном: и очередь,
+			// и список прогонов читают это вместо того, чтобы спрашивать заново, а по
+			// истечении срока памяти вопрос задаётся снова (F-105, §6, §6a).
+			if done := settledBy(facts); done != "" {
+				state = state.SettledBy(env.Now(), done)
+				_ = SaveState(path, state)
 				continue
 			}
 			one, wanted = AttentionOf(env, repo, state, facts)
@@ -628,6 +656,42 @@ func askHost(ctx context.Context, host Host, state State) HostFacts {
 	facts.Asked = true
 	return facts
 }
+
+// settledBy is what the host said about a run, когда его работа кончена: изменение влито,
+// изменение закрыто или задача закрыта. Это не «причина ожидания» — за слитое изменение
+// никто не ждёт — а факт, который помнится рядом с прогоном, чтобы и очередь, и список
+// прогонов оставили его в покое (docs.DESIGN.md §6, §6a, §7g, §7h).
+func settledBy(facts HostFacts) string {
+	if facts.Asked && facts.Closed {
+		return ReasonTaskClosed
+	}
+	if change := facts.Change; facts.Asked && change != nil && !change.open() {
+		if change.State == "merged" {
+			return ReasonChangeMerged
+		}
+		return ReasonChangeClosed
+	}
+	return ""
+}
+
+// settledWithin is whether the state of the task remembers that its work is over and that
+// memory is still fresh — то есть хостинг об этом ещё не спрашивали заново (§6a).
+func settledWithin(env AttentionEnv, state State) bool {
+	return state.SettledWithin(env.Now(), SettleAfter)
+}
+
+// SettleAfter is how long the queue remembers what the host said about a run whose work is
+// over — its change merged, its task closed — before it asks about it again. It is the
+// shelf life of a fact of the host, and it is what lets a schedule that runs every minute
+// stop walking the network about the same finished run every minute, and what lets a change
+// that is opened again be seen again (F-061, F-105, §6a).
+//
+// It is a constant of the package and not a setting of the project: это не порог, который
+// проект выбирает, а срок, за который память о факте хостинга перестаёт быть памятью. A
+// project that wanted a longer shelf life would keep its runs out of the queue for longer
+// than a day after they were merged, and the price of that is a reopened change nobody
+// sees (§6a).
+const SettleAfter = 24 * time.Hour
 
 // reasonOfRead is why the host could not be read, as the queue names it: `read-failed` for
 // a failure and `read-interrupted` where a person stopped the command. The two are told
@@ -690,6 +754,13 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 	}
 	last := state.Attempts[len(state.Attempts)-1]
 	now := env.Now()
+	if state.SettledWithin(now, SettleAfter) {
+		// Хостинг сказал, что работа этой задачи кончена, и это сказано недавно: никто
+		// не ждёт слитое изменение, и очередь не показывает его снова — ни спрашивая
+		// хостинг второй раз, ни без спроса, как это делает список прогонов. Пока память
+		// свежая, состояние само о себе говорит; протухнет — спросим (F-105, §6a).
+		return Attention{}, false
+	}
 	outcome := env.outcome(last)
 	silence := silenceOf(last, state.Profile, now)
 	one := Attention{

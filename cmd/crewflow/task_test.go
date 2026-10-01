@@ -1483,8 +1483,10 @@ func taskOf(number int) forge.Task {
 // what the host knows about the branch, and the machine the run happens on.
 type host struct {
 	// task is what the tracker holds, and noTask what it says for a task it does
-	// not have.
+	// not have. tasks is the same for a project of several tasks, where every one of
+	// them has its own answer (CL-007…CL-009, §6a).
 	task   forge.Task
+	tasks  map[int]forge.Task
 	noTask error
 	// opened is the change request of the branch, and changed is what git holds of
 	// the files the run touched.
@@ -1528,6 +1530,9 @@ type host struct {
 	// asks about a change request of no number asks the host about nothing, and a test
 	// that has to see that keeps the numbers (F-099, §6a).
 	changes []int
+	// states is where each change request of the project stands, by its number, for a
+	// project of several changes — слитая, закрытая и открытая рядом (F-061, §6a).
+	states map[int]string
 	// app is the App the host of the test knows, and the login of every other App is
 	// refused the way the host of GitHub refuses an App it was not given (§7i).
 	app int64
@@ -1681,6 +1686,9 @@ func (h *host) Task(_ context.Context, number int) (forge.Task, error) {
 	if h.noTask != nil {
 		return forge.Task{}, h.noTask
 	}
+	if task, is := h.tasks[number]; is {
+		return task, nil
+	}
 	if h.task.Number != number {
 		return forge.Task{}, fmt.Errorf("could not find issue %d", number)
 	}
@@ -1715,6 +1723,12 @@ func (h *host) CommentTask(_ context.Context, number int, body string) error {
 // went in says so, and that is what takes a run out of the queue of attention (§6a).
 func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
 	h.changes = append(h.changes, number)
+	if state, is := h.states[number]; is {
+		return forge.ChangeRequest{
+			Number: number, HeadBranch: "crewflow/43-task", HeadSHA: "9f1c0de",
+			BaseBranch: "main", State: state,
+		}, nil
+	}
 	if !h.opened {
 		return forge.ChangeRequest{}, fmt.Errorf("could not find change request #%d", number)
 	}

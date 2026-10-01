@@ -655,10 +655,11 @@ func listOfRuns(ctx context.Context, configPath, repo string, all bool, env task
 			return taskrun.Runs{}, err
 		}
 		attention.ListEnv = env
-		// A list of the whole machine has no queue at the top of it: every project of
-		// the machine has thresholds of its own in its own file, and a folder of no
-		// project at all says nothing about any of them (§6).
-		queue, err := taskrun.AttentionQueue(ctx, home, cfg.RepoName(), attention, nil)
+		// A list of the whole machine has no queue at the top of it: у каждого проекта
+		// машины свой хостинг и свой файл проекта, а папка, из которой спросили, может
+		// проектом вовсе не быть (§6).
+		queue, err := taskrun.CheckAttention(ctx, home, cfg.RepoName(), attention,
+			hostOfTheProject(ctx, cfg, configPath), nil)
 		if err != nil {
 			return taskrun.Runs{}, err
 		}

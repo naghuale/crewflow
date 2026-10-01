@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/gate"
+	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 )
 
@@ -513,6 +516,153 @@ func TestRunTaskAttentionInterruptedSaysItWasInterruptedWithoutAList(t *testing.
 			t.Errorf("crewflow task attention написал %q, want без %q: прерванное чтение не даёт утверждений", said, unwanted)
 		}
 	}
+}
+
+// TestRunTaskAttentionAndTaskListGiveTheSameAttention: CL-007…CL-009. Две команды о
+// проекте должны отвечать об одном и том же списке внимания — иначе список прогонов
+// показывает то, чего уже нет, а очередь — то, чего никто не спрашивал (F-105).
+//
+// Четыре прогона: изменение слито, задача закрыта, изменение открыто и никто на него не
+// смотрел, и прогон, который стоит. Первые двое — нигде: их работу хостинг объявил
+// законченной, и состояние помнит это. Третий — в обоих ответах, и с одинаковыми
+// состоянием, причиной и следующим участником. Четвёртый — в обоих, и его видно без
+// хостинга вовсе.
+func TestRunTaskAttentionAndTaskListGiveTheSameAttention(t *testing.T) {
+	// Один хост на четыре задачи: слитое изменение, закрытая задача, открытое изменение
+	// без записи ревью и прогон, который стоит.
+	host := &host{opened: true, tasks: map[int]forge.Task{
+		43: {Number: 43, Title: "изменение слито", State: "open"},
+		44: {Number: 44, Title: "задача закрыта", State: "closed"},
+		45: {Number: 45, Title: "открыто, не смотрели", State: "open"},
+		46: {Number: 46, Title: "стоит", State: "open"},
+	}, states: map[int]string{
+		43: "merged",
+		44: "open",
+		45: "open",
+	}}
+	host.use(t)
+	project := host.config(t)
+	ended := time.Now().Add(-2 * time.Hour)
+	putRunsOfFourTasks(t, host, ended)
+	taskClock = func() time.Time { return ended.Add(2 * time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "attention", "-config", project, "-json"}, &stdout, &stderr); code != exitFailure {
+		t.Fatalf("crewflow task attention -json = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	fromAttention := attentionOfAnswer(t, stdout.Bytes())
+
+	// `task list` спрашивает тот же проект о том же, только без сети: то, что состояние
+	// помнит, у него есть, а то, чего не помнит, — нет.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "list", "-config", project, "-json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	fromList := attentionOfAnswer(t, stdout.Bytes())
+
+	want := map[int]attentionRecord{
+		45: {task: 45, state: string(taskrun.AttentionAwaitsReview), reason: taskrun.ReasonReviewRequired, actor: taskrun.ActorOrchestrator},
+		46: {task: 46, state: string(taskrun.AttentionStands), reason: taskrun.ReasonNoProgress, actor: taskrun.ActorOrchestrator},
+	}
+	if !reflect.DeepEqual(fromAttention, want) {
+		t.Errorf("`task attention -json` = %+v,\nwant %+v: слитое и закрытое — нигде, открытое без реакции — здесь", fromAttention, want)
+	}
+	if !reflect.DeepEqual(fromList, want) {
+		t.Errorf("`task list -json` = %+v,\nwant %+v: список прогонов отвечает о том же, о чём очередь", fromList, want)
+	}
+}
+
+// attentionRecord is one answer об attention, as a program reads it: task, attention_state,
+// reason и next_actor — те четыре поля, по которым две команды обязаны совпадать
+// (CL-007…CL-009, docs/DESIGN.md §6a).
+type attentionRecord struct {
+	task   int
+	state  string
+	reason string
+	actor  string
+}
+
+// attentionOfAnswer is what an answer of `-json` говорит об attention, по задачам и в
+// порядке номеров: блок внимания и записи списка прогонов читаются одинаково, и человек
+// проверяет их глазами именно так.
+func attentionOfAnswer(t *testing.T, answer []byte) map[int]attentionRecord {
+	t.Helper()
+	var queue struct {
+		Entries []taskrun.Attention `json:"entries"`
+	}
+	if err := json.Unmarshal(answer, &queue); err == nil && len(queue.Entries) > 0 {
+		records := map[int]attentionRecord{}
+		for _, one := range queue.Entries {
+			records[one.Task] = attentionRecord{one.Task, string(one.State), one.Reason, one.NextActor}
+		}
+		return records
+	}
+	var runs []struct {
+		Task           int    `json:"task"`
+		AttentionState string `json:"attention_state"`
+		Reason         string `json:"reason"`
+		NextActor      string `json:"next_actor"`
+	}
+	if err := json.Unmarshal(answer, &runs); err != nil {
+		t.Fatalf("the answer %s is not an answer: %v", answer, err)
+	}
+	records := map[int]attentionRecord{}
+	for _, one := range runs {
+		if one.AttentionState == "" {
+			continue
+		}
+		records[one.Task] = attentionRecord{one.Task, one.AttentionState, one.Reason, one.NextActor}
+	}
+	return records
+}
+
+// putRunsOfFourTasks is the state of четырёх задач проекта: две работы кончены, одна
+// ждёт ревью, одна стоит (docs.DESIGN.md §6a, F-061, F-105).
+func putRunsOfFourTasks(t *testing.T, h *host, ended time.Time) {
+	t.Helper()
+	var startedAt time.Time
+	journals := taskrun.JournalsOf(h.home, "naghuale-crewflow")
+	for _, one := range []struct {
+		number   int
+		title    string
+		change   *taskrun.Change
+		standing bool
+	}{
+		{number: 43, title: "изменение слито", change: &taskrun.Change{Number: 43}},
+		{number: 44, title: "задача закрыта", change: &taskrun.Change{Number: 44}},
+		{number: 45, title: "открыто, не смотрели", change: &taskrun.Change{Number: 45}},
+		{number: 46, title: "стоит", standing: true},
+	} {
+		state := taskrun.State{
+			Number: one.number, Title: one.title, Branch: "crewflow/task", Profile: "opencode",
+			Change: one.change,
+		}
+		started := ended.Add(-42 * time.Minute)
+		state = state.NextAttempt(taskrun.StartOf{
+			Started: started, Step: "the executor of the run",
+			Journal: journals.JournalPath(one.number, 1), Executor: "opencode",
+			Identity: taskrun.Identity{Mode: "owner", Description: "owner"},
+		})
+		switch {
+		case one.standing:
+			// Стоящий прогон: процесс есть, знака жизни одиннадцать минут назад.
+			state = state.Alive(ended.Add(-11*time.Minute), "go test ./...", "")
+			state.Attempts[0].PID, startedAt = 4242, ended.Add(-12*time.Minute)
+			state.Attempts[0].ProcessStartedAt = &startedAt
+		default:
+			state = state.Ended(ended, taskrun.ChangeRequestOpened)
+		}
+		if err := taskrun.SaveState(journals.StatePath(one.number), state); err != nil {
+			t.Fatalf("write the state of the task %d: %v", one.number, err)
+		}
+	}
+	taskMachine = proc.Env{Ask: func(_ string, args []string) (string, error) {
+		if !slices.Contains(args, "-p") {
+			return "", errors.New("ps: no such file or directory")
+		}
+		return ended.Add(-12 * time.Minute).Format("Mon Jan _2 15:04:05 2006"), nil
+	}}
 }
 
 // TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange: одобрение и
