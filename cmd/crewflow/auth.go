@@ -264,9 +264,13 @@ func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
 }
 
 // runGitCredential is the helper git calls in the worktree of a run: git starts it with
-// the operation as its argument and the request of the credentials on its standard
-// input, and it needs a password for github.com and for the repository of the project
-// and for nothing else (docs/DESIGN.md §7i).
+// the operation of the credentials in the line of the command and the request of the
+// credentials on its standard input, and it needs a password for github.com and for the
+// repository of the project and for nothing else (docs/DESIGN.md §7i).
+//
+// Git writes the operation at the end of that line, after the flags, and a person writes
+// it before them; both are read, and only one word of the line may be an operation
+// (docs/DESIGN.md §6).
 //
 // The password it answers with is a token it signs now, for this one push: a run of an
 // agent is longer than the life of a token of an hour, and the executor of a run must
@@ -287,12 +291,14 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	// The path of the key comes first, as a person writes it, and the flags of the
 	// command after it: the flag package of Go stops at the first word that is not a
 	// flag, so both orders have to mean the same thing.
-	operation, rest := takeFirst(args)
+	leading, rest := takeFirst(args)
 	if err := flags.Parse(rest); err != nil {
 		return exitUsage
 	}
-	if flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "crewflow auth git-credential: unexpected argument %q\n\n", flags.Arg(0))
+	operation, is := operationOf(leading, flags.Args())
+	if !is {
+		fmt.Fprintf(stderr, "crewflow auth git-credential: unexpected arguments after the flags: %v\n\n",
+			flags.Args())
 		usage(stderr)
 		return exitUsage
 	}
@@ -303,10 +309,16 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return exitUsage
 	}
-	// `store` and `erase` are notes of git about itself, and a helper that kept them
-	// would be a helper with a memory of the credentials of a person.
-	if operation != "" && operation != "get" {
+	switch operation {
+	case "", "get":
+	case "store", "erase":
+		// `store` and `erase` are notes of git about itself, and a helper that kept them
+		// would be a helper with a memory of the credentials of a person.
 		return exitOK
+	default:
+		fmt.Fprintf(stderr, "crewflow auth git-credential: the operation is %q: get, store or erase\n\n", operation)
+		usage(stderr)
+		return exitUsage
 	}
 	request, err := readRequest(authStdin)
 	if err != nil {
@@ -318,7 +330,7 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	}
 	if !worksAsAnAccountOfItsOwn(cfg, *as) ||
 		request["protocol"] != "https" ||
-		request["host"] != hostOfProject(cfg) || request["path"] != cfg.Project.Repo {
+		request["host"] != hostOfProject(cfg) || !isTheRepositoryOf(cfg.Project.Repo, request["path"]) {
 		// Nothing said is the right answer for anything that is not a push of this
 		// project to this host, and for a push in a mode with no account of its own to
 		// sign it: git then asks whoever else can answer, which is what it did before
@@ -338,6 +350,15 @@ func runGitCredential(args []string, stdout, stderr io.Writer) int {
 	// stops asking about it.
 	fmt.Fprintf(stdout, "username=x-access-token\npassword=%s\n", token.Value)
 	return exitOK
+}
+
+// isTheRepositoryOf is whether the repository git named in its request is the repository
+// of the project. Git writes the name as the host holds it — for the address
+// `https://github.com/naghuale/crewflow.git` it asks about `naghuale/crewflow.git` — and
+// the `.git` at the end and a `/` after it are not another repository (docs/DESIGN.md §6).
+func isTheRepositoryOf(repo, path string) bool {
+	name := strings.TrimSuffix(path, "/")
+	return strings.TrimSuffix(name, ".git") == repo
 }
 
 // hostOfProject is the server git has to be talking to for the credentials of this
@@ -479,6 +500,27 @@ func takeFirst(args []string) (string, []string) {
 		return args[0], args[1:]
 	}
 	return "", args
+}
+
+// operationOf is the operation of the credentials in the words of the line of the helper,
+// and there is one of them however the line was written: git adds the operation as the
+// last word of the line, after the flags of the command, and a person writes it before
+// them. Only the last word was read before, so git got `unexpected argument "get"` for
+// the very push the helper exists to sign (F-085, 01.10.2026).
+//
+// It says no where the line names two operations or names words that are not one: a
+// helper that guessed which of them was meant would sign on a guess.
+func operationOf(leading string, left []string) (string, bool) {
+	switch {
+	case leading == "" && len(left) == 0:
+		return "", true
+	case leading == "" && len(left) == 1:
+		return left[0], true
+	case leading != "" && len(left) == 0:
+		return leading, true
+	default:
+		return "", false
+	}
 }
 
 // authFlags are the flags of a command of auth, and the usage that goes with them.

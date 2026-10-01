@@ -11,6 +11,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -227,6 +228,13 @@ func (a *Adapter) ChangedFiles(ctx context.Context, number int) ([]string, error
 // Whether a comment has been edited since it was published comes with it, because
 // a record of a review that anybody can rewrite after the fact is not a record the
 // gate may count (docs/DESIGN.md §7h).
+//
+// The account each of them was written by is read from the answer of the REST API, and
+// not from the one above: GraphQL names an App by its slug alone, and a person may have
+// that very slug as a login, so over GraphQL the account of the orchestrator of a
+// project and the account of a person with the slug of its App are one string — and a
+// record of the second one would then count as a record of the first (docs/DESIGN.md
+// §7h, §7i).
 func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, error) {
 	out, err := a.json(ctx, "pr", "view", strconv.Itoa(number), "-R", a.repo, "--json", "comments")
 	if err != nil {
@@ -238,24 +246,121 @@ func (a *Adapter) Comments(ctx context.Context, number int) ([]forge.Comment, er
 	if err := decode(out, &answer); err != nil {
 		return nil, err
 	}
+	if len(answer.Comments) == 0 {
+		return nil, nil
+	}
+	authors, err := a.authorsOf(ctx, number)
+	if err != nil {
+		return nil, err
+	}
 	comments := make([]forge.Comment, 0, len(answer.Comments))
 	for _, comment := range answer.Comments {
+		author, is := authors[comment.ID]
+		if !is {
+			return nil, fmt.Errorf("the host did not say who wrote the comment %s of the change request #%d",
+				comment.ID, number)
+		}
 		created, err := time.Parse(time.RFC3339, comment.CreatedAt)
 		if err != nil {
-			return nil, fmt.Errorf("comment of %s at %q: %w", comment.Author.Login, comment.CreatedAt, err)
+			return nil, fmt.Errorf("comment of %s at %q: %w", author, comment.CreatedAt, err)
 		}
 		edited, err := comment.editedAfter()
 		if err != nil {
-			return nil, fmt.Errorf("comment of %s: %w", comment.Author.Login, err)
+			return nil, fmt.Errorf("comment of %s: %w", author, err)
 		}
 		comments = append(comments, forge.Comment{
-			Author:    comment.Author.Login,
+			Author:    author,
 			Body:      comment.Body,
 			CreatedAt: created.UTC(),
 			Edited:    edited,
 		})
 	}
 	return comments, nil
+}
+
+// commentsPerPage is how many comments are asked for at a time: the API gives 30 unless
+// it is asked for more, and 100 is the most it will give. A page shorter than that is
+// the end of the list, which is what the host promises about a page — so a change whose
+// comments fit in one page is read with one question (docs/DESIGN.md §7h).
+const commentsPerPage = 100
+
+// authorsOf are the accounts the comments under the change were written by, by the id
+// the host knows a comment under in both of its APIs: the name of the account, and the
+// kind the host holds it as. The kind is the whole of it — the name of an App and the
+// name of a person may be one string, and the gate counts records by the name of an
+// account (docs/DESIGN.md §7h, §7i).
+//
+// An account the answer does not name is not a record of nobody: it is a gap in what the
+// host said, and a caller cannot tell it from an answer and must not treat it as one
+// (§7h).
+func (a *Adapter) authorsOf(ctx context.Context, number int) (map[string]string, error) {
+	endpoint := fmt.Sprintf("repos/%s/issues/%d/comments", a.repo, number)
+	authors := map[string]string{}
+	for page := 1; ; page++ {
+		out, err := a.json(ctx, "api", fmt.Sprintf("%s?per_page=%d&page=%d", endpoint, commentsPerPage, page))
+		if err != nil {
+			return nil, err
+		}
+		var answer []struct {
+			NodeID string `json:"node_id"`
+			User   struct {
+				Login string `json:"login"`
+				Type  string `json:"type"`
+			} `json:"user"`
+		}
+		if err := decode(out, &answer); err != nil {
+			return nil, err
+		}
+		for _, comment := range answer {
+			author, err := accountOf(comment.User.Login, comment.User.Type)
+			if err != nil {
+				return nil, fmt.Errorf("the author of the comment %s: %w", comment.NodeID, err)
+			}
+			authors[comment.NodeID] = author
+		}
+		if len(answer) < commentsPerPage {
+			return authors, nil
+		}
+	}
+}
+
+// botSuffix is what the host appends to the login of every account that is an App, and
+// botKind and userKind are how the API says an account is one or the other. The suffix is
+// what tells the account of the orchestrator of a project from the account of a person, so
+// it is put on by the kind and never read out of a login: over GraphQL an App has no
+// suffix at all, and over REST a person cannot have one (docs/DESIGN.md §7h, §7i).
+const (
+	botSuffix = "[bot]"
+	botKind   = "Bot"
+	userKind  = "User"
+)
+
+// accountOf is the name the gate counts a record of this account by: the login of the host
+// for a person, and that login with the suffix the host gives accounts of that kind for an
+// App.
+//
+// Only these two kinds of account are read. A kind crewflow does not know is refused, and
+// so is a kind it knows and a login that does not go with it: reading any other answer as
+// «a person» would hand a record of an account crewflow cannot name to whoever shares its
+// name — an unknown kind with the login `x[bot]` would count as the person `x`, which is a
+// record of somebody the host never named. An answer crewflow does not understand is a gap
+// in what the host said, and a gap is what the gate refuses on (docs/DESIGN.md §7h).
+func accountOf(login, kind string) (string, error) {
+	if login == "" {
+		return "", errors.New("the answer of the host names no account")
+	}
+	switch kind {
+	case botKind:
+		return strings.TrimSuffix(login, botSuffix) + botSuffix, nil
+	case userKind:
+		if strings.HasSuffix(login, botSuffix) {
+			return "", fmt.Errorf("the account %q is named a person and is called an App", login)
+		}
+		return login, nil
+	default:
+		return "", fmt.Errorf("the account %q is of a kind the host names and crewflow does not know: %q",
+			login, kind)
+	}
 }
 
 // Status returns how the check runs of the commit stand. A commit with a check
@@ -421,11 +526,14 @@ func (c changeJSON) repository() string {
 	return c.HeadOwner.Login
 }
 
-// commentJSON is one comment of the answer of "gh pr view --json comments".
+// commentJSON is one comment of the answer of "gh pr view --json comments". The account
+// it was written by is not read here: over GraphQL an App is named by its slug alone, and
+// the name the gate counts is read of the answer of the REST API (docs/DESIGN.md §7h).
 type commentJSON struct {
-	Author struct {
-		Login string `json:"login"`
-	} `json:"author"`
+	// ID is what the host knows this comment under in both of its APIs, and it is how
+	// the account of the author is found in the answer of the REST one: the same
+	// comment has one id in both, and it is the only thing that joins them.
+	ID        string `json:"id"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"createdAt"`
 	// LastEditedAt is when the comment was changed after it was published, and

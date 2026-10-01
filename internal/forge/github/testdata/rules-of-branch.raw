@@ -1,0 +1,44 @@
+HTTP/2.0 200 OK
+Access-Control-Allow-Origin: *
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+X-Accepted-Github-Permissions: metadata=read
+X-Content-Type-Options: nosniff
+X-Github-Api-Version-Selected: 2022-11-28
+
+[
+  {
+    "type": "non_fast_forward",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "naghuale/crewflow",
+    "ruleset_id": 24112591
+  },
+  {
+    "type": "required_status_checks",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "naghuale/crewflow",
+    "ruleset_id": 24112591,
+    "parameters": {
+      "required_status_checks": [
+        {
+          "context": "test (ubuntu-latest)",
+          "integration_id": 15368
+        },
+        {
+          "context": "lint",
+          "integration_id": 15368
+        }
+      ],
+      "strict_required_status_checks_policy": true
+    }
+  },
+  {
+    "type": "update",
+    "ruleset_source_type": "Repository",
+    "ruleset_source": "naghuale/crewflow",
+    "ruleset_id": 24115315,
+    "parameters": {
+      "update_allows_fetch_and_merge": false
+    }
+  }
+]
