@@ -37,6 +37,11 @@ func TestMain(m *testing.M) {
 	if helper, is := startedAsTheHelper(os.Args[1:]); is {
 		os.Exit(helper)
 	}
+	// The home of the machine is remembered before it is replaced: a test that starts a
+	// program of the machine — `go build` of the script that cuts a release — needs the
+	// caches of the machine and not the empty ones of the folder of the test, and the
+	// caches of the go toolchain are under the home it asks for (docs/DESIGN.md §7a).
+	machineHome, _ = os.UserHomeDir()
 	home, err := os.MkdirTemp("", "crewflow-test-home-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "crewflow tests: make a home of their own: %v\n", err)
@@ -54,6 +59,11 @@ func TestMain(m *testing.M) {
 	}
 	os.Exit(code)
 }
+
+// machineHome is the home of the machine the tests run on: every test gets a home of its
+// own under TestMain's, and a test that starts a program of the machine asks go where the
+// caches of the toolchain are through this one.
+var machineHome string
 
 // The names the tests of the helper of the credentials leave in the environment of the
 // binary they start, and the words that make it the helper.

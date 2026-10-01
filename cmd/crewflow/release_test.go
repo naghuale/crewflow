@@ -35,7 +35,7 @@ func TestReleaseScriptCutsAVersionOnACopyOfTheProject(t *testing.T) {
 	defer stop()
 	command := exec.CommandContext(ctx, "sh", filepath.Join("scripts", "release.sh"), "v9.9.9")
 	command.Dir = copyOfProject
-	command.Env = cacheOfGoOfTheMachine(t)
+	command.Env = machineOfTheTest(t)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
 	if err := command.Run(); err != nil {
@@ -55,6 +55,9 @@ func TestReleaseScriptCutsAVersionOnACopyOfTheProject(t *testing.T) {
 	}
 	if got, want := strings.TrimSpace(git(t, on, "log", "-1", "--format=%s")), "chore(release): crewflow v9.9.9"; got != want {
 		t.Errorf("the release commit of the copy is %q, want %q", got, want)
+	}
+	if got, want := strings.TrimSpace(git(t, on, "log", "-1", "--format=%an <%ae>")), "crewflow test <test@crewflow.invalid>"; got != want {
+		t.Errorf("the release commit of the copy is by %q, want the identity of the test: a git of a test takes no identity from the machine", got)
 	}
 	if got, want := strings.TrimSpace(git(t, on, "tag", "--points-at", "HEAD")), "v9.9.9"; got != want {
 		t.Errorf("the copy is tagged %q, want %q", got, want)
@@ -123,7 +126,7 @@ func TestReleaseScriptRefusesWhatItCannotRelease(t *testing.T) {
 			defer stop()
 			command := exec.CommandContext(ctx, "sh", filepath.Join("scripts", "release.sh"), c.version)
 			command.Dir = copyOfProject
-			command.Env = cacheOfGoOfTheMachine(t)
+			command.Env = machineOfTheTest(t)
 			var stdout, stderr bytes.Buffer
 			command.Stdout, command.Stderr = &stdout, &stderr
 			if err := command.Run(); err == nil {
@@ -221,22 +224,42 @@ func repositoryOf(t *testing.T, copyOf string) gitOfTheTest {
 	return on
 }
 
-// cacheOfGoOfTheMachine is the environment of the go toolchain of the machine, so that a
-// script of a test that runs `go run` and `go build` in a copy of the project finds the
-// modules and the build of it where they already are. Without this it would fetch every
-// dependency again into the home of the test, which the tests then clean up after
-// themselves — and could not remove, because what the go toolchain writes is read-only.
-func cacheOfGoOfTheMachine(t *testing.T) []string {
+// machineOfTheTest is the environment a program of the machine runs in under a test of the
+// release: a home of its own, so that no config of the machine is read — a git of a test
+// that took the identity of the person from `~/.gitconfig` behaved differently on the
+// machine of one person and on the runner of CI, and CI has no identity at all; the identity
+// of the test in the environment instead, which is where git reads it when there is no
+// config; and the caches of the go toolchain of the machine, so that `go run` and `go build`
+// inside the script do not fetch what is already on the disk.
+func machineOfTheTest(t *testing.T) []string {
 	t.Helper()
-	var environment []string
+	home := t.TempDir()
+	environment := append(withoutGitOfTheMachine(),
+		"HOME="+home, "USERPROFILE="+home, "XDG_CONFIG_HOME="+home,
+		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_AUTHOR_NAME=crewflow test", "GIT_AUTHOR_EMAIL=test@crewflow.invalid",
+		"GIT_COMMITTER_NAME=crewflow test", "GIT_COMMITTER_EMAIL=test@crewflow.invalid")
 	for _, name := range []string{"GOMODCACHE", "GOCACHE"} {
-		out, err := exec.Command("go", "env", name).Output()
-		if err != nil {
-			t.Fatalf("go env %s: %v", name, err)
-		}
-		environment = append(environment, name+"="+strings.TrimSpace(string(out)))
+		environment = append(environment, name+"="+cacheOfGoOfTheMachine(t, name))
 	}
-	return append(os.Environ(), environment...)
+	return environment
+}
+
+// cacheOfGoOfTheMachine is where the go toolchain of the machine keeps its cache, asked
+// with the home of the machine: every test of this package runs under a home of its own,
+// and the caches of the toolchain are under the home it is asked for — a test of the
+// release that asked here would fetch every module again into the home of the test, which
+// the tests then clean up after themselves and cannot remove, because what the toolchain
+// writes is read-only.
+func cacheOfGoOfTheMachine(t *testing.T, name string) string {
+	t.Helper()
+	command := exec.Command("go", "env", name)
+	command.Env = append(withoutGitOfTheMachine(), "HOME="+machineHome, "USERPROFILE="+machineHome)
+	out, err := command.Output()
+	if err != nil {
+		t.Fatalf("go env %s: %v", name, err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // readOfTheTest is a file of the test as it stands.
