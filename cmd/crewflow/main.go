@@ -40,6 +40,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runReview(args[1:], stdout, stderr)
 	case "merge":
 		return runMerge(args[1:], stdout, stderr)
+	case "changelog":
+		return runChangelog(args[1:], stdout, stderr)
 	case "verify":
 		return runVerify(args[1:], stdout, stderr)
 	case "auth":
@@ -79,7 +81,8 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 // before it is run, a watch of a run that is going on, a list of the runs of the project, a
 // queue of what of them wants a person right now, a check of the runs that stand, a review
 // of a change, the merge of a change the gate allows and the check of a merge that went
-// through, the key of the app a run works as, and the version.
+// through, the journal of the project out of the fragments its tasks leave, the key of the
+// app a run works as, and the version.
 // The rest of the cycle arrives with the next steps of docs/DESIGN.md §11.
 func usage(w io.Writer) {
 	fmt.Fprint(w, `crewflow develops with two roles: an orchestrator that plans, reviews and
@@ -101,6 +104,8 @@ Subcommands:
   review <PR>    Say whether a change may be merged, and why it may not (§7h)
   merge <PR>     Merge a change the gate allows: fast-forward of the approved commit (§7h)
   verify <PR>    Check a merge: the branch of the host, the task and the CI of it (§7h)
+  changelog build  Build the unreleased part of the journal out of the fragments (§6)
+  changelog check  Check the fragments and the journal of a change (§6)
   auth app       The GitHub Apps a run and an orchestrator work as: import a key, check it (§7i)
   help           Show this message
   version        Print the version, the commit and the build time
@@ -115,6 +120,9 @@ Subcommands:
   crewflow review <PR> [-config path] [-repo path] [-approve | -request-changes <file>] [-json]
   crewflow merge <PR> [-config path] [-repo path] [-json]
   crewflow verify <PR> [-config path] [-repo path] [-json]
+  crewflow changelog build [-config path] [-repo path]
+  crewflow changelog check [-config path] [-repo path] [-json]
+  crewflow changelog release <version> [-config path] [-repo path] [-date YYYY-MM-DD]
   crewflow auth app import <file.pem> [-config path] [-as executor|orchestrator]
   crewflow auth app check [-config path] [-as executor|orchestrator] [-json]
   crewflow auth git-credential [get] [-config path] [-as executor|orchestrator]
