@@ -414,7 +414,7 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-ctx, stop := stoppedBy()
+	ctx, stop := stoppedBy()
 	defer stop()
 	// The state of the tasks is read first and the host is asked about the roles of the
 	// project only where the queue is worked out of it: a project whose host is not there
