@@ -23,15 +23,15 @@
   учётной записи, App — по номеру App. Переименованный App узнаётся по-прежнему, а App чужого
   проекта под нашим логином больше не считается нашим. Запись App исполнителя не считается
   ничьим решением, даже если его App назван в `[merge] reviewers` или `[merge] owners`.
-  ([#109](https://github.com/naghuale/crewflow/pull/109), задача [#109](https://github.com/naghuale/crewflow/issues/109))
+  ([#109](https://github.com/naghuale/crewflow/pull/113), задача [#109](https://github.com/naghuale/crewflow/issues/109))
 - Логин из `[merge] reviewers` или `[merge] owners`, которого нет на хостинге или который там
   принадлежит не человеку, — ошибка с именем ключа и с указанием, какой список исправлять;
   раньше такой список просто ничего не считал, и в ответе было видно, что никто ничего не
   одобрял.
-  ([#109](https://github.com/naghuale/crewflow/pull/109), задача [#109](https://github.com/naghuale/crewflow/issues/109))
+  ([#109](https://github.com/naghuale/crewflow/pull/113), задача [#109](https://github.com/naghuale/crewflow/issues/109))
 - `crewflow doctor` печатает оба списка разделения полномочий перепиской: логин файла и под ним
   вид и номер аккаунта, с которым ворота будут сверять запись.
-  ([#109](https://github.com/naghuale/crewflow/pull/109), задача [#109](https://github.com/naghuale/crewflow/issues/109))
+  ([#109](https://github.com/naghuale/crewflow/pull/113), задача [#109](https://github.com/naghuale/crewflow/issues/109))
 
 ## [v0.1.0] - 2026-10-01
 
