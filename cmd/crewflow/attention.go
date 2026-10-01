@@ -136,6 +136,13 @@ func (h hostOfAttention) FactsOf(ctx context.Context, task, change int) (taskrun
 		return taskrun.HostFacts{}, fmt.Errorf("read task %d: %w", task, err)
 	}
 	facts := taskrun.HostFacts{Labels: found.Labels, Closed: isClosed(found.State)}
+	if change <= 0 {
+		// Прогон, который не открыл change request, не имеет ничего, кроме задачи, и
+		// спрашивать хостинг про change request номера ноль — это вопрос, на который
+		// «no pull requests found» и есть честный ответ: такого изменения нет
+		// (F-099, docs.DESIGN.md §6a, §7h).
+		return facts, nil
+	}
 	changeFacts, err := h.changeFacts(ctx, change, task, found.Labels)
 	if err != nil {
 		// The labels of the task were read and the change request was not: the queue is

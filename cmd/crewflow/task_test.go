@@ -1524,6 +1524,10 @@ type host struct {
 	// in, and closed that the task of the test is closed: the two reactions of the host that
 	// take a run out of the queue of attention (F-061, §6a, §7g).
 	merged bool
+	// changes are the change requests the host was asked about, in order: a queue that
+	// asks about a change request of no number asks the host about nothing, and a test
+	// that has to see that keeps the numbers (F-099, §6a).
+	changes []int
 	// app is the App the host of the test knows, and the login of every other App is
 	// refused the way the host of GitHub refuses an App it was not given (§7i).
 	app int64
@@ -1710,6 +1714,7 @@ func (h *host) CommentTask(_ context.Context, number int, body string) error {
 // test where it opened one, and nothing where it did not. A host of a test whose change
 // went in says so, and that is what takes a run out of the queue of attention (§6a).
 func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest, error) {
+	h.changes = append(h.changes, number)
 	if !h.opened {
 		return forge.ChangeRequest{}, fmt.Errorf("could not find change request #%d", number)
 	}

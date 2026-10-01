@@ -380,6 +380,65 @@ func TestRunTaskAttentionTakesAClosedTaskOutOfTheQueue(t *testing.T) {
 	}
 }
 
+// TestRunTaskAttentionOfARunWithoutAPrDoesNotReadOne: F-099, живой прогон на этом
+// репозитории. У прогона, который не открыл change request, очередь спрашивала у
+// хостинга про «change request #0» и получала «no pull requests found» — в строке
+// очереди это читалось как ошибка чтения хостинга у задачи, у которой change request
+// и не бывает.
+//
+// Change request номера ноль не бывает: у хостинга спрашивают про те, что у прогона
+// есть, а их нет — ни одного вопроса (docs.DESIGN.md §6a, §7h).
+func TestRunTaskAttentionOfARunWithoutAPrDoesNotReadOne(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEndedWithoutAChange(t, host, time.Now().Add(-time.Hour))
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)",
+			code, exitFailure, stdout.String(), stderr.String())
+	}
+	for _, unwanted := range []string{"no pull requests found", "change request #0", "the host could not be read"} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("crewflow task attention wrote %q, want no %q: change request номера ноль не бывает",
+				stdout.String(), unwanted)
+		}
+	}
+	if !strings.Contains(stdout.String(), string(taskrun.AttentionFinishedUnseen)) {
+		t.Errorf("crewflow task attention wrote %q, want %q: прогон без PR — это результат, а не ошибка чтения",
+			stdout.String(), taskrun.AttentionFinishedUnseen)
+	}
+	if len(host.changes) != 0 {
+		t.Errorf("хостинг спросили про change request %v, want ни одного: у прогона их нет", host.changes)
+	}
+}
+
+// putRunThatEndedWithoutAChange is the state of a task whose run ended and opened no
+// change request: результат есть, а PR нет, и очередь не должна искать его (F-099).
+func putRunThatEndedWithoutAChange(t *testing.T, h *host, ended time.Time) time.Time {
+	t.Helper()
+	journals := taskrun.JournalsOf(h.home, "naghuale-crewflow")
+	state := taskrun.State{
+		Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Profile: "opencode",
+	}
+	state = state.NextAttempt(taskrun.StartOf{
+		Started:  ended.Add(-42 * time.Minute),
+		Step:     "the executor of the run",
+		Journal:  journals.JournalPath(43, 1),
+		Executor: "opencode",
+		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the person who runs crewflow"},
+	})
+	state = state.Ended(ended, taskrun.TimedOut)
+	if err := taskrun.SaveState(journals.StatePath(43), state); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	return ended
+}
+
 // TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange: одобрение и
 // приёмку считает gate, и очередь показывает то же, что показали бы ворота. До правки
 // очередь считала записи под изменением своими двумя правилами (F-106): одобрение,
