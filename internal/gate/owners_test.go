@@ -85,12 +85,12 @@ func TestARecordIsCountedByTheAccountAndNotByTheLogin(t *testing.T) {
 	}
 }
 
-// TestARecordIsCountedWhenTheLoginIsTheSameAndTheAccountIsNot is the refusal in the
+// TestARecordIsNotCountedWhenTheLoginIsTheSameAndTheAccountIsNot is the refusal in the
 // other direction: the login is the name the host writes every account of an App under, so
 // two Apps of one host carry one login in their records, and only the number of the App
 // tells them apart. A record of the App of the executor under the login of the App of the
 // orchestrator is a record of the executor and approves nothing (docs/DESIGN.md §7h, §7i).
-func TestARecordIsCountedWhenTheLoginIsTheSameAndTheAccountIsNot(t *testing.T) {
+func TestARecordIsNotCountedWhenTheLoginIsTheSameAndTheAccountIsNot(t *testing.T) {
 	executorNamedLikeTheOrchestrator := forge.Subject{
 		Kind: forge.KindApp, ID: executorApp.ID, Login: orchestratorLogin,
 	}
