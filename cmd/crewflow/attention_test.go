@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -663,6 +664,84 @@ func putRunsOfFourTasks(t *testing.T, h *host, ended time.Time) {
 		}
 		return ended.Add(-12 * time.Minute).Format("Mon Jan _2 15:04:05 2006"), nil
 	}}
+}
+
+// TestRunTaskAttentionSaysThatItIsReadingWhenTheHostIsSlow: F-098, строка молчания.
+// Чтение ходит в чужой сервис, и минута тишины в терминале выглядит как зависшая команда:
+// человек нажимает Ctrl+C и не получает ответа.
+//
+// Пока очередь читается дольше readSilence, команда говорит в stderr, что читает и сколько
+// задач — и говорит это до ответа, а не после него. Здесь хостинг держит первый вопрос до
+// той самой строки, и без неё тест бы завис (docs/DESIGN.md §6a).
+func TestRunTaskAttentionSaysThatItIsReadingWhenTheHostIsSlow(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	// Строка должна уйти раньше ответа хостинга: без этой подмены тест ждал бы readSilence
+	// настоящего времени, а с ней — отвечает на ту же строку, что и человек в терминале.
+	wrote := make(chan struct{})
+	stderr := &notified{w: &bytes.Buffer{}, wrote: wrote}
+	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		return forge.Set{
+			Tracker: &waitingFor{Tracker: host, wrote: wrote},
+			Forge:   host,
+		}, nil
+	}
+	was := readSilence
+	readSilence = time.Millisecond
+	t.Cleanup(func() { readSilence = was })
+	var stdout bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, stderr)
+
+	// Прогон открыл change request и никто его не одобрил: он ждёт человека, и команда
+	// выходит с не-нулевым кодом — строка о чтении ничего не меняет в ответе (§6a).
+	if code != exitFailure {
+		t.Fatalf("crewflow task attention = %d, want %d (stderr: %q)", code, exitFailure, stderr.w.String())
+	}
+	if !strings.Contains(stderr.w.String(), "reading the state of 1 tasks") {
+		t.Errorf("crewflow task attention написал %q в stderr, want строку о чтении", stderr.w.String())
+	}
+	if strings.Contains(stdout.String(), "reading the state") {
+		t.Errorf("crewflow task attention написал %q в stdout, want строку о чтении в stderr: "+
+			"ответ команды — это очередь, а не то, что она делает", stdout.String())
+	}
+}
+
+// notified is the stderr of a test, which says when it was written to the first time: так
+// тест узнаёт, что строка о чтении ушла, и отпускает хостинг (§6a).
+type notified struct {
+	mu    sync.Mutex
+	w     *bytes.Buffer
+	wrote chan struct{}
+	once  sync.Once
+}
+
+func (n *notified) Write(p []byte) (int, error) {
+	n.once.Do(func() { close(n.wrote) })
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.w.Write(p)
+}
+
+// waitingFor is the tracker of a test, which answers nothing until the command has said that
+// it is reading: строка о чтении должна уйти раньше ответа хостинга, иначе она бесполезна
+// (§6a).
+type waitingFor struct {
+	forge.Tracker
+	wrote chan struct{}
+}
+
+// Task is the first question the queue asks the host of a project, and here it is the one
+// that waits for the line.
+func (w *waitingFor) Task(ctx context.Context, number int) (forge.Task, error) {
+	select {
+	case <-w.wrote:
+	case <-ctx.Done():
+	}
+	return w.Tracker.Task(ctx, number)
 }
 
 // TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange: одобрение и

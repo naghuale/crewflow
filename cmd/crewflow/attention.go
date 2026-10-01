@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/config"
@@ -20,9 +21,11 @@ import (
 // out of the state of the runs of the project and of what the host of the project says
 // about their changes (docs/DESIGN.md §6a).
 //
-// `crewflow task list` shows the queue over the table and reads nothing but the state of
-// the tasks, because a list is a question and a question reaches no network (§6).
-// `crewflow task attention` is the same queue with the host of the project in it — the
+// `crewflow task list` is the same queue over the table, and it is asked about the host of
+// the project exactly where `task attention` is: список и очередь отвечают о делах одними
+// и теми же словами, иначе человек увидит в одном «нужно посмотреть», а в другом «не
+// смотреть» про одну и ту же задачу (§6a).
+// `crewflow task attention` is that queue with the host of the project in it — the
 // labels of the tasks and the records under their change requests — and it is the command
 // of a schedule of an orchestrator: it leaves a record under a task that has waited for
 // longer than the project agreed, once for a key and not once a minute, and its code says
@@ -62,6 +65,61 @@ func attentionEnv(cfg config.Config) (taskrun.AttentionEnv, error) {
 	}
 	env.AcceptanceLabel = cfg.Acceptance.Label
 	return env, nil
+}
+
+// readSilence is how long a command may read the queue of a project and say nothing before
+// it says that it is reading: две секунды — это дольше, чем моргание, и короче, чем время,
+// за которое человек успевает решить, что команда зависла (F-098, §6a).
+//
+// It is a variable and not a constant so that a test can shorten it: тест не должен ждать
+// две настоящие секунды ради одной строки (§6a).
+var readSilence = 2 * time.Second
+
+// reader is what a command says while it reads and has said nothing for a while. It is a
+// timer armed by the queue and stopped by the command, and the write happens under a lock:
+// очередь читает пачками и зовёт Reading из своей горутины, а stderr команды один (§6a).
+type reader struct {
+	mu    sync.Mutex
+	w     io.Writer
+	after time.Duration
+	timer *time.Timer
+	done  bool
+}
+
+// saysItReads returns the reading of a command that writes into w when the queue has been
+// reading for longer than after. The caller must stop it when the queue is answered: строка
+// о чтении не должна появиться после ответа на вопрос, который она описывает (§6a).
+func saysItReads(w io.Writer, after time.Duration) *reader {
+	return &reader{w: w, after: after}
+}
+
+// begin is told by the queue how many tasks of the project it is about to read. It arms the
+// timer and does nothing else: очередь не должна ждать этой строки и не должна знать,
+// напечатана она или нет (§6).
+func (r *reader) begin(tasks int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done {
+		return
+	}
+	r.timer = time.AfterFunc(r.after, func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if r.done {
+			return
+		}
+		fmt.Fprintf(r.w, "crewflow task attention: reading the state of %d tasks…\n", tasks)
+	})
+}
+
+// stop ends the reading: the queue is answered, и строка о чтении больше не нужна.
+func (r *reader) stop() {
+	r.mu.Lock()
+	r.done = true
+	if r.timer != nil {
+		r.timer.Stop()
+	}
+	r.mu.Unlock()
 }
 
 // attentionHost is the host of a project as the queue asks about it: the words a task is

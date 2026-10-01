@@ -237,11 +237,15 @@ ATTENTION REQUIRED
     waiting 1h · next: orchestrator · crewflow review 113
 ```
 
-`task list` shows the block over the table, out of the local state and without a network.
-`crewflow task attention` is the whole queue with the host of the project in it — a reviewed
-change is not in it at all — and it is made for a schedule: it exits non-zero while anything in
-the queue wants a person, and leaves **one record under the task per key** (task, state, priority,
-reason), not repeated for a day. The thresholds are in `[attention]`: `top_after` (30m),
+`task list` shows the block over the table, and `crewflow task attention` is the whole queue with
+the host of the project in it — a reviewed change is not in it at all. The two are asked the same
+way and answer about the same tasks: `task list` asks the host about the tasks whose work may be
+over and nothing else, so a table and a queue cannot call one and the same task different things.
+A run whose change is merged or closed, or whose task the host has closed, is remembered as settled
+and is not asked about again for a day, so a machine that ran a hundred tasks reads a few.
+`crewflow task attention` is made for a schedule: it exits non-zero while anything in the queue
+wants a person, and leaves **one record under the task per key** (task, state, priority, reason),
+not repeated for a day. The thresholds are in `[attention]`: `top_after` (30m),
 `escalate_after` (24h), `remind_after` (24h) and `weekly_after` (7d, the weekly slice of #37).
 
 A reason that is known is never "standing": a run at the keychain window *waits* for a person
@@ -256,7 +260,10 @@ not repeat anything but the decision. A run whose request you refused is named d
 command that always says no is a queue nobody reads.
 
 A reaction takes a task out of the queue: a merged or closed pull request, a review of the head
-the change stands at, the owner's `ACCEPTED`, a task the host has closed. A run of a task the host
+the change stands at, the owner's `ACCEPTED`, a task the host has closed. What the host could not
+be read is said in its own block, `COULD NOT READ`, and never as a task that wants a person: a
+command stopped with Ctrl+C prints `interrupted` and no queue at all. Reading the queue takes more
+than two seconds — it asks a service over a network — and says so in stderr while it reads. A run of a task the host
 does not have at all — the repository moved and another one took the name — is a fact about the
 project, not an expectation: it comes out as `task-missing`, is never escalated, never gets a
 comment written under a task that is not there, and the row says where the run journal stayed.

@@ -351,6 +351,15 @@ type AttentionEnv struct {
 	// AcceptanceLabel is the word a task is marked with to have its result accepted by
 	// the owner before the change may go in: `[acceptance] label` (§7h).
 	AcceptanceLabel string
+	// Reading is told that the queue is about to read the state of that many tasks of
+	// the project, before it reads any of it: чтение ходит в чужой сервис, и команда,
+	// которая молчит дольше нескольких секунд, выглядит зависшей — а человек, решивший,
+	// что она зависла, нажимает Ctrl+C и не получает ответа (F-098, §6a).
+	//
+	// It is a callback and not a writer because the queue has no stream of its own: куда
+	// эта строка уйдёт — в stderr команды, в журнал расписания или никуда — решает тот,
+	// кто читает очередь (§6).
+	Reading func(reading int)
 }
 
 // Host is what the queue may ask the host of a project about a task: the words it is
@@ -563,6 +572,9 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 	// that wait and not about the rest, and спрашивается о них пачкой, а не по одному
 	// (§6a).
 	var about []asked
+	if env.Reading != nil {
+		env.Reading(countOfStates(names))
+	}
 	for _, name := range names {
 		if name.IsDir() || !isStateOfATask(name.Name()) {
 			continue

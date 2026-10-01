@@ -414,14 +414,22 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	ctx, stop := stoppedBy()
+ctx, stop := stoppedBy()
 	defer stop()
 	// The state of the tasks is read first and the host is asked about the roles of the
 	// project only where the queue is worked out of it: a project whose host is not there
 	// is answered from the state alone, and says so in the entries it could not ask
-	// about (docs/DESIGN.md §6a).
+	// about (docs.DESIGN.md §6a).
+	//
+	// Пока очередь читается, команда молчит: чтение ходит в чужой сервис, и минута
+	// молчания в терминале выглядит как зависшая команда. Если чтение длится дольше
+	// readSilence, в stderr уходит строка «читаю состояние N задач…» — человек видит,
+	// что crewflow работает, и может решить, что пора нажать Ctrl+C (F-098, §6a).
+	reading := saysItReads(stderr, readSilence)
+	env.Reading = reading.begin
 	queue, err := taskrun.CheckAttention(ctx, home, cfg.RepoName(), env,
 		hostOfTheProject(ctx, cfg, *configPath), noticeUnderTheTask(cfg, *configPath))
+	reading.stop()
 	if err != nil {
 		return failed(stderr, err)
 	}

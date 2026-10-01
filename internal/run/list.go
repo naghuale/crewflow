@@ -435,6 +435,19 @@ func isStateOfATask(name string) bool {
 	return err == nil && task > 0
 }
 
+// countOfStates is how many of the names in the folder of the states are the states of
+// tasks: очередь говорит, сколько задач она сейчас читает, и должна посчитать те же
+// файлы, что и прочитает — иначе она назовёт число, которого не ждёт человек (§6a).
+func countOfStates(names []os.DirEntry) int {
+	count := 0
+	for _, name := range names {
+		if !name.IsDir() && isStateOfATask(name.Name()) {
+			count++
+		}
+	}
+	return count
+}
+
 // entryOf is what crewflow makes of the state of one task: the tries it took, and the
 // last of them with how long it has been going, the agent that ran it and whose name
 // it went under. A state with no attempt in it is a state of no run, and there is
