@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -272,7 +274,12 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 
 // TestRunTaskAttentionOfAProjectWithNoHostSaysWhatTheStateHolds: a project whose host of
 // its own cannot be read is answered out of the state of its tasks, and it says so rather
-// than reaching a host that is not there (docs/DESIGN.md §6a, §7h).
+// than reaching a host that is not there.
+//
+// Раньше такая задача попадала в очередь как `finished-unseen` со строкой «the host could
+// not be read»: очередь утверждала и то, что задача ждёт человека, и то, что человек об
+// этом не знает. Теперь она говорит, что прочитать не удалось, и ни о чём не утверждает
+// (docs.DESIGN.md §6a, §7h, F-098).
 func TestRunTaskAttentionOfAProjectWithNoHostSaysWhatTheStateHolds(t *testing.T) {
 	host := &host{opened: true, task: taskOf(43), noSubject: true}
 	host.use(t)
@@ -284,12 +291,16 @@ func TestRunTaskAttentionOfAProjectWithNoHostSaysWhatTheStateHolds(t *testing.T)
 	if code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr); code != exitFailure {
 		t.Fatalf("crewflow task attention = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), string(taskrun.AttentionFinishedUnseen)) {
-		t.Errorf("crewflow task attention wrote %q, want the run that nobody has looked at", stdout.String())
+	said := stdout.String()
+	if !strings.Contains(said, "COULD NOT READ") {
+		t.Errorf("crewflow task attention wrote %q, want the block of what was not read", said)
 	}
-	if !strings.Contains(stdout.String(), "the host could not be read") {
-		t.Errorf("crewflow task attention wrote %q, want it to say that the host was not read: "+
-			"a queue that hides a host it could not read is a queue a person acts on with half the truth", stdout.String())
+	if !strings.Contains(said, "#43 (43-1)") {
+		t.Errorf("crewflow task attention wrote %q, want the run it is about", said)
+	}
+	if strings.Contains(said, string(taskrun.AttentionFinishedUnseen)) {
+		t.Errorf("crewflow task attention wrote %q, want no %q: a run nobody read does not wait for a person",
+			said, taskrun.AttentionFinishedUnseen)
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("crewflow task attention wrote %q to stderr, want nothing", stderr.String())
@@ -437,6 +448,71 @@ func putRunThatEndedWithoutAChange(t *testing.T, h *host, ended time.Time) time.
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	return ended
+}
+
+// TestRunTaskAttentionSaysThatItCouldNotReadInsteadOfClaimingAttention: F-098 на этом
+// репозитории, 01.10: после Ctrl+C команда печатала восемь строк `escalated ·
+// finished-unseen` с причиной `context canceled`, а через три минуты — «nothing wants a
+// person». Очередь говорила и то, что восемь задач ждут человека, и то, что не ждёт никто.
+//
+// Теперь блок `ATTENTION REQUIRED` не содержит ничего о непрочитанном, рядом стоит блок
+// `COULD NOT READ` с числом прогонов и их причинами, а код не ноль: расписание узнаёт, что
+// ответ неполон (docs.DESIGN.md §6a).
+func TestRunTaskAttentionSaysThatItCouldNotReadInsteadOfClaimingAttention(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-66*time.Hour))
+	// Хостинг не читается ни для одной задачи: сеть легла, и это не «задачи нет».
+	host.noTask = errors.New("read task 43: dial tcp: i/o timeout")
+	taskClock = func() time.Time { return ended.Add(66 * time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code == exitOK {
+		t.Fatalf("crewflow task attention = 0, want не ноль: прочитано не всё, а расписание должно знать")
+	}
+	said := stdout.String()
+	if !strings.Contains(said, "COULD NOT READ") || !strings.Contains(said, "#43 (43-1)") {
+		t.Errorf("crewflow task attention написал %q, want блок «COULD NOT READ» с прогоном", said)
+	}
+	for _, unwanted := range []string{"ATTENTION REQUIRED", string(taskrun.AttentionEscalated), "nothing wants a person"} {
+		if strings.Contains(said, unwanted) {
+			t.Errorf("crewflow task attention написал %q, want без %q: непрочитанное — не внимание", said, unwanted)
+		}
+	}
+	if len(host.records) != 0 {
+		t.Errorf("под задачей оставлено %q, want ничего: о непрочитанном не напоминают", host.records)
+	}
+}
+
+// TestRunTaskAttentionInterruptedSaysItWasInterruptedWithoutAList: тот же случай по Ctrl+C.
+// Человек остановил команду на середине: сказать «прервано» и выйти с ненулевым кодом, не
+// печатая список того, что crewflow успел прочитать и не понял (docs.DESIGN.md §6a).
+func TestRunTaskAttentionInterruptedSaysItWasInterruptedWithoutAList(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+	host.noTask = errors.New("read task 43: " + context.Canceled.Error())
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code == exitOK {
+		t.Fatalf("crewflow task attention = 0, want не ноль: чтение прервано, а это не ответ")
+	}
+	said := stdout.String()
+	if !strings.Contains(said, "interrupted") {
+		t.Errorf("crewflow task attention написал %q, want слово «interrupted»: прерванное чтение говорит, что прервано", said)
+	}
+	for _, unwanted := range []string{"ATTENTION REQUIRED", string(taskrun.AttentionEscalated), "nothing wants a person"} {
+		if strings.Contains(said, unwanted) {
+			t.Errorf("crewflow task attention написал %q, want без %q: прерванное чтение не даёт утверждений", said, unwanted)
+		}
+	}
 }
 
 // TestRunTaskAttentionTakesTheVerdictOfTheGateForTheRecordsUnderTheChange: одобрение и

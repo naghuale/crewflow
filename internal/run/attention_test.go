@@ -196,24 +196,31 @@ func TestARunThatWasClearedLeavesNoRecordUnderTheTask(t *testing.T) {
 	}
 }
 
-// TestAHostThatCouldNotBeReadLeavesTheEntryWithoutAClaim: the second defect of the review of
-// PR #118. Where the host could not be read, crewflow cannot say whether somebody has
-// already looked at the result of the run, and an entry that said "act now" about a change
-// that went in a week ago is a zombie of its own (F-061, docs.DESIGN.md §6a).
-func TestAHostThatCouldNotBeReadLeavesTheEntryWithoutAClaim(t *testing.T) {
+// TestAHostThatCouldNotBeReadLeavesNoEntryAndNamesTheHole: where the host could not be
+// read, crewflow cannot say whether somebody has already looked at the result of the run —
+// и раньше это выражалось записью `unknown` в очереди. Такой записи больше нет: запись,
+// о которой ничего не известно, занимает место настоящей и эскалируется вместе с ней
+// (F-098, docs.DESIGN.md §6a, §7h).
+//
+// Задача не попадает в очередь вовсе, а причина остаётся названной — в блоке
+// «не удалось прочитать», где у неё есть прогон и задача, к которым она относится.
+func TestAHostThatCouldNotBeReadLeavesNoEntryAndNamesTheHole(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-crewflow"
 	ended := monday.Add(8*time.Hour + 42*time.Minute)
 	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113, URL: "https://example.com/113"},
 		try{startedAt: monday.Add(8 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
 
-	one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{})
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{})
 
-	if one.Actable != ActUnknown {
-		t.Errorf("the entry says %q, want %q: the host could not be read and crewflow does not know "+
-			"whether the result of the run was looked at", one.Actable, ActUnknown)
+	if _, inQueue := queue.Wanted(43); inQueue {
+		t.Errorf("в очереди %v, want без задачи 43: неизвестное не является требованием внимания",
+			tasksOfQueue(queue))
 	}
-	if one.Problem == "" {
-		t.Error("the entry says nothing about the host it could not read, want the reason of it")
+	if len(queue.Unread) != 1 || queue.Unread[0].Task != 43 {
+		t.Fatalf("в блоке «не прочитано» %+v, want задача 43 с названной проблемой", queue.Unread)
+	}
+	if queue.Unread[0].Problem == "" {
+		t.Error("в блоке «не прочитано» нет проблемы, want она названа")
 	}
 }
 
@@ -273,9 +280,13 @@ func TestATaskTheHostDoesNotHaveIsAFactAndNotAWait(t *testing.T) {
 }
 
 // TestATrackerThatCouldNotBeReadIsNotAMissingTask: the other half of the rule. A network that
-// failed, a 5xx and a repository gh cannot resolve are all "crewflow does not know", and they
-// stay that way: the entry names the problem, does not promise that a person may act and is
-// escalated like any other wait (§6a, §7h).
+// failed, a 5xx and a repository gh cannot resolve are all "crewflow does not know" — и это
+// не то же самое, что «задачи нет»: репозиторий переехал это одна причина, а сеть легла
+// это другая, и различает их адаптер (§6a, §7g, §7h).
+//
+// Отказ сети — причина блока «не удалось прочитать», а не `task-missing` и не запись
+// очереди: под задачей, о которой ничего не известно, crewflow ничего не пишет, потому
+// что напоминание о собственном сбое — не напоминание о работе проекта (F-098, §6a).
 func TestATrackerThatCouldNotBeReadIsNotAMissingTask(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-tele"
 	ended := monday.Add(8*time.Hour + 42*time.Minute)
@@ -285,25 +296,22 @@ func TestATrackerThatCouldNotBeReadIsNotAMissingTask(t *testing.T) {
 
 	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{}, said.sayAttention)
 
-	one, wanted := queue.Wanted(53)
-	if !wanted {
-		t.Fatalf("the queue holds %v, want the task 53 in it", tasksOfQueue(queue))
+	if _, inQueue := queue.Wanted(53); inQueue {
+		t.Errorf("в очереди %v, want без задачи 53: сетевой отказ не повод требовать внимания",
+			tasksOfQueue(queue))
 	}
-	if one.Reason == ReasonTaskMissing {
-		t.Errorf("the reason = %q, want the reason of the wait: the host could not be read, "+
-			"which is not the same thing as the task being gone", one.Reason)
+	if len(queue.Unread) != 1 {
+		t.Fatalf("в блоке «не прочитано» %d строк, want одна: %+v", len(queue.Unread), queue.Unread)
 	}
-	if one.Problem == "" {
-		t.Error("the entry says nothing about the host it could not read, want the reason of it")
+	unread := queue.Unread[0]
+	if unread.Reason != ReasonReadFailed {
+		t.Errorf("причина = %q, want %q: сеть легла, и это не «задачи нет»", unread.Reason, ReasonReadFailed)
 	}
-	if one.Hint != "" {
-		t.Errorf("the entry has the hint %q, want none: crewflow does not know that the task is gone", one.Hint)
+	if unread.Problem == "" {
+		t.Error("в блоке «не прочитано» нет проблемы, want она названа")
 	}
-	if one.State != AttentionEscalated {
-		t.Errorf("the state = %q, want %q: a wait crewflow cannot vouch for is escalated like any other", one.State, AttentionEscalated)
-	}
-	if len(said.lines) != 1 {
-		t.Errorf("crewflow left %d records under the task, want the one of the escalation: %q", len(said.lines), said.lines)
+	if len(said.lines) != 0 {
+		t.Errorf("под задачей оставлено %q, want ничего: о непрочитанном не напоминают", said.lines)
 	}
 }
 
@@ -482,6 +490,7 @@ func TestAQ005TheOrderOfTheQueueIsTheOrderTheOwnerWrote(t *testing.T) {
 		2: {Labels: []string{"owner-check"},
 			Change: &ChangeFacts{Number: 12, State: "open", Head: head, Approved: true, Last: now.Add(-2 * time.Hour)}},
 		3: {Change: &ChangeFacts{Number: 13, State: "open", Head: head}},
+		4: {},
 	}
 
 	queue := queueOf(t, home, repo, attentionEnvOf(now, 100), host)
@@ -606,6 +615,74 @@ func TestAChangeOfTheReasonIsANewRecord(t *testing.T) {
 	}
 	if len(said.lines) != 2 {
 		t.Errorf("the queue left %d records, want two: one for each reason of the wait", len(said.lines))
+	}
+}
+
+// TestARunTheHostCouldNotBeReadIsNotAttention: F-098, 01.10. Прерванное чтение — не
+// утверждение. Раньше запись, чей хостинг не прочитан, попадала в очередь как
+// `escalated · finished-unseen` с причиной `context canceled`: восемь строк о давних
+// слитых PR, поднятых после Ctrl+C, и очередь говорила, что восемь задач ждут человека
+// именно потому, что его спросить не удалось.
+//
+// Теперь такая запись не запись очереди, а строка блока «не удалось прочитать»: то, что
+// crewflow не знает, не выдаётся за то, что требует внимания (docs.DESIGN.md §6a, §7h).
+func TestARunTheHostCouldNotBeReadIsNotAttention(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	said := &saidUnderTheTask{}
+
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(66*time.Hour)), hostOfTest{}, said.sayAttention)
+
+	if len(queue.Entries) != 0 {
+		t.Errorf("очередь держит %+v, want ничего: хостинг не прочитан", tasksOfQueue(queue))
+	}
+	if len(queue.Unread) != 1 {
+		t.Fatalf("в блоке «не прочитано» %d строк, want одна: %+v", len(queue.Unread), queue.Unread)
+	}
+	unread := queue.Unread[0]
+	if unread.Task != 43 || unread.Run != "43-1" {
+		t.Errorf("в блоке %+v, want задачу 43 и прогон 43-1", unread)
+	}
+	if unread.Reason != ReasonReadFailed {
+		t.Errorf("причина = %q, want %q", unread.Reason, ReasonReadFailed)
+	}
+	if unread.Problem == "" {
+		t.Error("в строке нет проблемы, want она названа: человек должен знать, куда смотреть")
+	}
+	if len(said.lines) != 0 {
+		t.Errorf("под задачей оставлено %q, want ничего: то, что не прочитано, не напоминают",
+			said.lines)
+	}
+}
+
+// TestACancelledReadIsNotAttentionAndIsSaidAsInterrupted: тот же случай по Ctrl+C. Отмена
+// контекста — не отказ хостинга, и очередь говорит об этом отдельно: прочитанное не
+// выдаётся за список требующего внимания, а прерванное чтение говорит, что оно прервано
+// (docs.DESIGN.md §6a).
+func TestACancelledReadIsNotAttentionAndIsSaidAsInterrupted(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "the run of a task", &Change{Number: 113},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	queue, err := CheckAttention(ctx, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{}, nil)
+
+	if err != nil {
+		t.Fatalf("CheckAttention вернула ошибку: %v", err)
+	}
+	if len(queue.Entries) != 0 {
+		t.Errorf("очередь держит %+v, want ничего: чтение прервано", tasksOfQueue(queue))
+	}
+	if !queue.Interrupted {
+		t.Error("очередь не сказала, что чтение прервано, want она это говорит")
+	}
+	if len(queue.Unread) != 1 || queue.Unread[0].Reason != ReasonReadInterrupted {
+		t.Errorf("блок «не прочитано» = %+v, want одна строка с причиной %q",
+			queue.Unread, ReasonReadInterrupted)
 	}
 }
 
@@ -819,8 +896,10 @@ func TestTheHostIsAskedOnlyWhereAWaitMayBeCleared(t *testing.T) {
 }
 
 // TestAHostThatCannotBeReadSaysSo: a queue that says "nobody is waiting" because the host
-// was out of reach would be lying about the work of the project, and the problem is said
-// in the answer instead of being passed over (§7h, docs/DESIGN.md §6a).
+// was out of reach would be lying about the work of the project, and a queue that said
+// "someone is waiting" would lie about it in the other direction. Neither: the run goes
+// into the "could not read" block with what is known about it and what stood in the way
+// (§7h, docs.DESIGN.md §6a, F-098).
 func TestAHostThatCannotBeReadSaysSo(t *testing.T) {
 	home, repo := t.TempDir(), "naghuale-crewflow"
 	ended := monday.Add(8 * time.Hour)
@@ -829,15 +908,19 @@ func TestAHostThatCannotBeReadSaysSo(t *testing.T) {
 
 	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour)), hostOfTest{})
 
-	one, wanted := queue.Wanted(43)
-	if !wanted {
-		t.Fatalf("the queue holds %+v, want the task 43 in it", tasksOfQueue(queue))
+	if len(queue.Entries) != 0 {
+		t.Errorf("the queue holds %v, want nothing: the host was not read", tasksOfQueue(queue))
 	}
-	if one.State != AttentionFinishedUnseen {
-		t.Errorf("the state = %q, want %q: the run ended and nobody has looked at it", one.State, AttentionFinishedUnseen)
+	if len(queue.Unread) != 1 {
+		t.Fatalf("the block holds %+v, want one line", queue.Unread)
 	}
-	if one.Problem == "" || !strings.Contains(one.Problem, "knows no task 43") {
-		t.Errorf("the entry says %q about the host, want the problem it had: a queue that hides a host it could not read is a queue a person acts on with half the truth", one.Problem)
+	unread := queue.Unread[0]
+	if !strings.Contains(unread.Problem, "knows no task 43") {
+		t.Errorf("the block says %q, want the problem of the host: a queue that hides a host it could not "+
+			"read is a queue a person acts on with half the truth", unread.Problem)
+	}
+	if unread.Run != "43-1" {
+		t.Errorf("the block names the run %q, want 43-1: a line has to say what it is about", unread.Run)
 	}
 }
 
@@ -972,6 +1055,53 @@ func queueOf(t *testing.T, home, repo string, env AttentionEnv, host Host, said 
 		t.Fatalf("CheckAttention returned an error: %v", err)
 	}
 	return queue
+}
+
+// TestTheQueueSaysWhatItCouldNotReadAndDoesNotPutItInTheBlockOfAttention: F-098 на живом
+// прогоне. Восемь строк `escalated · finished-unseen` с причиной `context canceled` после
+// Ctrl+C читались как «восемь задач требуют внимания», и повторный запуск через три минуты
+// говорил «nothing wants a person» — очередь противоречила сама себе.
+//
+// Теперь блок внимания не содержит ничего о непрочитанном, а рядом стоит отдельный блок с
+// числом таких прогонов и их причинами. Человек, читающий очередь, видит и то, что ждёт
+// его, и то, что crewflow не смог прочитать (docs.DESIGN.md §6a).
+func TestTheQueueSaysWhatItCouldNotReadAndDoesNotPutItInTheBlockOfAttention(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	// Два прогона, которых никто не смотрел, и один, который стоит: стоящий виден и без
+	// хостинга, а остальные два — нет.
+	writeState(t, home, repo, 1, "стоит", nil,
+		try{startedAt: ended.Add(-47 * time.Minute), outcome: Running, pid: 100,
+			lastAt: ended.Add(-47 * time.Minute), lastStep: "go test ./..."})
+	writeState(t, home, repo, 2, "слит давно", &Change{Number: 21},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+	writeState(t, home, repo, 3, "слит позже", &Change{Number: 22},
+		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
+
+	queue := queueOf(t, home, repo, attentionEnvOf(ended.Add(time.Hour), 100), hostOfTest{})
+
+	var out bytes.Buffer
+	if err := queue.Write(&out, screenAt(ended.Add(time.Hour))); err != nil {
+		t.Fatalf("Write вернул ошибку: %v", err)
+	}
+	said := out.String()
+	if !strings.Contains(said, string(AttentionStands)) || !strings.Contains(said, "#1") {
+		t.Errorf("очередь написала %q, want #1 стоит: то, что видно без хостинга, остаётся видно", said)
+	}
+	for _, unwanted := range []string{"#2", "#3", string(AttentionEscalated)} {
+		if strings.Contains(said, unwanted) {
+			t.Errorf("блок внимания написал %q, want без %q: непрочитанное не является вниманием", said, unwanted)
+		}
+	}
+	var block bytes.Buffer
+	if err := queue.Unread.Write(&block, screenAt(ended.Add(time.Hour))); err != nil {
+		t.Fatalf("Write of the unread block returned an error: %v", err)
+	}
+	for _, want := range []string{unreadHeading, "#2 (2-1)", "#3 (3-1)", ReasonReadFailed} {
+		if !strings.Contains(block.String(), want) {
+			t.Errorf("блок «не прочитано» = %q, want %q", block.String(), want)
+		}
+	}
 }
 
 // attentionOnly is the one entry of the queue of a project, and it fails the test where the

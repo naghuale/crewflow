@@ -3,6 +3,7 @@ package run
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -166,6 +167,16 @@ const (
 	// waited for, nothing is escalated and nothing is written under a task that is not
 	// there — and the journal of the run stays where it was (§6a, §7g).
 	ReasonTaskMissing = "task-missing"
+	// ReasonReadFailed is a run whose host could not be read: сеть, 5xx, репозиторий,
+	// к которому gh не дошёл. Это не причина ожидания, потому что ожидания тут нет —
+	// crewflow не знает, есть ли оно, и говорит об этом в отдельном блоке, а не в
+	// очереди (F-098, §6a, §7h).
+	ReasonReadFailed = "read-failed"
+	// ReasonReadInterrupted is a run whose read was cut short by a person: Ctrl+C в
+	// середине `crewflow task attention`. Это не отказ хостинга и не причина ожидания,
+	// и очередь говорит «прервано», а не перечисляет то, что успела прочитать и не
+	// поняла (F-098, §6a).
+	ReasonReadInterrupted = "read-interrupted"
 )
 
 // The channel of `human-authorization-required` in the window of the keychain of macOS,
@@ -425,6 +436,11 @@ func (f HostFacts) marked(label string) bool {
 
 // Queue is the attention of one project: the tasks of it that want a person, in the order a
 // person reads them in, and the state files of the tasks that say nothing about a run.
+//
+// Everything crewflow could not read is apart from it, in [Queue.Unread] and in
+// [Queue.Interrupted]: то, что не прочитано, не является утверждением о том, что кому-то
+// нужно внимание, и очередь, которая сказала бы это, была бы враньём о работе проекта
+// (docs.DESIGN.md §6a, §7h).
 type Queue struct {
 	// Repo is the project the queue is of, as a person writes it.
 	Repo string `json:"repo,omitempty"`
@@ -434,6 +450,38 @@ type Queue struct {
 	// list of runs already says about them: a task crewflow cannot read is a task nobody
 	// can watch, and the queue says so rather than leaving a hole in it.
 	Unreadable []string `json:"unreadable,omitempty"`
+	// Unread are the runs whose host could not be read, and which therefore cannot be
+	// said to want anybody or nobody. They are not entries of the queue and are not
+	// escalated, and nothing is written under their tasks: запись под задачей о том,
+	// чего никто не прочитал, — это напоминание о собственном сбое (F-098, §6a, §7h).
+	Unread Unreads `json:"unread,omitempty"`
+	// Interrupted says that the read was cut short — a person stopped the command —
+	// and that what was read before is not the whole of it. A caller that was told
+	// nothing wants a person must hear this first (F-098, §6a).
+	Interrupted bool `json:"interrupted,omitempty"`
+}
+
+// Unreads are the runs of the project, у которых хостинг прочитать не удалось, — в порядке
+// номеров задач, как их перечисляет человек. It is a list of its own and not of entries of
+// the queue: то, что не прочитано, не стоит в очереди ни за кем (docs/DESIGN.md §6a, §7h).
+type Unreads []Unread
+
+// Unread is one run of the project whose host could not be read, and what was being waited
+// for there — то, что crewflow знал о прогоне до чтения хостинга. It is not an entry of the
+// queue: it is the hole the queue has, named with the reason of the hole (docs/DESIGN.md
+// §6a, §7h).
+type Unread struct {
+	// Task and Run are what the run is of, the way a person names it.
+	Task int    `json:"task"`
+	Run  string `json:"run"`
+	// Title is the one line the task was given, out of the state of the task.
+	Title string `json:"title,omitempty"`
+	// Reason is why the host could not be read: `read-failed` or `read-interrupted`
+	// (F-098, §6a).
+	Reason string `json:"reason"`
+	// Problem is what stood in the way, in the words of the host, so that a person reads
+	// the same thing a report would have said (§7h).
+	Problem string `json:"problem,omitempty"`
 }
 
 // Wanted is the entry of the queue of a task, and whether the task is in it at all. A list
@@ -518,7 +566,21 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			// Only a run that has ended can be cleared by a reaction of the host — a
 			// change merged, a task closed, a record of a review — and a queue that asked
 			// about a run that is going would put a network in the middle of a list.
-			one, wanted = AttentionOf(env, repo, state, askHost(ctx, host, state))
+			facts := askHost(ctx, host, state)
+			if facts.Problem != "" {
+				// Хостинг не прочитан, и очередь не знает ни о чём, что его ждёт. Такая
+				// строка не запись очереди, а дыра в ней: она уходит в отдельный блок с
+				// названной проблемой, не эскалируется и под задачей не пишется ничего —
+				// восемь строк «эскалировано, ждёт 66 ч» после Ctrl+C это и были
+				// (F-098, §6a, §7h).
+				queue.Unread = append(queue.Unread, Unread{
+					Task: state.Number, Run: one.Run, Title: one.Title,
+					Reason: reasonOfRead(ctx, facts.Problem), Problem: facts.Problem,
+				})
+				queue.Interrupted = queue.Interrupted || interrupted(ctx, facts.Problem)
+				continue
+			}
+			one, wanted = AttentionOf(env, repo, state, facts)
 			if !wanted {
 				continue
 			}
@@ -565,6 +627,28 @@ func askHost(ctx context.Context, host Host, state State) HostFacts {
 	}
 	facts.Asked = true
 	return facts
+}
+
+// reasonOfRead is why the host could not be read, as the queue names it: `read-failed` for
+// a failure and `read-interrupted` where a person stopped the command. The two are told
+// apart because they are fixed by different things — one ждёт сеть и следующая попытка, а
+// другой ждёт человека, который нажал Ctrl+C и ушёл (F-098, §6a).
+func reasonOfRead(ctx context.Context, problem string) string {
+	if interrupted(ctx, problem) {
+		return ReasonReadInterrupted
+	}
+	return ReasonReadFailed
+}
+
+// interrupted is whether a read was cut short rather than refused: the context of the
+// command was stopped, which a person did with Ctrl+C or a service did with a signal. It is
+// asked about the problem and not only about the context, because the host of a test may
+// refuse without a context at all and a queue that called that an interruption would name
+// a cause nobody gave (F-098, §6a).
+func interrupted(ctx context.Context, problem string) bool {
+	return ctx.Err() != nil || errors.Is(ctx.Err(), context.Canceled) ||
+		strings.Contains(problem, context.Canceled.Error()) ||
+		strings.Contains(problem, context.DeadlineExceeded.Error())
 }
 
 // leaveRecord is the notice crewflow leaves under the task of an entry that waits for
@@ -958,9 +1042,56 @@ func (q Queue) Write(w io.Writer, screen Screen) error {
 	return nil
 }
 
+// Write is the block of what crewflow could not read: сколько таких прогонов, каждая с
+// номером задачи и прогона и с причиной, по которой хостинг не прочитан.
+//
+// Он написан рядом с блоком внимания и отдельно от него, потому что это разные вещи: там
+// то, что ждёт человека, здесь то, о чём crewflow не знает. Человек, прочитавший только
+// первый блок, узнал бы, что его ничто не ждёт, и это было бы верно только наполовину
+// (F-098, docs.DESIGN.md §6a).
+func (u Unreads) Write(w io.Writer, screen Screen) error {
+	if len(u) == 0 {
+		return nil
+	}
+	sorted := make(Unreads, len(u))
+	copy(sorted, u)
+	slices.SortFunc(sorted, func(a, b Unread) int { return cmp.Compare(a.Task, b.Task) })
+	lines := []attentionLine{{fmt.Sprintf("%s · %s", unreadHeading, plural(len(u), "run")), bold}}
+	for _, one := range sorted {
+		said := []string{fmt.Sprintf("  #%d (%s)", one.Task, one.Run), one.Reason}
+		if one.Problem != "" {
+			said = append(said, one.Problem)
+		}
+		lines = append(lines, attentionLine{strings.Join(said, mid), faint})
+	}
+	for _, line := range lines {
+		if _, err := fmt.Fprintln(w, painted(line.text, line.colour, screen)); err != nil {
+			return fmt.Errorf("write the block of what was not read: %w", err)
+		}
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return fmt.Errorf("write the block of what was not read: %w", err)
+	}
+	return nil
+}
+
+// unreadHeading is the name of that block, in the words of the machine and not в словах
+// очереди: то, что не прочитано, не ждёт человека, и называть это вниманием было бы
+// враньём о работе проекта (F-098, docs.DESIGN.md §6a).
+const unreadHeading = "COULD NOT READ"
+
+// plural is how many и чем: «1 run» и «8 runs» — в блоке о непрочитанном их читает человек,
+// и число стоит впереди причины (docs.DESIGN.md §6a).
+func plural(n int, one string) string {
+	if n == 1 {
+		return fmt.Sprintf("%d %s", n, one)
+	}
+	return fmt.Sprintf("%d %ss", n, one)
+}
+
 // Promoted is the queue of the entries that go to the top of a list of runs: the ones
 // somebody may act on right now and the ones that have waited for longer than
-// `[attention] top_after` whatever their class is (docs/DESIGN.md §6a).
+// `[attention] top_after` whatever their class is (docs.DESIGN.md §6a).
 func (q Queue) Promoted() []Attention {
 	var promoted []Attention
 	for _, one := range q.Entries {

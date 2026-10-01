@@ -429,20 +429,28 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 		if err := printJSON(stdout, queue); err != nil {
 			return failed(stderr, err)
 		}
+	} else if queue.Interrupted {
+		// Человек остановил команду на середине чтения, и то, что успело прочитаться,
+		// не является ответом ни о чём: печатать его — значит утверждать о работе проекта
+		// по половине данных (F-098, docs.DESIGN.md §6a).
+		fmt.Fprintln(stdout, "interrupted: the state was not read, so nothing is said about the runs of this project")
 	} else if err := queue.Write(stdout, taskScreen(stdout, taskClock())); err != nil {
+		return failed(stderr, err)
+	} else if err := queue.Unread.Write(stdout, taskScreen(stdout, taskClock())); err != nil {
 		return failed(stderr, err)
 	}
 	if err := queue.Notes(stderr); err != nil {
 		return failed(stderr, err)
 	}
-	if len(queue.Entries) == 0 {
+	if len(queue.Entries) == 0 && len(queue.Unread) == 0 {
 		if !*asJSON {
 			fmt.Fprintln(stdout, "nothing wants a person: the runs of this project are working or are over")
 		}
 		return exitOK
 	}
-	// A task in the queue is a thing a person has to do something about, and the code of
-	// the command says so, whatever crewflow managed to write under the task.
+	// A task in the queue is a thing a person has to do something about, and a run crewflow
+	// could not read is a thing a person has to find out about — the code of the command
+	// says so in обоих случаях, whatever crewflow managed to write under the task.
 	return exitFailure
 }
 
