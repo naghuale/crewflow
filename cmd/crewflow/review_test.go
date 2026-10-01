@@ -254,7 +254,9 @@ func TestRunReviewRequestChangesWritesTheFindings(t *testing.T) {
 func TestRunReviewRefusesAnApprovalOfSomebodyElse(t *testing.T) {
 	host := newReviewHost(t)
 	host.comment(gate.ApproveOf(reviewHead, 7))
-	host.comments[0].Author = "crewflow-executor[bot]"
+	// A record of the App of the executor of a run: it is written under the change
+	// whatever it says, and the gate counts none of it as the word of a person (docs.DESIGN.md §7h, §7i).
+	host.comments[0].Author = executorOfTheProject
 	project := writeConfig(t, reviewConfig)
 	var stdout, stderr bytes.Buffer
 
@@ -508,7 +510,7 @@ func TestRunReviewOfARepositoryWithoutRulesOnItsPlanAsJSON(t *testing.T) {
 // nothing (docs/DESIGN.md §7h).
 func TestRunReviewApproveAsAnAccountThatDoesNotCount(t *testing.T) {
 	host := newReviewHost(t)
-	host.signedIn = "somebody-else"
+	host.speakAs("somebody-else")
 	project := writeConfig(t, reviewConfig)
 	var stdout, stderr bytes.Buffer
 
@@ -619,6 +621,15 @@ type reviewHost struct {
 	// empty is the mode of the shared login, and a case that sets it is a project
 	// whose orchestrator is an account of the host of its own (§7i).
 	orchestrator string
+	// orchestratorSubject is that account as the host keeps it — the App of the
+	// orchestrator with the number of that App — and it is what the gate counts a record
+	// of it by (docs.DESIGN.md §7h, §7i).
+	orchestratorSubject forge.Subject
+	// subjects are the accounts the host of the test holds by the login the file of the
+	// test names them with: the owner of the repository and whoever else a case asks for,
+	// because a list of the file is a list of logins and each of them is asked of the
+	// host once (docs.DESIGN.md §5, §7i).
+	subjects map[string]forge.Subject
 }
 
 // newReviewHost is a project of a test with a change that is green, inside the
@@ -630,6 +641,7 @@ func newReviewHost(t *testing.T) *reviewHost {
 	t.Helper()
 	h := &reviewHost{
 		signedIn: "naghuale",
+		subjects: map[string]forge.Subject{ownerOfTheProject.Login: ownerOfTheProject},
 		task: forge.Task{
 			Number: 7,
 			Title:  "the gate in code",
@@ -701,10 +713,12 @@ func statePathOfTask(task int) string {
 	return filepath.Join(home, "state", "naghuale-crewflow", strconv.Itoa(task)+".json")
 }
 
-// comment is a record of a review under the change, by the owner of the repository.
+// comment is a record of a review under the change, by the owner of the repository, as
+// the host keeps that account: the gate counts the record by the number under the name and
+// never by the name (docs.DESIGN.md §7h, §7i).
 func (h *reviewHost) comment(body string) {
 	h.comments = append(h.comments, forge.Comment{
-		Author:    "naghuale",
+		Author:    ownerOfTheProject,
 		Body:      body,
 		CreatedAt: time.Date(2026, time.September, 29, 9, 0, 0, 0, time.UTC),
 	})
@@ -799,6 +813,37 @@ func (h *reviewHost) SignedIn(context.Context) (string, error) {
 	return h.signedIn, nil
 }
 
+// SigningAs is the subject the host speaks as: the App of the orchestrator in the mode of
+// a separate login and the account gh is signed in as otherwise, each with the number the
+// gate counts a record of it by (docs/DESIGN.md §7h, §7i).
+func (h *reviewHost) SigningAs(ctx context.Context) (forge.Subject, error) {
+	if h.orchestrator != "" {
+		return h.orchestratorSubject, nil
+	}
+	return h.Subject(ctx, h.signedIn)
+}
+
+// speakAs makes the host speak as another account: the login it is signed in as, and the
+// account of the host behind that login, because a login is what a host is asked about and
+// a record of a review is counted by the number under it (docs.DESIGN.md §7i).
+func (h *reviewHost) speakAs(login string) {
+	h.signedIn = login
+	h.subjects[login] = forge.Subject{Kind: forge.KindUser, ID: 4242, Login: login}
+}
+
+// Subject is the account of the host the login names: the owner of the repository and the
+// account of the App of the orchestrator are the only accounts a host of a test has, and
+// both are named by the login the file of the test writes them with.
+func (h *reviewHost) Subject(_ context.Context, login string) (forge.Subject, error) {
+	if h.orchestrator != "" && login == h.orchestrator {
+		return h.orchestratorSubject, nil
+	}
+	if subject, known := h.subjects[login]; known {
+		return subject, nil
+	}
+	return forge.Subject{}, fmt.Errorf("the account %q is not on this host", login)
+}
+
 func (h *reviewHost) WriteComment(_ context.Context, number int, body string) error {
 	h.written = append(h.written, record{number: number, body: body})
 	return nil
@@ -817,6 +862,8 @@ var (
 	_ forge.HeadRef       = (*reviewHost)(nil)
 	_ forge.CommentWriter = (*reviewHost)(nil)
 	_ forge.SignedIn      = (*reviewHost)(nil)
+	_ forge.Naming        = (*reviewHost)(nil)
+	_ forge.Signer        = (*reviewHost)(nil)
 )
 
 // writeFileOfTest writes a file of a test and says so.

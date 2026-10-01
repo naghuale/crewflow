@@ -117,9 +117,7 @@ func TestTheOrchestratorApartFromTheOwnerIsTheSecondApp(t *testing.T) {
 	if !slices.Contains(identity.Env, "GH_TOKEN=ghs_token_of_the_orchestrator") {
 		t.Errorf("the environment of the orchestrator is %v, want the token of its app in it", identity.Env)
 	}
-	if want := "crewflow auth git-credential -as orchestrator"; identity.GitConfig["credential.helper"] != want {
-		t.Errorf("the settings of git are %v, want credential.helper = %q", identity.GitConfig, want)
-	}
+	assertHelperOfThisBuild(t, identity.GitConfig, "orchestrator")
 	if !slices.Contains(identity.Secrets, "ghs_token_of_the_orchestrator") {
 		t.Errorf("the secrets of the orchestrator are %v, want the token of its app in them", identity.Secrets)
 	}
@@ -237,6 +235,7 @@ func TestDoctorOfTheOrchestratorLooksForTheKeyAndTheInstallation(t *testing.T) {
 				{orchestratorKeyCheck, forge.OK},
 				{orchestratorAppCheck, forge.OK},
 				{orchestratorTokenCheck, forge.OK},
+				{orchestratorProtectionCheck, forge.OK},
 			},
 		},
 		{
@@ -265,12 +264,14 @@ func TestDoctorOfTheOrchestratorLooksForTheKeyAndTheInstallation(t *testing.T) {
 				{orchestratorKeyCheck, forge.OK},
 				{orchestratorAppCheck, forge.Fail},
 				{orchestratorTokenCheck, forge.OK},
+				{orchestratorProtectionCheck, forge.OK},
 			},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			m, api := machineWithTwoApps(t)
+			m.prints("api repos/"+repo+"/branches/main", fixture(t, "branch-rulesets.json"))
 			if !tc.key {
 				m.secrets = &storeOfTheTest{keys: map[string][]byte{secret.AppKey(5107052): keyOfTheTest(t)}}
 			}
@@ -298,8 +299,13 @@ func TestDoctorOfTheOrchestratorLooksForTheKeyAndTheInstallation(t *testing.T) {
 				}
 			}
 			// A report of a machine never leaves a token in a terminal, whoever the App
-			// of it is (§7e).
+			// of it is (§7e). The questions about the branch are the one exception:
+			// they are asked in the name of that App, and what gh writes there is read
+			// by the adapter and printed by nobody (§7i).
 			for _, command := range m.ran {
+				if slices.Contains(command.args, "api") {
+					continue
+				}
 				for _, entry := range command.env {
 					if strings.Contains(entry, "ghs_token_of_the_") {
 						t.Errorf("the report started a command with a token in it: %q", entry)
@@ -321,5 +327,70 @@ func TestTheDoctorOfTheSharedModeDoesNotAskAboutASecondApp(t *testing.T) {
 
 	if len(checks) != 2 || checks[0].Name != ghCheck || checks[1].Name != ghLoginCheck {
 		t.Errorf("doctor made the checks %v, want the gh of a project in the shared mode", checkNames(checks))
+	}
+}
+
+// TestTheDoctorSaysAheadOfTimeThatTheProtectionOfTheBranchIsUnreadable is F-079 told
+// about before the first merge instead of in the middle of it: a gate asks the App for
+// the rules of the protection of the branch, gets nothing, and refuses the change — and
+// a person finds that out from a report of the machine rather than from a merge that
+// will not happen (docs/DESIGN.md §7h, §7i).
+func TestTheDoctorSaysAheadOfTimeThatTheProtectionOfTheBranchIsUnreadable(t *testing.T) {
+	cases := []struct {
+		name   string
+		branch string
+		want   forge.Status
+		says   string
+	}{
+		{
+			name:   "the rules of the branch are rulesets and may be read",
+			branch: "branch-rulesets.json",
+			want:   forge.OK,
+			says:   "no protection of a branch itself",
+		},
+		{
+			name:   "the protection of the branch is on and the app may not read it",
+			branch: "branch-protected.json",
+			want:   warn,
+			says:   "ruleset",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, api := machineWithTwoApps(t)
+			m.prints("api repos/"+repo+"/branches/main", fixture(t, tc.branch))
+			a := New(repo, "", m.env(t)).
+				WithOrchestrator(Orchestrator{AppID: 5107053, InstallationID: 12346, API: api.URL()})
+
+			check := checkNamed(t, a.Doctor(t.Context()), orchestratorProtectionCheck)
+
+			if check.Status != tc.want {
+				t.Errorf("check %q = %q (%s), want %q", check.Name, check.Status, check.Detail, tc.want)
+			}
+			if !strings.Contains(check.Detail+check.Hint, tc.says) {
+				t.Errorf("check %q = %q / %q, want it to say %q", check.Name, check.Detail, check.Hint, tc.says)
+			}
+			if tc.want != forge.OK && check.Hint == "" {
+				t.Errorf("check %q is %q and says nothing to do about it", check.Name, check.Status)
+			}
+			// The question about the rules of the branch is asked in the name of that
+			// App — it is the App that would have to read them — so the token is in the
+			// environment gh is started with (§7i).
+			question := "api repos/" + repo + "/branches/main"
+			asked := false
+			for _, command := range m.ran {
+				if !strings.HasPrefix(strings.Join(command.args, " "), question) {
+					continue
+				}
+				asked = true
+				if !slices.Contains(command.env, "GH_TOKEN=ghs_token_of_the_orchestrator") {
+					t.Errorf("the question about the protection was asked with %v, want the token of the app of the orchestrator",
+						command.env)
+				}
+			}
+			if !asked {
+				t.Errorf("the report asked nothing about the protection of the branch, want %q", question)
+			}
+		})
 	}
 }

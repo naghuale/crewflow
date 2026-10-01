@@ -448,12 +448,26 @@ func newAPIOfTheTest(t *testing.T) *apiOfTheTest {
 	t.Helper()
 	api := &apiOfTheTest{answer: map[string]any{
 		"/api/v3/app": map[string]any{"id": 5107052, "slug": "crewflow-executor"},
+		// The account of the App is what the records of a run are written in, and a
+		// command that works as the App asks the API for it before anything else.
+		"/api/v3/users/crewflow-executor[bot]": map[string]any{
+			"id": 1987, "login": "crewflow-executor[bot]", "type": "Bot",
+		},
 		"/api/v3/app/installations/12345/access_tokens": tokenOfTheTest(),
 	}}
 	api.installationOfTheTest(rightsOfTheDesign())
 	api.server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		api.asked = append(api.asked, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
+		// A host that wants a password says so with a refusal of its own, and git asks
+		// the helper of the credentials only after such a refusal: a test of the pairing
+		// of git and crewflow needs a host that asks, or nothing is asked of anybody.
+		if api.demandsPassword && r.Header.Get("Authorization") == "" && !strings.HasPrefix(r.URL.Path, "/api/v3") {
+			w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			_ = json.NewEncoder(w).Encode(map[string]any{"message": "Requires authentication"})
+			return
+		}
 		answer, ok := api.answerFor(r)
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -472,6 +486,10 @@ type apiOfTheTest struct {
 	answer map[string]any
 	asked  []string
 	server *httptest.Server
+	// demandsPassword is whether the server asks a git that comes without credentials
+	// for a password, the way a host of a project does. Without it git never asks the
+	// helper of anything (docs/DESIGN.md §7i).
+	demandsPassword bool
 }
 
 // answerFor is the answer of the server to a request: the one of the app that asked, and

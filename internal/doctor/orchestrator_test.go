@@ -199,6 +199,31 @@ func TestTheRightsOfTheAppOfTheOrchestratorAreTheRightsOfTheOrchestrator(t *test
 	}
 }
 
+// TestTheDoctorSaysAheadOfTimeThatTheProtectionOfTheBranchIsUnreadable: the rules of the
+// protection of a branch are read with the right of an administrator, and the App of the
+// orchestrator has none — so a project whose default branch has that protection on cannot
+// be merged through the gate at all, and `crewflow doctor` is where a person finds that
+// out before the first merge and not in the middle of one (docs/DESIGN.md §7h, §7i).
+func TestTheDoctorSaysAheadOfTimeThatTheProtectionOfTheBranchIsUnreadable(t *testing.T) {
+	m := machineWithTheOrchestrator(t)
+	m.prints("gh api repos/naghuale/crewflow/branches/main",
+		`{"name":"main","protected":true,"protection":{"enabled":true}}`)
+	config := writeConfig(t, m.orchestratorProject())
+
+	report := runOn(t, m, config)
+
+	check := checkOf(t, report, "orchestrator branch protection")
+	if check.Status != Warn {
+		t.Fatalf("check %q = %q (%s), want %q", check.Name, check.Status, check.Detail, Warn)
+	}
+	if !strings.Contains(check.Hint, "administration: read") {
+		t.Errorf("check %q hint = %q, want it to name the right that is missing", check.Name, check.Hint)
+	}
+	if !report.OK() {
+		t.Error("report.OK() = false, want true: a rule of the host crewflow cannot change is not a missing thing")
+	}
+}
+
 // machineWithTheOrchestrator is a machine of a test that has the second app of the
 // project on it: the server of the test answers for it and its installation, and the
 // store of the machine holds the key the test generated. No report of crewflow asks
@@ -212,13 +237,29 @@ func machineWithTheOrchestrator(t *testing.T) *machine {
 	t.Helper()
 	m := machineWithAnApp(t)
 	m.holdsTheKey = true
+	m.prints("gh api repos/naghuale/crewflow/branches/main", branchOfTheRulesets)
 	m.api.answer["5107053 /api/v3/app"] = map[string]any{"id": 5107053, "slug": "crewflow-orchestrator"}
 	m.api.answer["/api/v3/users/crewflow-orchestrator[bot]"] = map[string]any{
 		"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot",
 	}
+	// The account of the App of the orchestrator is what the lists of the gate may name,
+	// and a name in them is asked of the host for the number under it (§7h, §7i).
+	m.prints("gh api users/crewflow-orchestrator%5Bbot%5D",
+		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
 	m.api.installationOfTheOrchestrator(rightsOfTheOrchestrator())
 	return m
 }
+
+// branchOfTheRulesets is what gh writes about the default branch of a project whose
+// rules are rulesets: the branch says of itself that it is protected, and the protection
+// of a branch itself is off — which is what keeps crewflow from asking the App of the
+// orchestrator for rules only an administrator may read (docs/DESIGN.md §7h, §7i).
+const branchOfTheRulesets = `{
+  "name": "main",
+  "commit": {"sha": "fb8c5057f225d20e06d3d609750fe36458fa9fd7"},
+  "protected": true,
+  "protection": {"enabled": false}
+}`
 
 // rightsOfTheOrchestrator are the four rights of §7i with the issues in write: the
 // orchestrator closes the task behind a change, and a run of the executor does not.

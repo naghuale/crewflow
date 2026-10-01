@@ -17,6 +17,11 @@ const (
 	ghLoginCheck = "gh login"
 )
 
+// warn is a check that is worth saying and is not worth stopping a run over. The word
+// is the one the report of `doctor` prints and counts, so that a line of a role is a
+// line of that report and not a second dialect to translate (docs/DESIGN.md §7e, §7h).
+const warn forge.Status = "warn"
+
 // The names a report calls the checks of a project whose executor works as an App
 // by: the key of the App, the App itself on the repository of the project, and the
 // token the App hands out for it.
@@ -37,6 +42,10 @@ const (
 	orchestratorKeyCheck   = "orchestrator app key"
 	orchestratorAppCheck   = "orchestrator app"
 	orchestratorTokenCheck = "orchestrator token"
+	// orchestratorProtectionCheck is the rules of the branch a change is merged into,
+	// which are read as the orchestrator and are the one question of §7h that takes a
+	// right of an administrator that the App does not have (§7i).
+	orchestratorProtectionCheck = "orchestrator branch protection"
 	// orchestratorImportHint and the rest name the key of §7i of the orchestrator and
 	// not the key of the executor, and the hint says what to do about it.
 	orchestratorImportHint = "download the private key of the app of the orchestrator and run " +
@@ -149,7 +158,7 @@ func (a *Adapter) orchestratorOf(ctx context.Context) []forge.Check {
 			"\nchange the permissions of the app in the settings of GitHub: the orchestrator reviews, merges and " +
 			"closes the task of a change, and it is not the owner"
 	}
-	return append([]forge.Check{key, check}, a.tokenOfOrchestrator(ctx))
+	return append(append([]forge.Check{key, check}, a.tokenOfOrchestrator(ctx)), a.protectionOf(ctx))
 }
 
 // tokenOfOrchestrator is the check that the App of the orchestrator hands out a token of
@@ -173,6 +182,45 @@ func (a *Adapter) tokenOfOrchestrator(ctx context.Context) forge.Check {
 		Status: forge.OK,
 		Detail: fmt.Sprintf("the api gave a token of the installation for %s, good until %s; it is not used and not shown",
 			a.repo, token.ExpiresAt.UTC().Format(time.RFC3339)),
+	}
+}
+
+// protectionOf is the check that the App of the orchestrator may read the rules of the
+// branch a change of the project is merged into. It is asked before the first merge and
+// not in the middle of one: a gate that cannot read those rules refuses every change of
+// the project with `forge-unavailable`, and a person is told that here rather than by a
+// merge that will not happen (docs/DESIGN.md §7h).
+//
+// It is a warning and not a failure where it cannot be read: the rules of the branch are
+// there and are not being touched, and a report that failed would fail a project whose
+// rights of an App are exactly the four of §7i over a rule of the host that crewflow
+// never asks for. What is to be done about it is the owner's decision and not
+// crewflow's (§7i).
+func (a *Adapter) protectionOf(ctx context.Context) forge.Check {
+	enabled, err := a.classicProtection(ctx)
+	switch {
+	case err != nil:
+		return forge.Check{
+			Name:   orchestratorProtectionCheck,
+			Status: forge.Fail,
+			Detail: err.Error(),
+			Hint: fmt.Sprintf("the gate asks the host for the rules of the branch %s before every merge, and this "+
+				"answer is what it will get there: the rules of that branch are not being read", a.base()),
+		}
+	case !enabled:
+		return forge.Check{
+			Name:   orchestratorProtectionCheck,
+			Status: forge.OK,
+			Detail: fmt.Sprintf("the branch %s has no protection of a branch itself, so its rules are rulesets, "+
+				"which the app of the orchestrator may read", a.base()),
+		}
+	}
+	return forge.Check{
+		Name:   orchestratorProtectionCheck,
+		Status: warn,
+		Detail: fmt.Sprintf("the branch %s has the protection of a branch itself on, and the rules of it are only "+
+			"read by an administrator", a.base()),
+		Hint: protectionHint,
 	}
 }
 

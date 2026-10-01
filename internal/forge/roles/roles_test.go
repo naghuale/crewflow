@@ -253,6 +253,133 @@ func TestNewWithRolesThatContradictThemselves(t *testing.T) {
 	}
 }
 
+// TestTheLoginsOfTheListsBecomeSubjectsOfTheAccountsBehindThem: the file of a project
+// names its accounts by login, and the gate counts records by the number the host keeps
+// each of them under — so every login of both lists is asked of the host once here, and
+// what the gate is given from then on is the account behind the name (docs/DESIGN.md §7h, §7i).
+func TestTheLoginsOfTheListsBecomeSubjectsOfTheAccountsBehindThem(t *testing.T) {
+	m := newMachine().
+		prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
+	cfg := load(t, baseConfig+"\n[merge]\nreviewers = [\"naghuale\"]\nowners = [\"naghuale\"]\n")
+	set, err := AsOrchestrator(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+
+	reviewers, err := ReviewersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("ReviewersOf returned an error: %v", err)
+	}
+	owners, err := OwnersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("OwnersOf returned an error: %v", err)
+	}
+
+	want := forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+	for _, list := range [][]forge.Subject{reviewers, owners} {
+		if len(list) != 1 || !list[0].Same(want) {
+			t.Errorf("the accounts of a list are %+v, want the owner %+v", list, want)
+		}
+	}
+}
+
+// TestTheOwnerOfTheRepositoryIsTheDefaultOfBothLists: a project that names nobody has the
+// owner of its repository for both lists, which is what it has always had — and the owner
+// of a repository is a login the file does not even write, so it is asked of the host like
+// every other account (docs/DESIGN.md §5, §7i).
+func TestTheOwnerOfTheRepositoryIsTheDefaultOfBothLists(t *testing.T) {
+	m := newMachine().
+		prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
+	cfg := load(t, baseConfig)
+	set, err := AsOrchestrator(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+
+	reviewers, err := ReviewersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("ReviewersOf returned an error: %v", err)
+	}
+	owners, err := OwnersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("OwnersOf returned an error: %v", err)
+	}
+
+	want := forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+	for _, list := range [][]forge.Subject{reviewers, owners} {
+		if len(list) != 1 || !list[0].Same(want) {
+			t.Errorf("the accounts of a list are %+v, want the owner of the repository %+v", list, want)
+		}
+	}
+}
+
+// TestALoginTheHostDoesNotNameIsAnErrorOfTheFile: a file of a project naming an account
+// crewflow cannot number is a mistake in that file — a gate that went on without it would
+// count no records at all and say that nobody had approved anything (docs/DESIGN.md §7h, §7i).
+func TestALoginTheHostDoesNotNameIsAnErrorOfTheFile(t *testing.T) {
+	cases := []struct {
+		name    string
+		refused string
+		answer  string
+		// key is where the login stands in the file, and what the refusal has to name:
+		// a person who reads it is to know which list to change.
+		key string
+		// of is the list the question is asked of.
+		of func(context.Context, config.Config, forge.Set) ([]forge.Subject, error)
+	}{
+		{
+			name:    "the host knows no such account",
+			refused: "gh: Not Found (HTTP 404)",
+			key:     "merge.owners[0]",
+			of:      OwnersOf,
+		},
+		{
+			name:   "the account is one crewflow may not read",
+			answer: `{"id": 1, "login": "naghuale", "type": "Organization"}`,
+			key:    "merge.reviewers[0]",
+			of:     ReviewersOf,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine()
+			if tc.refused != "" {
+				m.fails("api users/naghuale", tc.refused)
+			} else {
+				m.prints("api users/naghuale", tc.answer)
+			}
+			cfg := load(t, baseConfig+"\n[merge]\nreviewers = [\"naghuale\"]\nowners = [\"naghuale\"]\n")
+			set, err := AsOrchestrator(cfg, m.env(t))
+			if err != nil {
+				t.Fatalf("AsOrchestrator returned an error: %v", err)
+			}
+
+			asked, err := tc.of(t.Context(), cfg, set)
+			if err == nil {
+				t.Fatalf("the accounts of %s are %+v, want an error naming the key of the list", tc.key, asked)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("the error %q does not name the key %q of the list", err, tc.key)
+			}
+		})
+	}
+}
+
+// TestTheExecutorOfTheProjectIsTheAppItRunsAs: a record of the App of the executor is not
+// an approval and not a decision of the owner whatever the lists of the file name, and the
+// number of that App is what the gate tells it by — a run of another project has another
+// App and another number (docs.DESIGN.md §7h, §7i).
+func TestTheExecutorOfTheProjectIsTheAppItRunsAs(t *testing.T) {
+	asBot := load(t, baseConfig+botConfig)
+	got := ExecutorOf(asBot)
+	if !got.Same(forge.Subject{Kind: forge.KindApp, ID: 5107052}) {
+		t.Errorf("the executor of a project in the mode of the bot is %+v, want the app of the file", got)
+	}
+	if asOwner := ExecutorOf(load(t, baseConfig)); asOwner.ID != 0 || asOwner.Kind != "" {
+		t.Errorf("the executor of a project in the mode of the owner is %+v, want nobody in particular", asOwner)
+	}
+}
+
 // load reads a crewflow.toml of the test into the settings, and it writes the
 // file into a folder of its own so that a test never reads the file of the
 // project it runs in.
@@ -298,8 +425,10 @@ type machine struct {
 	ran []string
 	// environment is the environment each of those commands was started with.
 	environment [][]string
-	// answers is what gh writes, by the first words of its command line.
-	answers map[string]string
+	// answers is what gh writes, by the first words of its command line, and refusals
+	// is what it says when the host says no.
+	answers  map[string]string
+	refusals map[string]string
 	// secrets is where the key of an App of a project would be kept. It is a store
 	// of the test and never the keychain of a person: no test of crewflow opens the
 	// secrets of the machine it runs on (docs/DESIGN.md §7i).
@@ -309,12 +438,19 @@ type machine struct {
 // newMachine returns a machine with every program installed and nothing
 // answering: what a test needs of gh, it says with prints.
 func newMachine() *machine {
-	return &machine{answers: map[string]string{}, secrets: &storeOfTheTest{}}
+	return &machine{answers: map[string]string{}, refusals: map[string]string{}, secrets: &storeOfTheTest{}}
 }
 
 // prints makes gh succeed and write output.
 func (m *machine) prints(commandLine, output string) *machine {
 	m.answers[commandLine] = output
+	return m
+}
+
+// fails makes gh refuse the way it does when the host says no: the answer is on the error
+// and the code is not zero, and the caller has to tell that from an answer.
+func (m *machine) fails(commandLine, said string) *machine {
+	m.refusals[commandLine] = said
 	return m
 }
 
@@ -327,9 +463,14 @@ func (m *machine) env(t *testing.T) forge.Env {
 			return "/usr/bin/" + name, nil
 		},
 		Run: func(_ context.Context, _ string, args []string, _ string, env []string) ([]byte, []byte, int, error) {
-			m.ran = append(m.ran, strings.Join(args, " "))
+			line := strings.Join(args, " ")
+			m.ran = append(m.ran, line)
 			m.environment = append(m.environment, env)
-			return []byte(m.answers[strings.Join(args[:min(2, len(args))], " ")]), nil, 0, nil
+			words := strings.Join(args[:min(2, len(args))], " ")
+			if said, refused := m.refusals[words]; refused {
+				return nil, []byte(said + "\n"), 1, nil
+			}
+			return []byte(m.answers[words]), nil, 0, nil
 		},
 		ConfigPath: filepath.Join(t.TempDir(), "crewflow.toml"),
 		Secrets:    m.secrets,

@@ -22,6 +22,12 @@ const (
 	sha  = "9e37237496ea06aca445d2d6670171ec22d7d5bc"
 )
 
+// owner is the account of the owner of this repository as the REST API of GitHub keeps
+// it, and the answer of the recorded fixture is about this very account: a record of it is
+// a record of the owner, and it is counted by the number and not by the login
+// (docs/DESIGN.md §7h, §7i).
+var owner = forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+
 // TestTask reads the answer of "gh issue view" of a real issue and checks every
 // field of the task, the labels in particular: they are the words §7f decides a
 // task by.
@@ -191,7 +197,9 @@ func TestFindChangeRequestWithoutOne(t *testing.T) {
 // wrote it, what was written and when, because the order of the review is the
 // order of the comments.
 func TestComments(t *testing.T) {
-	m := newMachine().prints("pr view", fixture(t, "comments.json"))
+	m := newMachine().
+		prints("pr view", fixture(t, "comments.json")).
+		prints("api repos/"+repo+"/issues/2/comments?per_page=100&page=1", fixture(t, "comment-authors-owner.json"))
 	a := New(repo, "", m.env(t))
 
 	comments, err := a.Comments(t.Context(), 2)
@@ -201,12 +209,12 @@ func TestComments(t *testing.T) {
 
 	want := []forge.Comment{
 		{
-			Author:    "naghuale",
+			Author:    owner,
 			Body:      "REVIEW: CHANGES REQUESTED Ревью коммита 1d74cab. Код соответ …",
 			CreatedAt: time.Date(2026, time.September, 27, 22, 10, 43, 0, time.UTC),
 		},
 		{
-			Author:    "naghuale",
+			Author:    owner,
 			Body:      "REVIEW: APPROVED 9e37237496ea06aca445d2d6670171ec22d7d5bc Th …",
 			CreatedAt: time.Date(2026, time.September, 27, 22, 14, 28, 0, time.UTC),
 		},
@@ -664,6 +672,29 @@ func fixture(t *testing.T, name string) string {
 		t.Fatalf("read the fixture %s: %v", name, err)
 	}
 	return string(data)
+}
+
+// assertHelperOfThisBuild is what the settings of git of a worktree have to hold: the
+// helper is the crewflow of this very build, named by its path, and it is told whose token
+// it signs. The two words are F-082 (01.10.2026), and every subject of a project that
+// pushes goes through a line like this one (docs/DESIGN.md §7h, §7i).
+func assertHelperOfThisBuild(t *testing.T, settings map[string]string, role string) {
+	t.Helper()
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatalf("the program of this build: %v", err)
+	}
+	helper := settings["credential.helper"]
+	if !strings.HasPrefix(helper, "!") {
+		t.Errorf("credential.helper = %q, want it to begin with %q: without it git looks for a program named after it",
+			helper, "!")
+	}
+	if !strings.Contains(helper, program) {
+		t.Errorf("credential.helper = %q, want it to name the program of this build %q", helper, program)
+	}
+	if want := "auth git-credential -as " + role; !strings.Contains(helper, want) {
+		t.Errorf("credential.helper = %q, want it to say %q", helper, want)
+	}
 }
 
 // checkNamed returns the line of the report with the name, so that a test may

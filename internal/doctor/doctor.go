@@ -129,15 +129,16 @@ type Authority struct {
 	// whose decision every record of the project is measured against.
 	Owner string `json:"owner"`
 	// Owners and Reviewers are the accounts whose records the gate counts — the first
-	// as the decision of a person, the second as an approval. They are the lists of the
-	// file with the default of §5 filled in, and the account of the App of the
-	// orchestrator in the mode of a separate login.
-	Owners    []string `json:"owners"`
-	Reviewers []string `json:"reviewers"`
+	// as the decision of a person, the second as an approval. They are the accounts of
+	// the file with the default of §5 filled in and each of them resolved into the
+	// subject the host keeps it under: the name the file writes is what a person reads,
+	// and the kind and the number are what the gate compares (docs/DESIGN.md §7h, §7i).
+	Owners    []Subject `json:"owners"`
+	Reviewers []Subject `json:"reviewers"`
 	// Overlap are the accounts in both lists, which in the mode of a shared login is
 	// the debt [DebtOwnersReviewers] and in the mode of a separate one is an error the
 	// load of the file refuses (OR-008).
-	Overlap []string `json:"overlap"`
+	Overlap []Subject `json:"overlap"`
 	// Executor and Orchestrator are the accounts a run and a review of this project
 	// work as, as the host names them.
 	Executor     string `json:"executor"`
@@ -146,6 +147,54 @@ type Authority struct {
 	// orchestrator are one account: yes in the mode of a shared login, no in the mode
 	// of an account of its own.
 	OwnerIsOrchestrator bool `json:"owner_is_orchestrator"`
+}
+
+// Subject is one account of the project as the report shows the correspondence of it: the
+// name the file of the project writes it under, the kind of account the host holds it as,
+// and the number the gate counts a record of it by. Both halves are there because either
+// alone is not enough: a name changes with a rename and an App may be renamed, and a
+// number a person cannot act with (docs/DESIGN.md §7i, §7k).
+type Subject struct {
+	// Login is the name the file of the project writes the account under.
+	Login string `json:"login"`
+	// Kind is "User" for a person and "Bot" for an App of the host of its own — the
+	// words the host itself writes, so that a report says what the answer of the API
+	// said (docs.DESIGN.md §7i).
+	Kind string `json:"kind"`
+	// ID is the number the host keeps the account under: the number of the account for
+	// a person and the number of the App for an App. Zero means the host did not say,
+	// and an account of no number counts for nothing (docs.DESIGN.md §7h).
+	ID int64 `json:"id"`
+}
+
+// String is the account as the lines of the report show it: the name and the kind and the
+// number under it, so that a person can see at once which identifier the gate compares
+// with what the file of the project names (docs.DESIGN.md §7i, §7k).
+func (s Subject) String() string {
+	return fmt.Sprintf("%s (%s %d)", s.Login, s.Kind, s.ID)
+}
+
+// subjectOf is the account as the report of it is written, and a refusal of the two kinds
+// it does not show: an account the host named no kind for and an account the host named
+// no number for are both a gap in what was said, and a report that showed one as an
+// account would send a person to look for a fault of a file that has none (docs/DESIGN.md
+// §7h, §7i).
+func subjectOf(subject forge.Subject) Subject {
+	return Subject{Login: subject.Login, Kind: string(subject.Kind), ID: subject.ID}
+}
+
+// subjectsOf are the accounts of a list as the report shows them, in the order the file of
+// the project names them in, and an empty list where there is none: a field a script
+// reads has to be there (docs/DESIGN.md §7i, §7k).
+func subjectsOf(subjects []forge.Subject) []Subject {
+	if len(subjects) == 0 {
+		return []Subject{}
+	}
+	shown := make([]Subject, 0, len(subjects))
+	for _, subject := range subjects {
+		shown = append(shown, subjectOf(subject))
+	}
+	return shown
 }
 
 // Identity is the mode of one of the two subjects of a project and the one line a
@@ -341,9 +390,9 @@ func (c *checker) report() Report {
 // emptyIfNil is the list a report holds where there is nothing in it: a field a script
 // reads has to be there, and an empty list says that the same thing a nil one does
 // without making every reader of it check.
-func emptyIfNil(list []string) []string {
+func emptyIfNil(list []Subject) []Subject {
 	if list == nil {
-		return []string{}
+		return []Subject{}
 	}
 	return list
 }
@@ -541,43 +590,54 @@ func (c *checker) executorIdentity(ctx context.Context, set forge.Set) {
 // orchestrator, the executor, whether the owner and the orchestrator are one account,
 // and which accounts are in both lists of the gate (docs.DESIGN §7i, §7k).
 //
+// The two lists are shown as the correspondence they are: the name the file of the project
+// writes each account under, and the kind and the number the gate counts a record of it
+// by. Both halves are in the report because a person who is about to trust a decision of a
+// gate has to see what it compares, and a login alone cannot say (docs.DESIGN.md §7i, §7k).
+//
 // It is a section and not another mode because it is five lines of one fact, and the
 // fact is the one §7i is about: the report says it once, in the words of the design,
 // instead of spread over the two lines of the modes and the two lists of the file.
 //
 // The check beside it is the verdict: a warning where a decision of a person is held
 // on trust (DR-001), a failure where the mode promises a separation the accounts of the
-// project do not give (DR-002, DR-003), and nothing to say where the three subjects are
-// three accounts.
+// project do not give (DR-002, DR-003), a failure where an account of the file is one
+// crewflow cannot number, and nothing to say where the three subjects are three
+// accounts.
 func (c *checker) separation(ctx context.Context, cfg config.Config) {
 	set, err := roles.AsOrchestrator(cfg, c.rolesEnv())
 	if err != nil || set.Forge == nil {
-		// Nothing to compare: the check of the mode has already said what is wrong, and
-		// a section that guessed would put an account into a report that nobody checked.
+		// Nothing to compare: the check of the mode has already said what is wrong, and a
+		// section that guessed would put an account into a report that nobody checked.
 		return
 	}
 	reviewers, err := roles.ReviewersOf(ctx, cfg, set)
 	if err != nil {
+		c.add(c.correspondenceCheck(err))
 		return
 	}
-	owners := roles.OwnersOf(cfg)
+	owners, err := roles.OwnersOf(ctx, cfg, set)
+	if err != nil {
+		c.add(c.correspondenceCheck(err))
+		return
+	}
 	authority := Authority{
 		Owner:        ownerOf(cfg.Project.Repo),
-		Owners:       owners,
-		Reviewers:    reviewers,
-		Overlap:      overlapOf(owners, reviewers),
+		Owners:       subjectsOf(owners),
+		Reviewers:    subjectsOf(reviewers),
+		Overlap:      subjectsOf(overlapOf(owners, reviewers)),
 		Executor:     c.identity.Account,
 		Orchestrator: c.orchestrator.Account,
 	}
 	// The owner and the orchestrator are one account where the mode says they cannot
 	// be told apart — the shared login, where the orchestrator is a person and nothing
 	// in the file can tell his record from the owner's — and where the accounts say so:
-	// an App of the orchestrator among the owners writes the acceptance of the owner
+	// an App of an orchestrator among the owners writes the acceptance of the owner
 	// with its own pen (docs.DESIGN §7i, §7k).
-	authority.OwnerIsOrchestrator = sharedMode(cfg) || containsOf(owners, authority.Orchestrator)
+	authority.OwnerIsOrchestrator = sharedMode(cfg) || isAmongAny(owners, signingAsOf(ctx, set))
 	c.authority = authority
 	c.trustDebt = debtsOf(cfg, authority)
-	if refused := config.Separation(cfg.Orchestrator.Mode, owners, reviewers, cfg.Project.Repo); refused != nil {
+	if refused := config.Separation(cfg.Orchestrator.Mode, loginsOf(owners), loginsOf(reviewers), cfg.Project.Repo); refused != nil {
 		c.add(Check{
 			Name:   separationCheck,
 			Status: Fail,
@@ -601,6 +661,33 @@ func (c *checker) separation(ctx context.Context, cfg config.Config) {
 		return
 	}
 	c.add(Check{Name: separationCheck, Status: OK, Detail: "the owner, the orchestrator and the executor are three accounts"})
+}
+
+// correspondenceCheck is the refusal of an account the file of the project names and the
+// host does not hold the way the file means it: a login of nobody, an account of a kind
+// crewflow does not read, an App of a project this one is not. Each of them is a mistake
+// in the file and not a gap in what the host said, so the check says what to do about it
+// instead of leaving a section with a hole in it (docs/DESIGN.md §7h, §7i, §7k).
+func (c *checker) correspondenceCheck(err error) Check {
+	return Check{
+		Name:   separationCheck,
+		Status: Fail,
+		Detail: err.Error(),
+		Hint: fmt.Sprintf("the accounts of merge.owners and merge.reviewers are counted by the number the host "+
+			"keeps them under, so a name here is a name the host must know: fix the two lists in %s",
+			c.env.ConfigPath),
+	}
+}
+
+// signingAsOf is the subject the orchestrator of this project writes as, and nothing where
+// the host could not be asked: the check of the mode has already said what is wrong, and a
+// section that guessed would name an account nobody checked (docs/DESIGN.md §7i, §7k).
+func signingAsOf(ctx context.Context, set forge.Set) forge.Subject {
+	signed, err := forge.SigningAs(ctx, set.Forge)
+	if err != nil {
+		return forge.Subject{}
+	}
+	return signed
 }
 
 // debtsOf are the debts of trust a project of these accounts carries, in the order a
@@ -639,22 +726,47 @@ func ownerOf(repository string) string {
 // overlapOf are the accounts in both lists of the gate, each of them once, in the order
 // of the list of the owners: an account that both approves a change and accepts its
 // result is one subject doing the work of two.
-func overlapOf(owners, reviewers []string) []string {
-	var overlap []string
+func overlapOf(owners, reviewers []forge.Subject) []forge.Subject {
+	var overlap []forge.Subject
 	for _, owner := range owners {
-		if containsOf(reviewers, owner) {
+		if isAmongAny(reviewers, owner) {
 			overlap = append(overlap, owner)
 		}
 	}
 	return overlap
 }
 
-// containsOf is whether the login is in the list, as the host writes a login and as a
-// person writes it: the letters of a login are its letters whatever their case.
-func containsOf(logins []string, login string) bool {
-	return slices.ContainsFunc(logins, func(one string) bool {
-		return strings.EqualFold(one, login)
+// isAmongAny is whether the account is in the list, by the kind of the account and the
+// number the host keeps it under: the two lists of the gate are compared as accounts and
+// not as names, which is the whole of the change this section of a report shows (F-081,
+// docs/DESIGN.md §7h, §7i).
+func isAmongAny(accounts []forge.Subject, one forge.Subject) bool {
+	return slices.ContainsFunc(accounts, func(account forge.Subject) bool {
+		return one.Same(account)
 	})
+}
+
+// loginsOfSubjects are the names of the accounts as they were read off the host, for a
+// report about the separation of §7i: the rule is checked against the file as it is
+// written, and the subject of every account behind each name is in the section above
+// (docs.DESIGN.md §7i, §7k).
+func loginsOfSubjects(accounts []Subject) []string {
+	names := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		names = append(names, account.Login)
+	}
+	return names
+}
+
+// loginsOf are the names the host writes the accounts under, as a report about the file
+// reads them: the separation of §7i is checked against the file as it is written, and the
+// subject of every account behind it is in the section above (docs.DESIGN.md §7i, §7k).
+func loginsOf(accounts []forge.Subject) []string {
+	names := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		names = append(names, account.Login)
+	}
+	return names
 }
 
 // rolesEnv is the environment of the machine as a role needs it: the same

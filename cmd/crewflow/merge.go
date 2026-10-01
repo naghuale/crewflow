@@ -9,6 +9,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
@@ -145,6 +146,10 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}
+	owners, err := ownersOf(ctx, cfg, set)
+	if err != nil {
+		return merge.Deps{}, config.Config{}, err
+	}
 	number := taskOfChange(home, cfg, change)
 	state := stateOfTaskAt(home, cfg, number)
 	return merge.Deps{
@@ -153,8 +158,9 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 			CI:              set.CI,
 			Repository:      cfg.Project.Repo,
 			DefaultBranch:   cfg.Project.DefaultBranch,
+			Executor:        roles.ExecutorOf(cfg),
 			Reviewers:       reviewers,
-			Owners:          cfg.Merge.Owners,
+			Owners:          owners,
 			AcceptanceLabel: cfg.Acceptance.Label,
 			Task:            number,
 			TaskOf:          taskFactsOf(set, cfg),

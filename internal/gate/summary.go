@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/naghuale/crewflow/internal/forge"
 )
@@ -127,8 +128,8 @@ func Summarize(f Facts, v Verdict) Summary {
 		State:      stateOf(f),
 		Conflicted: f.Conflicted,
 		MergeState: f.MergeState,
-		Reviewers:  f.reviewers(),
-		Owners:     f.owners(),
+		Reviewers:  loginsOf(f.reviewers()),
+		Owners:     loginsOf(f.owners()),
 		Files:      len(f.Files),
 		Rules:      f.Rules,
 		Verdict:    v,
@@ -151,7 +152,7 @@ func Summarize(f Facts, v Verdict) Summary {
 		s.Outside = outside
 	}
 	if record, ok := f.accepted(); ok {
-		s.AcceptedBy = record.Author
+		s.AcceptedBy = record.Author.String()
 	}
 	return s
 }
@@ -163,7 +164,7 @@ func decidedOn(record Review, counted bool) *DecidedOn {
 	return &DecidedOn{
 		Decision:  decided.Decision,
 		Commit:    decided.Commit,
-		Author:    record.Author,
+		Author:    record.Author.String(),
 		CreatedAt: record.CreatedAt.UTC().Format(timeLayout),
 		Edited:    record.Edited,
 		Counted:   counted,
@@ -197,7 +198,7 @@ func (s *Summary) acceptance(f Facts) {
 func acceptedOn(record OwnerAccept, counted bool) *AcceptedOn {
 	return &AcceptedOn{
 		Commit:    record.Commit,
-		Author:    record.Author,
+		Author:    record.Author.String(),
 		CreatedAt: record.CreatedAt.UTC().Format(timeLayout),
 		Edited:    record.Edited,
 		Counted:   counted,
@@ -426,12 +427,18 @@ func (c CheckLine) String() string {
 // sameAccounts is whether two lists of logins name the same accounts, whatever their
 // order: a report of a change shows the owners of the project only where they are not
 // the reviewers of it, because the list is shown to say who may do what (docs/DESIGN.md §7i).
+//
+// It is the names that are compared and not the accounts behind them: the report shows
+// names, and two lists of names that hold one account are one line for a person to read —
+// while the gate has already decided the same question by the number of each account.
 func sameAccounts(one, other []string) bool {
 	if len(one) != len(other) {
 		return false
 	}
 	return !slices.ContainsFunc(one, func(login string) bool {
-		return !isAmong(login, other)
+		return !slices.ContainsFunc(other, func(one string) bool {
+			return strings.EqualFold(one, login)
+		})
 	})
 }
 

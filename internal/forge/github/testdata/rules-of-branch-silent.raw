@@ -1,0 +1,6 @@
+HTTP/2.0 500 Internal Server Error
+Content-Type: application/json; charset=utf-8
+X-Content-Type-Options: nosniff
+X-Github-Api-Version-Selected: 2022-11-28
+
+{"message":"Server Error","documentation_url":"https://docs.github.com/rest/repos/rules#get-rules-for-a-branch","status":"500"}

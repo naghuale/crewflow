@@ -21,7 +21,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/task"
 )
@@ -173,12 +172,18 @@ type Facts struct {
 	// change of this project, whatever its number says.
 	WantRepository string
 	WantBranch     string
+	// Executor is the App of the executor of a run, and a record of it counts for
+	// nothing: not as an approval and not as a decision of the owner, whatever the
+	// lists of the file of the project name. It is told apart by the number of that
+	// App, which a run of another project or another host never has (docs.DESIGN.md
+	// §7h, §7i).
+	Executor forge.Subject
 	// Reviews are the records of a review under the change, oldest first, and
-	// Reviewers the logins whose records count. A record of anybody else is read
+	// Reviewers the subjects whose records count. A record of anybody else is read
 	// and shown, and does not approve anything: an executor may write "approved"
-	// under its own change, and the gate is what does not take it (docs/DESIGN.md §7h).
+	// under its own change, and the gate is what does not take it (docs.DESIGN.md §7h).
 	Reviews   []Review
-	Reviewers []string
+	Reviewers []forge.Subject
 	// Accepted are the records in which a person takes the files outside the
 	// boundaries of the task into their own hands, under the same rules of the
 	// author and of the editing as an approval.
@@ -214,7 +219,7 @@ type Facts struct {
 	// the project says that they have taken the result of the task as it stands: under
 	// the same rules of the author and of the editing as an approval, because an
 	// acceptance anybody can rewrite is not one (docs/DESIGN.md §7h).
-	Owners       []string
+	Owners       []forge.Subject
 	OwnerAccepts []OwnerAccept
 	// Task is the number of the task the change is of, which a report names.
 	Task int
@@ -234,8 +239,9 @@ type Facts struct {
 // that has been edited does not count, because an approval a person can rewrite
 // after the fact is not an approval of anything (docs/DESIGN.md §7h).
 type Review struct {
-	// Author is who wrote it, by the name the host knows them under.
-	Author string
+	// Author is who wrote it, as the host keeps that account: its kind and the number
+	// under it. The login in it is for a report and decides nothing (docs/DESIGN.md §7h).
+	Author forge.Subject
 	// CreatedAt orders the records: the last one that counts is the one that
 	// stands.
 	CreatedAt time.Time
@@ -249,8 +255,9 @@ type Review struct {
 // the boundaries of its task into their own hands: for which commit, and why
 // (docs/DESIGN.md §7h).
 type Acceptance struct {
-	// Author is who wrote it, by the name the host knows them under.
-	Author string
+	// Author is who wrote it, as the host keeps that account: its kind and the number
+	// under it (docs.DESIGN.md §7h).
+	Author forge.Subject
 	// CreatedAt orders the records against each other.
 	CreatedAt time.Time
 	// Edited says that the record was changed after it was published, which
@@ -270,8 +277,9 @@ type Acceptance struct {
 // himself, in his own account, and the gate reads it there — which is the whole of
 // what makes it his own look at the result and not somebody else's word that he did.
 type OwnerAccept struct {
-	// Author is who wrote it, by the name the host knows them under.
-	Author string
+	// Author is who wrote it, as the host keeps that account: its kind and the number
+	// under it (docs.DESIGN.md §7h).
+	Author forge.Subject
 	// CreatedAt orders the records against each other.
 	CreatedAt time.Time
 	// Edited says that the record was changed after it was published, which takes it
@@ -369,9 +377,9 @@ func Apart(f Facts) Verdict {
 func (f Facts) approval() (Verdict, bool) {
 	ofReviewers := f.reviewsOfReviewers()
 	if len(ofReviewers) == 0 {
-		if authors := authorsOf(f.Reviews, func(review Review) string { return review.Author }); len(authors) > 0 {
+		if authors := authorsOf(f.Reviews, func(review Review) forge.Subject { return review.Author }); len(authors) > 0 {
 			return refused(ApprovalUntrusted, fmt.Sprintf("the only records of a review are of %s, and the reviewers of the project are %s",
-				listed(authors), listed(f.reviewers()))), true
+				listed(authors), listed(loginsOf(f.reviewers())))), true
 		}
 		return refused(ApprovalMissing, "there is no record of a review under the change"), true
 	}
@@ -424,9 +432,9 @@ func (f Facts) ownerAcceptance() (Verdict, bool) {
 	}
 	records := f.ownerAcceptsOfOwners()
 	if len(records) == 0 {
-		if authors := authorsOf(f.OwnerAccepts, func(record OwnerAccept) string { return record.Author }); len(authors) > 0 {
+		if authors := authorsOf(f.OwnerAccepts, func(record OwnerAccept) forge.Subject { return record.Author }); len(authors) > 0 {
 			return refused(OwnerAcceptanceUntrusted, fmt.Sprintf("the only records of an acceptance are of %s, and the owners of the project are %s",
-				listed(authors), listed(f.owners()))), true
+				listed(authors), listed(loginsOf(f.owners())))), true
 		}
 		return refused(OwnerAcceptanceMissing, fmt.Sprintf("task %d is marked `%s`, and there is no record of an acceptance under the change: "+
 			"the owner takes the result in himself, with a record `ACCEPTED %s` under the change", f.Task, f.AcceptanceLabel, f.Head)), true
@@ -480,7 +488,7 @@ func (f Facts) boundaries() (Verdict, bool) {
 	}
 	return refused(OutOfScope, fmt.Sprintf("the change touches %s, which task %d was not to change; "+
 		"only %s may take a file into their own hands, with a record `SCOPE: ACCEPTED %s <why>` under the change",
-		listed(outside), f.Task, listed(f.owners()), f.Head)), true
+		listed(outside), f.Task, listed(loginsOf(f.owners())), f.Head)), true
 }
 
 // Outside are the files the change touches that the task of it was not to change,
@@ -660,8 +668,8 @@ func (f Facts) approvedCommit() (string, bool) {
 // isReviewer is whether the account is one of the reviewers of the project: the
 // ones the file of the project names, or the owner of the repository when it names
 // none (docs/DESIGN.md §5, §7h).
-func (f Facts) isReviewer(author string) bool {
-	return isAmong(author, f.reviewers())
+func (f Facts) isReviewer(author forge.Subject) bool {
+	return !author.Same(f.Executor) && isAmong(author, f.reviewers())
 }
 
 // isOwner is whether the account may take a result in: the ones the file of the project
@@ -670,34 +678,40 @@ func (f Facts) isReviewer(author string) bool {
 // this list and from no other — the `ACCEPTED <sha>` of a result and the
 // `SCOPE: ACCEPTED` of a file alike — and an orchestrator that works apart from the
 // owner is in neither of them unless a project says so (docs/DESIGN.md §5, §7h, §7i).
-func (f Facts) isOwner(author string) bool {
-	return isAmong(author, f.owners())
+func (f Facts) isOwner(author forge.Subject) bool {
+	return !author.Same(f.Executor) && isAmong(author, f.owners())
 }
 
-// isAmong is whether the account is named in the list, as the host writes a login and
-// as a person writes it: the letters of a login are its letters whatever their case.
-func isAmong(author string, logins []string) bool {
-	return slices.ContainsFunc(logins, func(login string) bool {
-		return strings.EqualFold(login, author)
+// isAmong is whether the account is one of the list, by the kind of the account and the
+// number the host keeps it under, and never by a login: a host writes one account in a
+// different line in every API, an App is renamed together with its account, and a person
+// may have the login an App goes by (docs/DESIGN.md §7h, §7i).
+func isAmong(author forge.Subject, accounts []forge.Subject) bool {
+	return slices.ContainsFunc(accounts, func(account forge.Subject) bool {
+		return author.Same(account)
 	})
 }
 
-// reviewers are the accounts whose records count, with the default of §5 filled in:
-// a project that names none has the owner of its repository, and nothing else.
-func (f Facts) reviewers() []string {
-	return config.ReviewersOf(f.Reviewers, f.WantRepository)
+// reviewers are the accounts whose records count. The default of §5 — the owner of the
+// repository where the file of the project names nobody — is filled in where the lists are
+// read, because a repository names its owner by a login and the host is the only one who
+// knows the number of that account: an empty list here is a list that holds nobody, and the
+// gate says so rather than counting the records of an account nobody named to it
+// (docs.DESIGN.md §5, §7h, §7i).
+func (f Facts) reviewers() []forge.Subject {
+	return f.Reviewers
 }
 
 // owners are the accounts whose records are the decision of a person — the one who
 // takes the result of a task in, the one who takes a file outside the boundaries of it
-// into their own hands — with the default of §5 filled in the same way as the reviewers:
-// a project that names none has the owner of its repository, and nothing else. A project
-// whose repository names no owner has nobody who may accept, and a task of it marked
-// `owner-check` is then refused for a missing acceptance — a record of one is a record
-// nobody could write. An orchestrator that works apart from the owner is in neither list
-// of §5 unless a project puts it there (docs/DESIGN.md §7h, §7i).
-func (f Facts) owners() []string {
-	return config.OwnersOf(f.Owners, f.WantRepository)
+// into their own hands — and the default of §5 was filled in where they were read, the
+// same way as for the reviewers. A project whose repository names no owner has nobody who
+// may accept, and a task of it marked `owner-check` is then refused for a missing
+// acceptance — a record of one is a record nobody could write. An orchestrator that works
+// apart from the owner is in neither list of §5 unless a project puts it there
+// (docs.DESIGN.md §7h, §7i).
+func (f Facts) owners() []forge.Subject {
+	return f.Owners
 }
 
 // sameCommit is whether two names of a commit are the same commit: the host and
@@ -711,11 +725,11 @@ func sameCommit(one, other string) bool {
 // the order they wrote. The records of a review and the records of an acceptance are
 // told apart by the field their author is in, which is the only thing the refusal
 // about them asks for.
-func authorsOf[T any](records []T, author func(T) string) []string {
+func authorsOf[T any](records []T, author func(T) forge.Subject) []string {
 	var authors []string
 	for _, record := range records {
-		if name := author(record); !slices.Contains(authors, name) {
-			authors = append(authors, name)
+		if who := author(record); !slices.Contains(authors, who.Login) {
+			authors = append(authors, who.Login)
 		}
 	}
 	return authors
@@ -730,6 +744,17 @@ func listed(names []string) string {
 	return strings.Join(names, ", ")
 }
 
+// loginsOf are the names the host writes the accounts under, as a line of a report reads
+// a list of them: a refusal names the accounts a person may act on, and the name is what
+// a person reads (docs/DESIGN.md §7i).
+func loginsOf(accounts []forge.Subject) []string {
+	names := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		names = append(names, account.String())
+	}
+	return names
+}
+
 // nameOf is what a report calls a source of a check, and a check with no app at
 // all is a mark written through the API of statuses: it is said so rather than
 // shown as a blank.
@@ -740,10 +765,13 @@ func nameOf(app string) string {
 	return app
 }
 
-// firstOf is the first of a list, and an empty string when the list is empty.
-func firstOf(names []string) string {
-	if len(names) == 0 {
-		return ""
+// firstOf is the first of a list, and nothing at all when the list is empty: the record
+// `Apart` stands in for is written in the name of the first of the accounts that may
+// write one, and a project with no such account has no record to stand in for it.
+func firstOf[T any](accounts []T) T {
+	var none T
+	if len(accounts) == 0 {
+		return none
 	}
-	return names[0]
+	return accounts[0]
 }

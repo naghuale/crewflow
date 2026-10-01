@@ -102,6 +102,17 @@ func printAuthority(w io.Writer, report doctor.Report) {
 	fmt.Fprintf(w, "  %-14s %s (%s)\n", "executor:", accountOf(authority.Executor), report.Identity.Mode)
 	fmt.Fprintf(w, "  %-14s %s\n", "owner == orchestrator:", yesNo(authority.OwnerIsOrchestrator))
 	fmt.Fprintf(w, "  %-14s %s\n", "owners ∩ reviewers:", listedOrNone(authority.Overlap))
+	for _, list := range []struct {
+		what  string
+		which []doctor.Subject
+	}{
+		{"reviewers:", authority.Reviewers},
+		{"owners:", authority.Owners},
+	} {
+		for _, subject := range list.which {
+			fmt.Fprintf(w, "  %-16s %s\n", list.what, subject)
+		}
+	}
 	if len(report.TrustDebt) > 0 {
 		fmt.Fprintf(w, "  %-14s %s\n", "trust debt:", strings.Join(report.TrustDebt, ", "))
 	}
@@ -127,11 +138,15 @@ func yesNo(yes bool) string {
 
 // listedOrNone is the accounts in both lists of the gate, and says so where the lists
 // do not meet.
-func listedOrNone(accounts []string) string {
+func listedOrNone(accounts []doctor.Subject) string {
 	if len(accounts) == 0 {
 		return "none"
 	}
-	return strings.Join(accounts, ", ")
+	names := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		names = append(names, account.Login)
+	}
+	return strings.Join(names, ", ")
 }
 
 // verdict is the one line that says whether crewflow can work on this machine.

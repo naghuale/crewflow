@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -54,8 +55,12 @@ func TestRunDoctorReady(t *testing.T) {
 		"✓", "config", "git", "gh", "executor", "nothing is missing",
 		// The one thing a machine of the pilot is told about itself: the powers of its
 		// executor are the powers of the login, and the mode of the bot is the answer
-		// (docs/DESIGN.md §7i).
+		// (docs.DESIGN.md §7i).
 		"executor identity", "shared rights", `mode = "bot"`,
+		// Both lists of the gate are shown as the correspondence they are: the login of
+		// the file and the kind and the number the gate counts that account by, which a
+		// report showing logins alone could not (docs.DESIGN.md §7h, §7i).
+		"reviewers:", "naghuale (User 93920024)", "owners:",
 	} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Errorf("crewflow doctor wrote %q, want it to mention %q", stdout.String(), want)
@@ -396,11 +401,37 @@ func (m *machine) lookPath(name string) (string, error) {
 
 // run starts a command that answers with its own command line and exits zero,
 // which is enough for the checks of a project that needs nothing else.
+//
+// The one answer apart from that is the account behind a login: the lists of the gate are
+// written as logins and are counted by the number the host keeps each account under, so a
+// report of a project asks for that account of every login its lists name (docs.DESIGN.md
+// §7h, §7i).
 func (m *machine) run(_ context.Context, name string, args []string, dir string, _ []string) ([]byte, []byte, int, error) {
 	if dir != "" {
 		m.folders = append(m.folders, dir)
 	}
+	if answer, ok := accountAnswerOf(args); ok {
+		return []byte(answer), nil, 0, nil
+	}
 	return []byte(filepath.Base(name) + " " + strings.Join(args, " ")), nil, 0, nil
+}
+
+// accountAnswerOf is what the host of a test says about the account of a login: a person
+// with the number it keeps that account under, and an App with the number of the account
+// of the one App of this project — which is all the host knows an App by (docs.DESIGN.md
+// §7h, §7i).
+func accountAnswerOf(args []string) (string, bool) {
+	if len(args) < 2 || args[0] != "api" || !strings.HasPrefix(args[1], "users/") {
+		return "", false
+	}
+	login, err := url.PathUnescape(strings.TrimPrefix(args[1], "users/"))
+	if err != nil {
+		return "", false
+	}
+	if strings.HasSuffix(login, "[bot]") {
+		return fmt.Sprintf(`{"id": 1987, "login": %q, "type": "Bot"}`, login), true
+	}
+	return fmt.Sprintf(`{"id": 93920024, "login": %q, "type": "User"}`, login), true
 }
 
 // writeProject writes a crewflow.toml of a project that needs nothing but its

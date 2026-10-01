@@ -2,13 +2,20 @@ package main
 
 import (
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // TestMain points the home directory of the machine at a folder of the run of the
@@ -17,7 +24,19 @@ import (
 // leaves in the home of a person outlives the test, and a journal or a state of
 // another project in it makes a later run believe what never happened. A test that
 // needs a home of its own sets one; this is the net under all of them.
+//
+// It also makes this binary the crewflow that git starts as the helper of the
+// credentials: git names the program of the setting `credential.helper`, and when a
+// test of this package builds that setting out of the adapter it names this binary. A
+// binary of a test that is not the helper runs the tests; the same binary, started by
+// git as `auth git-credential …`, is crewflow and does that and nothing else. The store
+// and the API it works against are the ones the test named in the environment, so that a
+// helper of a test signs a token of the test and never opens the keychain of the
+// machine or asks GitHub for anything (docs/DESIGN.md §7i).
 func TestMain(m *testing.M) {
+	if helper, is := startedAsTheHelper(os.Args[1:]); is {
+		os.Exit(helper)
+	}
 	home, err := os.MkdirTemp("", "crewflow-test-home-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "crewflow tests: make a home of their own: %v\n", err)
@@ -34,6 +53,93 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "crewflow tests: take %s away: %v\n", home, err)
 	}
 	os.Exit(code)
+}
+
+// The names the tests of the helper of the credentials leave in the environment of the
+// binary they start, and the words that make it the helper.
+const (
+	helperStoreVar  = "CREWFLOW_TEST_KEY"
+	helperServerVar = "CREWFLOW_TEST_CA"
+	helperSaidVar   = "CREWFLOW_TEST_SAID"
+	helperOfGit     = "auth"
+	helperItself    = "git-credential"
+)
+
+// startedAsTheHelper says whether this binary was started by git as the helper of the
+// credentials, and answers as it should if it was: the arguments are the ones git wrote
+// and they are handed to the command as they are, in the order git wrote them.
+//
+// What the helper said goes to the file the test named, because git says nothing about a
+// helper that could not answer it: a test of the pairing of git and crewflow has to be
+// able to read what each of them said, and this is where the words of crewflow end up
+// (docs/DESIGN.md §7i).
+func startedAsTheHelper(args []string) (int, bool) {
+	if len(args) < 2 || args[0] != helperOfGit || args[1] != helperItself {
+		return 0, false
+	}
+	secretsOfMachine = func() secret.Store { return storeNamedInTheEnvironment() }
+	httpOfMachine = clientOfTheServerNamedInTheEnvironment()
+	clockOfMachine = func() time.Time { return time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC) }
+	said := os.Stderr
+	if path := os.Getenv(helperSaidVar); path != "" {
+		file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+		if err != nil {
+			fmt.Fprintf(said, "crewflow tests: open %s: %v\n", path, err)
+			os.Exit(1)
+		}
+		said = file
+		defer file.Close()
+	}
+	// The request of git and the answer of the helper go to the same file as its words:
+	// what git asked is half of the pairing, and a test that could not read it would be
+	// a test of a helper that answers and of nothing else.
+	var out io.Writer = os.Stdout
+	if os.Getenv(helperSaidVar) != "" {
+		out = io.MultiWriter(os.Stdout, said)
+		authStdin = io.TeeReader(os.Stdin, said)
+	}
+	code := run(args, out, said)
+	fmt.Fprintf(said, "crewflow auth git-credential: started with %v, answered with %d\n", args, code)
+	return code, true
+}
+
+// storeNamedInTheEnvironment is the store of a helper of a test: the key the test wrote
+// into a folder of its own, and nothing where the test named none — which is the case of
+// a machine whose keychain holds no key of the app (docs/DESIGN.md §7i).
+func storeNamedInTheEnvironment() secret.Store {
+	store := &storeOfTheTest{}
+	path := os.Getenv(helperStoreVar)
+	if path == "" {
+		return store
+	}
+	key, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crewflow auth git-credential: read the key of the test: %v\n", err)
+		os.Exit(1)
+	}
+	store.key = key
+	return store
+}
+
+// clientOfTheServerNamedInTheEnvironment is the client of a helper of a test, which
+// trusts the API of the test and nothing else: the server of the test holds a
+// certificate of its own, and a helper that answered with a token of a real app would be
+// a helper of a test asking GitHub (docs/DESIGN.md §7i).
+func clientOfTheServerNamedInTheEnvironment() *http.Client {
+	certificate, err := os.ReadFile(os.Getenv(helperServerVar))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "crewflow auth git-credential: read the certificate of the test: %v\n", err)
+		os.Exit(1)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certificate) {
+		fmt.Fprintf(os.Stderr, "crewflow auth git-credential: the certificate of the test is not one\n")
+		os.Exit(1)
+	}
+	return &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}},
+	}
 }
 
 func TestRunVersion(t *testing.T) {

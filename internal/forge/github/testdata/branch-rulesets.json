@@ -1,0 +1,29 @@
+{
+  "name": "main",
+  "commit": {
+    "sha": "fb8c5057f225d20e06d3d609750fe36458fa9fd7"
+  },
+  "protected": true,
+  "protection": {
+    "enabled": false,
+    "required_status_checks": {
+      "enforcement_level": "off",
+      "contexts": [],
+      "checks": []
+    },
+    "required_pull_request_reviews": {},
+    "restrictions": {
+      "users": [],
+      "teams": []
+    },
+    "required_signatures": {
+      "enabled": false
+    },
+    "allow_force_pushes": {
+      "enabled": true
+    },
+    "allow_deletions": {
+      "enabled": true
+    }
+  }
+}

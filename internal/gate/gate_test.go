@@ -18,12 +18,24 @@ const (
 	third  = "3333333333333333333333333333333333333333"
 )
 
-// The owners of the project and of the App that works under it, and the executor
-// of a run: the records of the first two count, the record of the third is a record
-// of nobody (docs/DESIGN.md §7h).
+// The three accounts of a project in the mode of §7i as the host of the code keeps them:
+// the owner by the number of the account, the App of the orchestrator and the App of the
+// executor by the number of the App. The records of the first two count and the record of
+// the third is a record of nobody, and it is the numbers — never the logins — that tell
+// the three apart (docs/DESIGN.md §7h, §7i).
+var (
+	owner           = forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: ownerLogin}
+	orchestratorApp = forge.Subject{Kind: forge.KindApp, ID: 5140522, Login: orchestratorLogin}
+	executorApp     = forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: executorLogin}
+)
+
+// The names the host writes the three accounts under. They are what a report shows and
+// what the file of the project names an account with, and they decide nothing: the cases
+// that put a login in front of a decision are the ones that prove it (docs.DESIGN.md §7i).
 const (
-	owner    = "naghuale"
-	executor = "crewflow-executor[bot]"
+	ownerLogin        = "naghuale"
+	orchestratorLogin = "crewflow-orchestrator[bot]"
+	executorLogin     = "crewflow-executor[bot]"
 )
 
 // ownerCheckLabel is the label a task is marked with to have its result accepted by
@@ -51,8 +63,10 @@ func ready() Facts {
 		WantBranch:        "main",
 		Head:              second,
 		Task:              7,
-		Reviewers:         []string{owner},
+		Reviewers:         []forge.Subject{owner},
 		Reviews:           []Review{approvedBy(owner, second, false)},
+		Owners:            []forge.Subject{owner},
+		Executor:          executorApp,
 		Boundaries:        []string{"internal/gate/**", "README.md"},
 		Files:             []string{"internal/gate/gate.go", "README.md"},
 		Required:          []forge.RequiredCheck{{Name: "test", App: "github-actions"}},
@@ -64,7 +78,7 @@ func ready() Facts {
 
 // approvedBy is a record of a review by an account: a decision about a commit, and
 // whether it has been edited since it was published.
-func approvedBy(author, commit string, edited bool) Review {
+func approvedBy(author forge.Subject, commit string, edited bool) Review {
 	return Review{
 		Author:    author,
 		CreatedAt: time.Date(2026, time.September, 28, 12, 0, 0, 0, time.UTC),
@@ -75,7 +89,7 @@ func approvedBy(author, commit string, edited bool) Review {
 
 // changesRequestedBy is a record that asks for changes, which stands over any
 // approval written before it.
-func changesRequestedBy(author, findings string) Review {
+func changesRequestedBy(author forge.Subject, findings string) Review {
 	return Review{
 		Author:    author,
 		CreatedAt: time.Date(2026, time.September, 28, 13, 0, 0, 0, time.UTC),
@@ -85,7 +99,7 @@ func changesRequestedBy(author, findings string) Review {
 
 // acceptedBy is a record in which the owner of the project takes the result of the task
 // as it stands: the head the record is written for.
-func acceptedBy(author, commit string) OwnerAccept {
+func acceptedBy(author forge.Subject, commit string) OwnerAccept {
 	return OwnerAccept{
 		Author:    author,
 		CreatedAt: time.Date(2026, time.September, 28, 15, 0, 0, 0, time.UTC),
@@ -141,16 +155,16 @@ func tableOfTheSpecification() []caseOfTable {
 		{
 			it:     "IT-004",
 			name:   "REVIEW: APPROVED <head> written by the executor of the run",
-			given:  func(facts *Facts) { facts.Reviews = []Review{approvedBy(executor, second, false)} },
+			given:  func(facts *Facts) { facts.Reviews = []Review{approvedBy(executorApp, second, false)} },
 			want:   ApprovalUntrusted,
-			detail: executor,
+			detail: executorLogin,
 		},
 		{
 			it:     "IT-005",
 			name:   "the approval of the owner was edited after it was published",
 			given:  func(facts *Facts) { facts.Reviews = []Review{approvedBy(owner, second, true)} },
 			want:   ApprovalEdited,
-			detail: owner,
+			detail: ownerLogin,
 		},
 		{
 			it:   "IT-006",
@@ -325,10 +339,10 @@ func tableOfTheSpecification() []caseOfTable {
 			name: "the acceptance was written by the executor of the run",
 			given: func(facts *Facts) {
 				facts.Labels = []string{ownerCheckLabel}
-				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executor, second)}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executorApp, second)}
 			},
 			want:   OwnerAcceptanceUntrusted,
-			detail: executor,
+			detail: executorLogin,
 		},
 		{
 			it:   "IT-028",
@@ -340,7 +354,7 @@ func tableOfTheSpecification() []caseOfTable {
 				}}
 			},
 			want:   OwnerAcceptanceEdited,
-			detail: owner,
+			detail: ownerLogin,
 		},
 		{
 			it:   "IT-029",
@@ -501,7 +515,7 @@ func TestAnAcceptanceIsCountedLikeAnApproval(t *testing.T) {
 		{
 			name: "the executor of the run may not accept anything",
 			given: Acceptance{
-				Author: executor, Commit: second,
+				Author: executorApp, Commit: second,
 			},
 			want: OutOfScope,
 		},
@@ -526,11 +540,17 @@ func TestAnAcceptanceIsCountedLikeAnApproval(t *testing.T) {
 	}
 }
 
-// TestTheOwnerAcceptsByDefault is the acceptance told apart from the approval of §5:
-// a project that names no owners has the owner of its repository, and only the owners
-// the file names may take the result of a task in. Accepting what a person will see is
-// not reviewing a change, and the two lists are read apart.
-func TestTheOwnerAcceptsByDefault(t *testing.T) {
+// TestTheOwnerAcceptsByList: the acceptance is told apart from the approval of §5, and
+// both are counted from their own list of accounts — a record of an owner and a record of
+// a reviewer are two different acts, and the account that writes one of them need not be
+// among the other list. Every case here is about the numbers the host keeps the accounts
+// under: the login in them is only what a report shows (docs/DESIGN.md §5, §7h, §7i).
+func TestTheOwnerAcceptsByList(t *testing.T) {
+	reviewer := forge.Subject{Kind: forge.KindUser, ID: 4242, Login: "reviewer"}
+	// A person whose login is the owner of the project with one letter added: over a
+	// host that names an App by its slug alone, the two are one string, and a record of
+	// that person must not be a record of the owner (F-081, docs/DESIGN.md §7h).
+	namedLikeTheOwner := forge.Subject{Kind: forge.KindUser, ID: 7, Login: "naghuale-e"}
 	cases := []struct {
 		name  string
 		given func(*Facts)
@@ -538,32 +558,49 @@ func TestTheOwnerAcceptsByDefault(t *testing.T) {
 		want  Reason
 	}{
 		{
-			name: "a project that names no owners has the owner of the repository",
+			name: "the owner the file names takes the result in",
 			given: func(facts *Facts) {
-				facts.Owners, facts.OwnerAccepts = nil, []OwnerAccept{acceptedBy(owner, second)}
+				facts.Owners = []forge.Subject{owner}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, second)}
 			},
 			ready: true,
 		},
 		{
-			name: "an account that is only named like it is not the same account",
+			name: "a project that names no owners has nobody who may accept",
 			given: func(facts *Facts) {
-				facts.Owners, facts.OwnerAccepts = nil, []OwnerAccept{acceptedBy("naghuale-e", second)}
+				facts.Owners, facts.OwnerAccepts = nil, []OwnerAccept{acceptedBy(owner, second)}
+			},
+			want: OwnerAcceptanceUntrusted,
+		},
+		{
+			name: "an account that is only named like the owner is not the owner",
+			given: func(facts *Facts) {
+				facts.Owners = []forge.Subject{owner}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(namedLikeTheOwner, second)}
 			},
 			want: OwnerAcceptanceUntrusted,
 		},
 		{
 			name: "the owners the project names and nobody else",
 			given: func(facts *Facts) {
-				facts.Owners = []string{owner, "reviewer"}
-				facts.OwnerAccepts = []OwnerAccept{acceptedBy("reviewer", second)}
+				facts.Owners = []forge.Subject{owner, reviewer}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(reviewer, second)}
 			},
 			ready: true,
 		},
 		{
 			name: "a reviewer who is no owner of the project accepts nothing",
 			given: func(facts *Facts) {
-				facts.Owners = []string{owner}
-				facts.OwnerAccepts = []OwnerAccept{acceptedBy("reviewer", second)}
+				facts.Owners = []forge.Subject{owner}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(reviewer, second)}
+			},
+			want: OwnerAcceptanceUntrusted,
+		},
+		{
+			name: "the app of the executor takes the result of nothing in",
+			given: func(facts *Facts) {
+				facts.Owners = []forge.Subject{owner, executorApp}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executorApp, second)}
 			},
 			want: OwnerAcceptanceUntrusted,
 		},
@@ -601,22 +638,69 @@ func TestApartStandsTheAcceptanceIn(t *testing.T) {
 	}
 }
 
-// TestTheOwnerReviewsByDefault is the default of §5: a project that names no
-// reviewers has the owner of its repository, and nothing else — an account that
-// happens to be named like it is not the same account as one that is not named at
-// all.
-func TestTheOwnerReviewsByDefault(t *testing.T) {
+// TestTheReviewersAreTheAccountsWhoseRecordsCount is the other list of §5, and the same
+// rule: a record counts when the account behind it is one the file of the project names,
+// and an account nobody named is a record of nobody however its login reads (docs/DESIGN.md
+// §5, §7h, §7i).
+func TestTheReviewersAreTheAccountsWhoseRecordsCount(t *testing.T) {
+	other := forge.Subject{Kind: forge.KindUser, ID: 4242, Login: "reviewer"}
+	// The account of an App under the login of another App, and a person whose login is
+	// the slug of an App: over GraphQL they are one string each, and neither of them is
+	// the App of the orchestrator of this project (F-081, docs/DESIGN.md §7h).
+	appOfTheExecutor := forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: orchestratorLogin}
+	personNamedLikeTheApp := forge.Subject{Kind: forge.KindUser, ID: 339150227, Login: "crewflow-orchestrator"}
+	cases := []struct {
+		name   string
+		who    forge.Subject
+		reason Reason
+	}{
+		{name: "the app of the orchestrator approves", who: orchestratorApp},
+		{name: "the owner the file names approves", who: owner},
+		{name: "another reviewer the file names approves", who: other},
+		{name: "the app of the executor approves nothing", who: executorApp, reason: ApprovalUntrusted},
+		{name: "an app under the login of another app approves nothing", who: appOfTheExecutor, reason: ApprovalUntrusted},
+		{name: "a person named like the app of the orchestrator approves nothing", who: personNamedLikeTheApp, reason: ApprovalUntrusted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := ready()
+			facts.Reviewers = []forge.Subject{owner, orchestratorApp, other}
+			facts.Reviews = []Review{approvedBy(tc.who, second, false)}
+
+			verdict := Evaluate(facts)
+
+			if tc.reason == "" {
+				if !verdict.Ready {
+					t.Fatalf("Evaluate = %+v, want the record of this account to count", verdict)
+				}
+				return
+			}
+			if verdict.Reason != tc.reason {
+				t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, tc.reason)
+			}
+		})
+	}
+}
+
+// TestTheRecordOfAnAppIsCountedByItsNumberAndNotByItsName is the case of F-081 turned
+// around: the App of the orchestrator is renamed, its account with it, and the record it
+// wrote under its new name is the very record the gate counted before the rename — while
+// a record of an App of the same host under that very login counts for nothing
+// (docs/DESIGN.md §7h, §7i).
+func TestTheRecordOfAnAppIsCountedByItsNumberAndNotByItsName(t *testing.T) {
+	renamed := forge.Subject{Kind: forge.KindApp, ID: orchestratorApp.ID, Login: "crewflow-orchestrator-renamed[bot]"}
 	facts := ready()
-	facts.Reviewers = nil
-	facts.WantRepository = "naghuale/crewflow"
-	facts.Reviews = []Review{approvedBy("naghuale", second, false)}
+	facts.Reviewers = []forge.Subject{orchestratorApp}
+	facts.Reviews = []Review{approvedBy(renamed, second, false)}
 
 	if verdict := Evaluate(facts); !verdict.Ready {
-		t.Errorf("Evaluate = %+v, want the owner of the repository to count", verdict)
+		t.Errorf("Evaluate = %+v, want the record of the app under its new name to count", verdict)
 	}
-	facts.Reviews = []Review{approvedBy("naghuale-e", second, false)}
+
+	facts.Reviews = []Review{approvedBy(executorApp, second, false)}
 	if verdict := Evaluate(facts); verdict.Reason != ApprovalUntrusted {
-		t.Errorf("Evaluate = %q (%s), want %q", verdict.Reason, verdict.Detail, ApprovalUntrusted)
+		t.Errorf("Evaluate = %q (%s), want %q: the record of another app is a record of that app",
+			verdict.Reason, verdict.Detail, ApprovalUntrusted)
 	}
 }
 
@@ -681,7 +765,7 @@ func TestASummaryOfTheAcceptanceOfTheOwner(t *testing.T) {
 				facts.Labels = []string{ownerCheckLabel}
 				facts.OwnerAccepts = []OwnerAccept{acceptedBy(owner, second)}
 			},
-			want: "  owner acceptance: ACCEPTED " + second[:8] + " by " + owner + " at 2026-09-28T15:00:00Z\n",
+			want: "  owner acceptance: ACCEPTED " + second[:8] + " by " + ownerLogin + " at 2026-09-28T15:00:00Z\n",
 		},
 		{
 			name: "the record is of an earlier head",
@@ -705,7 +789,7 @@ func TestASummaryOfTheAcceptanceOfTheOwner(t *testing.T) {
 			name: "the record is of the executor of the run",
 			given: func(facts *Facts) {
 				facts.Labels = []string{ownerCheckLabel}
-				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executor, second)}
+				facts.OwnerAccepts = []OwnerAccept{acceptedBy(executorApp, second)}
 			},
 			want: "and it does not count: not one of the owners of the project\n",
 		},

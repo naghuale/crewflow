@@ -169,7 +169,7 @@ func deps(t *testing.T, repo *repository, h *host) Deps {
 		CI:              h,
 		Repository:      "naghuale/crewflow",
 		DefaultBranch:   "main",
-		Reviewers:       []string{owner},
+		Reviewers:       []forge.Subject{owner},
 		AcceptanceLabel: ownerCheckLabel,
 		Task:            7,
 		Boundaries:      []string{"internal/gate/**"},

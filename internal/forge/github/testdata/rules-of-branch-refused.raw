@@ -1,0 +1,9 @@
+HTTP/2.0 403 Forbidden
+Access-Control-Allow-Origin: *
+Content-Security-Policy: default-src 'none'
+Content-Type: application/json; charset=utf-8
+X-Accepted-Github-Permissions: metadata=read
+X-Content-Type-Options: nosniff
+X-Github-Api-Version-Selected: 2022-11-28
+
+{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest/repos/rules#get-rules-for-a-branch","status":"403"}

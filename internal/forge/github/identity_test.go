@@ -96,9 +96,7 @@ func TestExecutorIdentityOfTheBotIsTheApp(t *testing.T) {
 			t.Errorf("the environment of the executor is %v, want %q in it", identity.Env, want)
 		}
 	}
-	if want := "crewflow auth git-credential"; identity.GitConfig["credential.helper"] != want {
-		t.Errorf("the settings of git in the worktree are %v, want credential.helper = %q", identity.GitConfig, want)
-	}
+	assertHelperOfThisBuild(t, identity.GitConfig, "executor")
 	// The token is in the environment of the executor and nowhere else, and its value
 	// is among the values a journal is put through: an agent that prints its own
 	// environment is one line of a journal that would carry a token of an hour into a

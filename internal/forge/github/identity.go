@@ -244,6 +244,31 @@ func (a *Adapter) SignedIn(ctx context.Context) (string, error) {
 	return "", errors.New("gh does not say which account it is signed in as: run `gh auth status` and read the account out of it")
 }
 
+// SigningAs is the subject the adapter speaks as: the App of the orchestrator, with the
+// number of that App, where the orchestrator works apart from the owner — and the account
+// gh is signed in as, with the number of that account, where it does not.
+//
+// It is a subject and not a login because the record of a review is compared with the
+// lists of the project by the number the host keeps each account under, and a name is
+// what changes when an App is renamed (F-081, docs.DESIGN.md §7h, §7i). The login above
+// is where the answer comes from; the number is one question more of the host, and it is
+// asked only where something is decided by it.
+func (a *Adapter) SigningAs(ctx context.Context) (forge.Subject, error) {
+	if a.orchestrator != nil {
+		bot, err := a.orchestrator.Bot(ctx)
+		if err != nil {
+			return forge.Subject{}, err
+		}
+		return forge.Subject{Kind: forge.KindApp, ID: a.orchestrator.AppID, Login: bot.Login}, nil
+	}
+	account := a.account()
+	if account == "" {
+		return forge.Subject{}, errors.New("gh does not say which account it is signed in as: " +
+			"run `gh auth status` and read the account out of it")
+	}
+	return a.Subject(ctx, account)
+}
+
 // OpenChangeRequest opens the change request of a branch on behalf of a run whose
 // executor did not: the agent ran out of time, or the token of gh it was given is
 // over, and the work of a run is on a branch that nobody asked about
@@ -341,7 +366,12 @@ func (a *Adapter) WriteComment(ctx context.Context, number int, body string) err
 // for the mode of the bot it is neither of the first two, and a project with such an
 // app is given both.
 var (
-	_ forge.Identified            = (*Adapter)(nil)
+	_ forge.Identified = (*Adapter)(nil)
+	// The adapter can say what subject of GitHub a login of the file of a project is:
+	// the settings name accounts by login, and the gate counts records by the number the
+	// host keeps each of them under (§7h, §7i).
+	_ forge.Naming                = (*Adapter)(nil)
+	_ forge.Signer                = (*Adapter)(nil)
 	_ forge.Described             = (*Adapter)(nil)
 	_ forge.Orchestrated          = (*Adapter)(nil)
 	_ forge.OrchestratorDescribed = (*Adapter)(nil)

@@ -701,6 +701,16 @@ func (h *cycleHost) merged() bool {
 	return head != "" && remoteOfCycleCmd(h.origin, "main") == head
 }
 
+// ownerOfTheProject is the account of the owner of the repository, as the host keeps it:
+// the record of a review and the record of an acceptance are counted by the number of that
+// account and never by its login (docs.DESIGN.md §7h, §7i).
+var ownerOfTheProject = forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"}
+
+// executorOfTheProject is the App of the executor of a run, as the host keeps it: its
+// records are written under a change whatever they say, and no gate counts one of them
+// (docs/DESIGN.md §7h, §7i).
+var executorOfTheProject = forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: "crewflow-executor[bot]"}
+
 // head is the commit at the head of the change, as the branch of it stands on the host.
 func (h *cycleHost) head() string {
 	if h.branch == "" {
@@ -720,7 +730,7 @@ func (h *cycleHost) Comments(context.Context, int) ([]forge.Comment, error) {
 	var records []forge.Comment
 	if h.approvedBody != "" {
 		records = append(records, forge.Comment{
-			Author:    "naghuale",
+			Author:    ownerOfTheProject,
 			Body:      h.approvedBody,
 			CreatedAt: time.Date(2026, time.October, 1, 9, 0, 0, 0, time.UTC),
 		})
@@ -762,7 +772,19 @@ func (h *cycleHost) HeadRef(int) string { return "refs/heads/" + h.branchOfHead(
 
 // SignedIn is the account the host speaks as, which is the owner of the repository: a
 // record of a review counts only because a reviewer of the project wrote it.
-func (h *cycleHost) SignedIn(context.Context) (string, error) { return "naghuale", nil }
+func (h *cycleHost) SignedIn(context.Context) (string, error) { return ownerOfTheProject.Login, nil }
+
+// SigningAs is the account the host speaks as, as the gate counts a record of it.
+func (h *cycleHost) SigningAs(context.Context) (forge.Subject, error) { return ownerOfTheProject, nil }
+
+// Subject is the account of the host the login names: the owner of the repository is the
+// only account the cycle of a test writes records in.
+func (h *cycleHost) Subject(_ context.Context, login string) (forge.Subject, error) {
+	if login != ownerOfTheProject.Login {
+		return forge.Subject{}, fmt.Errorf("the account %q is not on this host", login)
+	}
+	return ownerOfTheProject, nil
+}
 
 // WriteComment is what an approval under the change is: the host keeps it, and a
 // comment written by anybody else is not an approval the gate counts.
@@ -772,7 +794,7 @@ func (h *cycleHost) WriteComment(_ context.Context, number int, body string) err
 		return nil
 	}
 	h.comments = append(h.comments, forge.Comment{
-		Author:    "naghuale",
+		Author:    ownerOfTheProject,
 		Body:      body,
 		CreatedAt: time.Date(2026, time.October, 1, 9, 0, 0, 0, time.UTC),
 	})
@@ -800,6 +822,8 @@ var (
 	_ forge.HeadRef       = (*cycleHost)(nil)
 	_ forge.CommentWriter = (*cycleHost)(nil)
 	_ forge.SignedIn      = (*cycleHost)(nil)
+	_ forge.Naming        = (*cycleHost)(nil)
+	_ forge.Signer        = (*cycleHost)(nil)
 )
 
 // repositoryOfCycle is a checkout of a project with an origin of its own, so that a
