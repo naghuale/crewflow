@@ -59,7 +59,7 @@ type State struct {
 	// whether the task is in the queue at all is worked out at every read — and it is
 	// what keeps one record to a key and a day rather than one a minute (§6a, §7h).
 	Notice *Notice `json:"notice,omitempty"`
-// Checkpoint is where the run of the task stands when it needs a decision of a
+	// Checkpoint is where the run of the task stands when it needs a decision of a
 	// person, and what came of the request. It is the last point a run of this task
 	// wrote and not a queue of points: one run of a task stops once, and the run that
 	// goes on from the point either answers the request or refuses it (docs.DESIGN.md
