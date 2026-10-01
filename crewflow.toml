@@ -61,6 +61,16 @@ name = "tidy"
 run = ["go", "mod", "tidy", "-diff"]
 
 [[gates]]
+# The journal of this project is written by its tasks as fragments in changelog.d/,
+# and this gate is what keeps it a journal and not a pile: every fragment is a
+# fragment, every fragment is a task of the project, no two of them say one thing,
+# and CHANGELOG.md is what they build (§6). It is the only gate here that asks the
+# host — the number in the name of a fragment has to be a task that exists — so it
+# runs after the format of the code, where the toolchain is already warm.
+name = "changelog"
+run = ["go", "run", "./cmd/crewflow", "changelog", "check"]
+
+[[gates]]
 # A secret in a commit of the branch, found by gitleaks. Only the commits of the
 # branch are scanned: origin/main is the base a worktree of a task starts from, and
 # what is not a secret stands in .gitleaks.toml — a value the project knows to be

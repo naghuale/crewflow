@@ -158,7 +158,10 @@ func runChangelogRelease(args []string, stdout, stderr io.Writer) int {
 	}
 	day := *date
 	if day == "" {
-		day = time.Now().Format("2006-01-02")
+		// The day of a release is the day it is cut, and the day of a release is written
+		// in UTC as the moment of a build is: a machine in another zone cuts the same
+		// version on the same day (scripts/release.sh).
+		day = time.Now().UTC().Format("2006-01-02")
 	}
 	cut, err := project.Release(context.Background(), version, day)
 	if err != nil {
