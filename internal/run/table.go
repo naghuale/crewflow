@@ -97,8 +97,13 @@ func (r Runs) Write(w io.Writer, screen Screen) error {
 			return fmt.Errorf("write the list: %w", err)
 		}
 	}
-	if err := r.Attention.Write(w, screen); err != nil {
-		return err
+	// A list of one project has the block of its own queue at the top of it, and a list of
+	// the whole machine has none: у каждого проекта свой блок, и очередь всей машины без
+	// хостингов её проектов сказала бы, что никого нигде не ждёт (docs/DESIGN.md §6a).
+	if queue, of := r.Attention[r.Repo]; of && r.Repo != "" {
+		if err := queue.Write(w, screen); err != nil {
+			return err
+		}
 	}
 	if len(r.Entries) == 0 {
 		if _, err := fmt.Fprintln(w, "no runs yet"); err != nil {

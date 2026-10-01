@@ -659,7 +659,7 @@ func TestRunTaskListJSON(t *testing.T) {
 		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	// The answer is the canonical document of §6a: the version of the format and the
-	// moment of it are in the root, and the records of the runs are under `entries`.
+	// moment of it are in the root, and the records of the runs are under `runs`.
 	document := documentOf(t, stdout.Bytes())
 	if document.Repo != "naghuale/crewflow" || document.Branch != "main" || document.Total != 1 {
 		t.Errorf("the document is of %q on %q with %d tasks, want naghuale/crewflow on main with one",
@@ -679,7 +679,7 @@ func TestRunTaskListJSON(t *testing.T) {
 			URL    string `json:"url"`
 		} `json:"change"`
 	}
-	if err := json.Unmarshal(documentEntries(t, stdout.Bytes()), &entries); err != nil {
+	if err := json.Unmarshal(documentRuns(t, stdout.Bytes()), &entries); err != nil {
 		t.Fatalf("crewflow task list -json wrote %q, which is not a list: %v", stdout.String(), err)
 	}
 	if len(entries) != 1 {
@@ -856,8 +856,8 @@ func TestRunTaskListAllJSONIsOneDocumentOfTheMachine(t *testing.T) {
 	if document.Repo != "" {
 		t.Errorf("the document is of the project %q, want no one: a list of the whole machine is of no project", document.Repo)
 	}
-	if document.Attention != nil {
-		t.Errorf("the document holds the queue %+v, want none: a queue is the answer of one project about one host",
+	if len(document.Attention) != 0 {
+		t.Errorf("the document holds the attention %+v, want none: a queue is the answer of one project about one host",
 			document.Attention)
 	}
 	// Both projects of the machine are in one list of records, and each record says
@@ -870,8 +870,8 @@ func TestRunTaskListAllJSONIsOneDocumentOfTheMachine(t *testing.T) {
 				want)
 		}
 	}
-	if len(document.Entries) != 2 {
-		t.Errorf("the document holds %d records, want the one run of each of the two projects", len(document.Entries))
+	if len(document.Runs) != 2 {
+		t.Errorf("the document holds %d records, want the one run of each of the two projects", len(document.Runs))
 	}
 	for _, one := range entriesOfAnswer(t, stdout.Bytes()) {
 		if one.state != "" {
@@ -1179,12 +1179,8 @@ func TestRunTaskListOfAStateItCannotRead(t *testing.T) {
 	if len(document.Unreadable) != 1 || document.Unreadable[0] != broken {
 		t.Errorf("the document names the states it could not read as %+v, want only %q", document.Unreadable, broken)
 	}
-	if len(document.Entries) != 1 {
-		t.Errorf("the document holds %d records, want the one run it did read", len(document.Entries))
-	}
-	if document.Attention != nil && len(document.Attention.Unreadable) != 0 {
-		t.Errorf("the queue of the document holds %+v, want the states crewflow could not read said once, in the root",
-			document.Attention.Unreadable)
+	if len(document.Runs) != 1 {
+		t.Errorf("the document holds %d records, want the one run it did read", len(document.Runs))
 	}
 	if want := "not read: " + broken + "\n"; stderr.String() != want {
 		t.Errorf("crewflow task list -json wrote %q to stderr, want %q", stderr.String(), want)

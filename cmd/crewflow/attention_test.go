@@ -129,7 +129,9 @@ func TestRunTaskAttentionJSON(t *testing.T) {
 	run([]string{"task", "attention", "-config", project, "-json"}, &stdout, &stderr)
 
 	// The answer is the canonical document of §6a: the version of the format and the
-	// moment it was made are in the root of it, and the queue is under `attention`.
+	// moment it was made are in the root of it, the records of what wants a person are
+	// under `attention`, and the list of the runs is named and empty — очередь не
+	// перечисляет прогоны, которые не требуют действия.
 	answer := documentOf(t, stdout.Bytes())
 	if answer.Version != taskrun.Format {
 		t.Errorf("the version of the format = %d, want %d", answer.Version, taskrun.Format)
@@ -141,10 +143,13 @@ func TestRunTaskAttentionJSON(t *testing.T) {
 	if answer.Repo != "naghuale/crewflow" {
 		t.Errorf("the document is of the project %q, want naghuale/crewflow", answer.Repo)
 	}
-	if answer.Attention == nil || len(answer.Attention.Entries) != 1 {
+	if answer.Runs == nil || len(answer.Runs) != 0 {
+		t.Errorf("the document holds the runs %+v, want none and named", answer.Runs)
+	}
+	if len(answer.Attention) != 1 {
 		t.Fatalf("the document holds %+v, want the one task that wants a person", answer.Attention)
 	}
-	one := answer.Attention.Entries[0]
+	one := answer.Attention[0]
 	switch {
 	case one.Task != 43:
 		t.Errorf("the answer is about the task %d, want 43", one.Task)
@@ -262,13 +267,17 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
 	}
 	var answer []map[string]any
-	if err := json.Unmarshal(documentEntries(t, stdout.Bytes()), &answer); err != nil {
+	if err := json.Unmarshal(documentRuns(t, stdout.Bytes()), &answer); err != nil {
 		t.Fatalf("crewflow task list -json wrote %q, which is not an answer: %v", stdout.String(), err)
 	}
 	if len(answer) != 1 {
 		t.Fatalf("the answer holds %+v, want the one run of the project", answer)
 	}
-	entry := answer[0]
+	held, is := answer[0]["attention"].(map[string]any)
+	if !is {
+		t.Fatalf("the answer holds %+v, want the record of the attention of the task in the record of the run",
+			answer[0])
+	}
 	for key, want := range map[string]any{
 		"attention_state": string(taskrun.AttentionStands),
 		"reason":          taskrun.ReasonNoProgress,
@@ -276,19 +285,19 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 		"priority":        string(taskrun.High),
 		"actable":         string(taskrun.ActNow),
 	} {
-		if said := entry[key]; said != want {
-			t.Errorf("the answer holds %s = %v, want %v", key, said, want)
+		if said := held[key]; said != want {
+			t.Errorf("the answer holds attention.%s = %v, want %v", key, said, want)
 		}
 	}
-	if since, is := entry["waiting_since"].(string); !is || since == "" {
-		t.Errorf("the answer holds waiting_since = %v, want the moment the run went quiet", entry["waiting_since"])
+	if since, is := held["waiting_since"].(string); !is || since == "" {
+		t.Errorf("the answer holds attention.waiting_since = %v, want the moment the run went quiet",
+			held["waiting_since"])
 	}
-	// The queue of the document is the very queue the block over the table was written
-	// from: одна очередь, а не две (docs/DESIGN.md §6a, F-105).
+	// The list of the attention of the document is the very queue the block over the table
+	// was written from: одна очередь, а не две (docs/DESIGN.md §6a, F-105).
 	document := documentOf(t, stdout.Bytes())
-	if document.Attention == nil || len(document.Attention.Entries) != 1 ||
-		document.Attention.Entries[0].Task != 43 {
-		t.Errorf("the document holds the queue %+v, want the one record the block over the table was written from",
+	if len(document.Attention) != 1 || document.Attention[0].Task != 43 {
+		t.Errorf("the document holds the attention %+v, want the one record the block over the table was written from",
 			document.Attention)
 	}
 }
@@ -619,29 +628,30 @@ func documentOf(t *testing.T, answer []byte) taskrun.Document {
 	return document
 }
 
-// documentEntries is the list of the records of a document without the root around it: a
-// test that reads the fields of a record must not have to know where the record itself is.
-func documentEntries(t *testing.T, answer []byte) []byte {
+// documentRuns is the list of the records of the runs of a document without the root around
+// it: a test that reads the fields of a record must not have to know where the record itself
+// is (docs/DESIGN.md §6a).
+func documentRuns(t *testing.T, answer []byte) []byte {
 	t.Helper()
 	var document struct {
-		Entries []map[string]any `json:"entries"`
+		Runs []map[string]any `json:"runs"`
 	}
 	if err := json.Unmarshal(answer, &document); err != nil {
 		t.Fatalf("the answer %s is not a document: %v", answer, err)
 	}
-	entries, err := json.Marshal(document.Entries)
+	runs, err := json.Marshal(document.Runs)
 	if err != nil {
 		t.Fatalf("the records of the answer %s: %v", answer, err)
 	}
-	return entries
+	return runs
 }
 
 // attentionOfAnswer is what an answer of `-json` says об attention, по задачам и в
 // порядке номеров: блок внимания и записи списка прогонов читаются одинаково, и человек
 // проверяет их глазами именно так.
 //
-// The document is one for both commands, and the attention of it is told twice: by the
-// queue of the project and by the records of the runs, and a program that reads either
+// The document is one for both commands, and the attention of it is told twice: by the list
+// of what wants a person and by the records of the runs, and a program that reads either
 // reads the same thing (docs/DESIGN.md §6a, CL-007…CL-009).
 func attentionOfAnswer(t *testing.T, answer []byte) map[int]attentionRecord {
 	t.Helper()
@@ -652,34 +662,34 @@ func attentionOfAnswer(t *testing.T, answer []byte) map[int]attentionRecord {
 		}
 		records[one.task] = one
 	}
-	if queue := documentOf(t, answer).Attention; queue != nil {
-		for _, one := range queue.Entries {
-			records[one.Task] = attentionRecord{one.Task, string(one.State), one.Reason, one.NextActor}
-		}
+	for _, one := range documentOf(t, answer).Attention {
+		records[one.Task] = attentionRecord{one.Task, string(one.State), one.Reason, one.NextActor}
 	}
 	return records
 }
 
-// entriesOfAnswer is the attention each record of a document says of its own task, read by
-// the words of the format and not by the struct of the package: программа читает JSON, и
-// тест должен проверять то, что читает она.
+// entriesOfAnswer is the attention each record of a run says of its own task, read by the
+// words of the format and not by the struct of the package: программа читает JSON, и тест
+// должен проверять то, что читает она.
 func entriesOfAnswer(t *testing.T, answer []byte) []attentionRecord {
 	t.Helper()
 	var document struct {
-		Entries []struct {
-			Task           int    `json:"task"`
-			AttentionState string `json:"attention_state"`
-			Reason         string `json:"reason"`
-			NextActor      string `json:"next_actor"`
-		} `json:"entries"`
+		Runs []struct {
+			Task      int `json:"task"`
+			Attention struct {
+				AttentionState string `json:"attention_state"`
+				Reason         string `json:"reason"`
+				NextActor      string `json:"next_actor"`
+			} `json:"attention"`
+		} `json:"runs"`
 	}
 	if err := json.Unmarshal(answer, &document); err != nil {
 		t.Fatalf("the answer %s is not a document: %v", answer, err)
 	}
-	records := make([]attentionRecord, 0, len(document.Entries))
-	for _, one := range document.Entries {
-		records = append(records,
-			attentionRecord{one.Task, one.AttentionState, one.Reason, one.NextActor})
+	records := make([]attentionRecord, 0, len(document.Runs))
+	for _, one := range document.Runs {
+		records = append(records, attentionRecord{one.Task, one.Attention.AttentionState,
+			one.Attention.Reason, one.Attention.NextActor})
 	}
 	return records
 }

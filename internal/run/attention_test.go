@@ -964,9 +964,18 @@ func TestTheEntryOfAListCarriesTheStateOfTheAttention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal the entry: %v", err)
 	}
-	var got map[string]any
+	var got struct {
+		Reason    string         `json:"reason"`
+		Attention map[string]any `json:"attention"`
+	}
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("read the answer of the list: %v", err)
+	}
+	// The attention of the task is a record of its own under the name `attention`, and not
+	// a dozen fields of the run beside it: одно слово формата значит одно и не значит двух
+	// (docs/DESIGN.md §6a).
+	if got.Reason != ReasonOwnerAcceptance {
+		t.Errorf("the answer holds reason = %q, want the reason of the attention of the task", got.Reason)
 	}
 	for key, want := range map[string]any{
 		"attention_state": string(AttentionAwaitsOwner),
@@ -978,13 +987,14 @@ func TestTheEntryOfAListCarriesTheStateOfTheAttention(t *testing.T) {
 		"next":            one.Next,
 		"waiting_seconds": 3600.0,
 	} {
-		if said := got[key]; said != want {
-			t.Errorf("the answer holds %s = %v, want %v", key, said, want)
+		if said := got.Attention[key]; said != want {
+			t.Errorf("the answer holds attention.%s = %v, want %v", key, said, want)
 		}
 	}
-	since, is := got["waiting_since"].(string)
+	since, is := got.Attention["waiting_since"].(string)
 	if !is || !strings.HasPrefix(since, "2026-09-") {
-		t.Errorf("the answer holds waiting_since = %v, want the moment the state began", got["waiting_since"])
+		t.Errorf("the answer holds attention.waiting_since = %v, want the moment the state began",
+			got.Attention["waiting_since"])
 	}
 }
 

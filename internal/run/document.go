@@ -16,15 +16,16 @@ import (
 // and is not stopped by the ones it does not.
 const Format = 1
 
-// Document is the canonical answer of every command about the work of a project: the version
-// of the format, the moment the answer was made, the project it is of, one record per run and
-// the queue of attention over them. It is one document and not a list of documents, because
-// состояние процесса имеет несколько представлений — очередь, список, статус, статистика —
-// и каждое из них сегодня называет одно и то же по-своему (docs/DESIGN.md §6a).
+// Document is the canonical answer of every command about the work of a project or of the
+// machine: the version of the format, the moment the answer was made, the project it is of,
+// and two named lists of records — the runs, and what of the work wants a person.
 //
-// Every record of it is a record of §6a: `Entries` are the runs of the machine or of one
-// project, `Attention` is the queue of what wants a person, and the two are read together
-// because a program is asked about a task and not about a run (F-105, docs/DESIGN.md §6a).
+// It is one document and not a list of documents, because состояние процесса имеет несколько
+// представлений — очередь, список, статус, статистика — и каждое из них сегодня называет
+// одно и то же по-своему (docs/DESIGN.md §6a). The two lists are named and not nested: a
+// word of the format means one thing and not two, so the record of a run and the record of
+// what wants a person are told apart by their names and not by the place they sit in
+// (F-105, docs/DESIGN.md §6a).
 type Document struct {
 	// Version is the shape of the format, and it is [Format] in every document of this
 	// build.
@@ -38,42 +39,50 @@ type Document struct {
 	// проекта, и записи о них лежат в одной таблице (docs/DESIGN.md §6).
 	Repo string `json:"repo,omitempty"`
 	// Branch is the branch the runs of the project are counted from, and it is nothing
-	// where no project file was read: a list of the whole machine is asked from any folder
-	// and a folder of no project says nothing about the branch of the work beside it.
+	// where no project file was read: a document of the whole machine is asked from any
+	// folder and a folder of no project says nothing about the branch of the work beside it.
 	Branch string `json:"branch,omitempty"`
 	// Total is how many tasks of the project were run and Left how many did not fit into
-	// the list of them: a list of twenty entries and no number beside it is a list of the
+	// the list of them: a list of twenty records and no number beside it is a list of the
 	// whole project (docs/DESIGN.md §6).
 	Total int `json:"total,omitempty"`
 	Left  int `json:"left,omitempty"`
-	// Entries are the records of the format: one per run, in the order a person reads the
-	// list in. It is an empty list and never a null where there is no run to write, so that
-	// a program may read it without asking whether the field is there (docs/DESIGN.md §6a).
-	Entries []Entry `json:"entries"`
-	// Attention is the queue of what of the work wants a person, with the runs of the host
-	// that could not be read in it, and it is nothing in a document of the whole machine: a
-	// queue is the answer of one project about one host (docs/DESIGN.md §6a).
-	Attention *Queue `json:"attention,omitempty"`
+	// Runs are the records of the runs, in the order a person reads the list in. It is an
+	// empty list and never a null where there is no run to write — an answer of the queue
+	// alone says so by name and not by the absence of the field (docs/DESIGN.md §6a).
+	Runs []Entry `json:"runs"`
+	// Attention are the records of what wants a person, the most urgent first, and every
+	// record names the project it is of. It is an empty list and never a null as well
+	// (docs/DESIGN.md §6a).
+	Attention []Attention `json:"attention"`
+	// Unread are the runs whose host could not be read, and they are not records of the
+	// attention: то, что не прочитано, не является утверждением о том, что кому-то нужно
+	// внимание (F-098, docs/DESIGN.md §6a).
+	Unread Unreads `json:"unread,omitempty"`
 	// Unreadable are the state files crewflow could not read, which say nothing about any
 	// run. They are said once, in the root of the document, and go to stderr beside it as
-	// well: a state file that could not be read is not an answer, and a document that
-	// listed it twice would be read twice (docs/DESIGN.md §6a).
+	// well (docs/DESIGN.md §6a).
 	Unreadable []string `json:"unreadable,omitempty"`
+	// Interrupted says that the read was cut short by a person and that what was read
+	// before is not the whole of it (F-098, docs/DESIGN.md §6a).
+	Interrupted bool `json:"interrupted,omitempty"`
 }
 
-// Document is the canonical document of the queue of attention of one project: the entries
-// of the queue, the runs crewflow could not read and the state files it could not read, all
-// of them under the root that says which format this is and when it was made
-// (docs/DESIGN.md §6a).
+// Document is the canonical document of the queue of attention of one project: the records
+// of what wants a person, the runs of the host that could not be read and the state files
+// that could not be read, all of them under the root that says which format this is and
+// when it was made. The list of the runs is empty and named as such: очередь — это ответ о
+// действии, и прогонов, которые не требуют его, она не перечисляет (docs/DESIGN.md §6a).
 func (q Queue) Document(at time.Time) Document {
-	queue := q.saidOnce()
 	return Document{
 		Version:     Format,
 		GeneratedAt: at,
 		Repo:        q.Repo,
-		Entries:     []Entry{},
-		Attention:   &queue,
+		Runs:        []Entry{},
+		Attention:   q.Entries,
+		Unread:      q.Unread,
 		Unreadable:  q.Unreadable,
+		Interrupted: q.Interrupted,
 	}.canonical()
 }
 
@@ -89,26 +98,19 @@ func (r Runs) Document(at time.Time) Document {
 		Branch:      r.Branch,
 		Total:       r.Total,
 		Left:        r.Left,
-		Entries:     r.Entries,
+		Runs:        r.Entries,
 		Unreadable:  r.Unreadable,
 	}
 	// The queue belongs to one project and to one host: a list of the whole machine has no
 	// queue of its own, and a document that put an empty one there would say that nothing
 	// of any project wants a person, which is not what was read (docs/DESIGN.md §6a).
-	if r.Repo != "" {
-		queue := r.Attention.saidOnce()
-		document.Attention = &queue
+	if queue, of := r.Attention[r.Repo]; of && r.Repo != "" {
+		document.Attention = queue.Entries
+	}
+	if document.Attention == nil {
+		document.Attention = []Attention{}
 	}
 	return document.canonical()
-}
-
-// saidOnce is the queue with the state files that could not be read taken out of it: they
-// are said once, in the root of the document, and the queue keeps them for the block of a
-// person and for the stderr beside the answer. A format that said the same list of paths in
-// two places is a format nobody reads the same way twice (docs/DESIGN.md §6a).
-func (q Queue) saidOnce() Queue {
-	q.Unreadable = nil
-	return q
 }
 
 // canonical is the document with the codes of §6a in it: a state or a reason out of the
@@ -116,44 +118,38 @@ func (q Queue) saidOnce() Queue {
 // in the records stays as it was read. The words of a refusal are not lost by it — они
 // остаются в объекте ожидания записи, который читает человек (§6a, §7e).
 func (d Document) canonical() Document {
-	if d.Entries != nil {
-		// The records are copied before they are written into: a document is built out of
-		// a list a caller keeps for the table it prints, и запись, вычищенная в документе,
-		// не должна вычищать и её (docs.DESIGN.md §6a).
-		d.Entries = slices.Clone(d.Entries)
-		for at := range d.Entries {
-			if one := d.Entries[at].Attention; one != nil {
-				coded := one.coded()
-				d.Entries[at].Attention = &coded
-			}
+	d.Runs = slices.Clone(d.Runs)
+	for at := range d.Runs {
+		if one := d.Runs[at].Attention; one != nil {
+			coded := one.coded()
+			d.Runs[at].Attention = &coded
 		}
 	}
 	if d.Attention == nil {
-		return d
+		d.Attention = []Attention{}
 	}
-	queue := *d.Attention
-	queue.Entries, queue.Unread = slices.Clone(queue.Entries), slices.Clone(queue.Unread)
-	for at := range queue.Entries {
-		queue.Entries[at] = queue.Entries[at].coded()
+	d.Attention = slices.Clone(d.Attention)
+	for at := range d.Attention {
+		d.Attention[at] = d.Attention[at].coded()
 	}
-	for at := range queue.Unread {
-		if !KnownReason(queue.Unread[at].Reason) {
+	d.Unread = slices.Clone(d.Unread)
+	for at := range d.Unread {
+		if !KnownReason(d.Unread[at].Reason) {
 			// A read crewflow could not name the cause of is still a hole in the queue, and
 			// the hole is written with a reason of §6a rather than with a word nobody
 			// reads: неизвестная причина непрочитанного — это всё равно непрочитанное
 			// (F-098, §6a).
-			queue.Unread[at].Reason = ReasonReadFailed
+			d.Unread[at].Reason = ReasonReadFailed
 		}
 	}
-	d.Attention = &queue
 	return d
 }
 
-// coded is the entry with the codes of §6a in it: a state out of the closed list and a
-// reason out of it are not written, and the rest of the entry stands as it was worked out.
-// The reason of a refused run is a code of the queue even where the state of the task holds
-// a word of its own — `refusalOf` says which code it is, and the word itself stays in the
-// subject of the entry (docs/DESIGN.md §6a).
+// coded is the record of one task with the codes of §6a in it: a state out of the closed list
+// and a reason out of it are not written, and the rest of the record stands as it was worked
+// out. The reason of a refused run is a code of the queue even where the state of the task
+// holds a word of its own — `refusalOf` says which code it is, and the word itself stays in
+// the subject of the record (docs/DESIGN.md §6a).
 func (a Attention) coded() Attention {
 	if !KnownState(a.State) {
 		a.State = ""

@@ -73,10 +73,15 @@ type Runs struct {
 	// what runs beside it, and a run of another project of the machine is as much of
 	// this machine as the one of their own (docs/DESIGN.md §6).
 	Elsewhere []Project
-	// Attention is the queue of the project: the tasks that want a person, in the order
-	// a person reads them in, and the block at the top of the list is made of it
-	// (docs/DESIGN.md §6a).
-	Attention Queue
+	// Attention is the queue of attention, by the project it is of: the records of what
+	// wants a person in the project, so that the block at the top of a list of one project
+	// and the answer of `-all` of the attention of the machine are the same queue and not
+	// two answers about one project (docs/DESIGN.md §6a).
+	//
+	// It is by the project and not one queue, because у каждого проекта машины свой хостинг
+	// и своя очередь, и ответ о всей машине не имеет ни одной очереди: у списка одной
+	// работы она одна.
+	Attention map[string]Queue
 }
 
 // Entry is one task in the list: what it is, how many tries it took, how the last of
@@ -255,36 +260,23 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		}
 	}
 	answer := struct {
-		Repo            string          `json:"repo"`
-		Task            int             `json:"task"`
-		Title           string          `json:"title"`
-		Attempts        int             `json:"attempts"`
-		Run             string          `json:"run"`
-		Outcome         Kind            `json:"outcome"`
-		StartedAt       time.Time       `json:"started_at"`
-		EndedAt         *time.Time      `json:"ended_at,omitempty"`
-		DurationSeconds *float64        `json:"duration_seconds"`
-		StalledFor      *float64        `json:"stalled_for,omitempty"`
-		LastStep        string          `json:"last_step,omitempty"`
-		Reason          string          `json:"reason,omitempty"`
-		Executor        string          `json:"executor"`
-		Change          *Change         `json:"change,omitempty"`
-		Identity        Identity        `json:"identity"`
-		AttentionState  *AttentionState `json:"attention_state,omitempty"`
-		EscalatedFrom   AttentionState  `json:"escalated_from,omitempty"`
-		WaitingSince    *time.Time      `json:"waiting_since,omitempty"`
-		WaitingSeconds  *float64        `json:"waiting_seconds,omitempty"`
-		NextActor       string          `json:"next_actor,omitempty"`
-		Priority        Priority        `json:"priority,omitempty"`
-		Actable         Actable         `json:"actable,omitempty"`
-		Subject         string          `json:"subject,omitempty"`
-		Channel         string          `json:"channel,omitempty"`
-		Resource        string          `json:"resource,omitempty"`
-		ResourceType    string          `json:"resource_type,omitempty"`
-		Action          string          `json:"action,omitempty"`
-		Next            string          `json:"next,omitempty"`
-		LongWaiting     bool            `json:"long_waiting,omitempty"`
-		TaskFacts       *TaskFacts      `json:"task_facts,omitempty"`
+		Repo            string     `json:"repo"`
+		Task            int        `json:"task"`
+		Title           string     `json:"title"`
+		Attempts        int        `json:"attempts"`
+		Run             string     `json:"run"`
+		Outcome         Kind       `json:"outcome"`
+		StartedAt       time.Time  `json:"started_at"`
+		EndedAt         *time.Time `json:"ended_at,omitempty"`
+		DurationSeconds *float64   `json:"duration_seconds"`
+		StalledFor      *float64   `json:"stalled_for,omitempty"`
+		LastStep        string     `json:"last_step,omitempty"`
+		Reason          string     `json:"reason,omitempty"`
+		Executor        string     `json:"executor"`
+		Change          *Change    `json:"change,omitempty"`
+		Identity        Identity   `json:"identity"`
+		TaskFacts       *TaskFacts `json:"task_facts,omitempty"`
+		Attention       *Attention `json:"attention,omitempty"`
 	}{
 		Repo:            ownerAndRepo(e.Repo),
 		Task:            e.Task,
@@ -304,15 +296,11 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		TaskFacts:       e.TaskFacts,
 	}
 	if one := e.Attention; one != nil {
-		state, since := one.State, one.Since
-		waited := one.WaitingSeconds
-		answer.AttentionState, answer.EscalatedFrom = &state, one.EscalatedFrom
-		answer.WaitingSince, answer.WaitingSeconds = &since, &waited
-		answer.NextActor, answer.Priority, answer.Actable = one.NextActor, one.Priority, one.Actable
-		answer.Subject, answer.Channel = one.Subject, one.Channel
-		answer.Resource, answer.ResourceType = one.Resource, one.ResourceType
-		answer.Action, answer.Next = one.Action, one.Next
-		answer.LongWaiting = one.LongWaiting
+		// The attention of a run is written under the name of its own field and not
+		// beside the fields of the run: a program reads the record of a run and the record
+		// of what wants a person out of one document, и одно слово `priority` в двух
+		// списках не значит одного и того же (§6a).
+		answer.Attention = one
 	}
 	data, err := json.Marshal(answer)
 	if err != nil {
@@ -430,7 +418,7 @@ func (r Runs) Of(repo string) Runs {
 // It writes into the entries of the list it is given rather than copying them, and a caller
 // that holds another list of the same runs gets the same answer from it either way.
 func (r Runs) WithAttention(queue Queue) Runs {
-	r.Attention = queue
+	r.Attention = map[string]Queue{r.Repo: queue}
 	for i := range r.Entries {
 		if one, wanted := queue.Wanted(r.Entries[i].Task); wanted {
 			entry := one

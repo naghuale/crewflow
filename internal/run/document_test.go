@@ -43,7 +43,8 @@ func TestTheDocumentSaysWhichFormatItIsAndWhenItWasMade(t *testing.T) {
 		`"version": 1`,
 		`"generated_at": "` + at.Format(time.RFC3339) + `"`,
 		`"repo": "naghuale/crewflow"`,
-		`"entries": [`,
+		`"runs": []`,
+		`"attention": [`,
 		`"attention_state": "finished-unseen"`,
 		`"reason": "run-completed"`,
 	} {
@@ -54,8 +55,8 @@ func TestTheDocumentSaysWhichFormatItIsAndWhenItWasMade(t *testing.T) {
 	// A document of a project that ran nothing is still a document and not an empty
 	// string: a program that reads nothing has to know that it read nothing.
 	empty := Queue{}.Document(at)
-	if said := answerAs(t, empty); !strings.Contains(said, `"entries": []`) {
-		t.Errorf("the document of nothing wrote %s, want an empty list of entries and not a null", said)
+	if said := answerAs(t, empty); !strings.Contains(said, `"runs": []`) {
+		t.Errorf("the document of nothing wrote %s, want an empty list of runs and not a null", said)
 	}
 }
 
@@ -91,8 +92,14 @@ func TestTheListOfTheWholeMachineIsOneDocument(t *testing.T) {
 	if document.Repo != "" {
 		t.Errorf("the document names the project %q, want no one: a list of the whole machine is of no project", document.Repo)
 	}
-	if len(document.Entries) != len(runs.Entries) {
-		t.Errorf("the document holds %d records, want the %d of the list", len(document.Entries), len(runs.Entries))
+	if len(document.Runs) != len(runs.Entries) {
+		t.Errorf("the document holds %d records, want the %d of the list", len(document.Runs), len(runs.Entries))
+	}
+	// A list of the whole machine has no queue of its own, and the list of the attention of
+	// the document is named and empty: у каждого проекта машины своя очередь, и очередь без
+	// проекта сказала бы, что никого нигде не ждёт (docs/DESIGN.md §6a).
+	if document.Attention == nil || len(document.Attention) != 0 {
+		t.Errorf("the document holds the attention %+v, want it empty and named", document.Attention)
 	}
 	// A list of one project is a document of that project, and the branch its runs are
 	// counted from is in the root of it: a program has to know which branch the work is on
@@ -106,7 +113,7 @@ func TestTheListOfTheWholeMachineIsOneDocument(t *testing.T) {
 	if ofProject.Repo != "naghuale/tele" || ofProject.Branch != "main" {
 		t.Errorf("the document of a project = %q on %q, want naghuale/tele on main", ofProject.Repo, ofProject.Branch)
 	}
-	if len(ofProject.Entries) == 0 {
+	if len(ofProject.Runs) == 0 {
 		t.Error("the document of a project that was run holds no records, want the runs of it")
 	}
 }
@@ -235,34 +242,32 @@ func TestAReasonOutOfTheClosedListIsNotWritten(t *testing.T) {
 	}
 }
 
-// reasonsIn is every reason a document wrote, wherever it wrote one: и в записях списка,
-// и в блоке внимания, и в блоке «не прочитано» — перечень один на все три.
+// reasonsIn is every reason a document wrote, wherever it wrote one: и в записях прогонов, и
+// в записях внимания, и в блоке «не прочитано» — перечень один на все три.
 func reasonsIn(t *testing.T, said string) []string {
 	t.Helper()
 	var document struct {
-		Entries []struct {
+		Runs []struct {
 			Reason string `json:"reason"`
-		} `json:"entries"`
-		Attention struct {
-			Entries []struct {
-				Reason string `json:"reason"`
-			} `json:"entries"`
-			Unread []struct {
-				Reason string `json:"reason"`
-			} `json:"unread"`
+		} `json:"runs"`
+		Attention []struct {
+			Reason string `json:"reason"`
 		} `json:"attention"`
+		Unread []struct {
+			Reason string `json:"reason"`
+		} `json:"unread"`
 	}
 	if err := json.Unmarshal([]byte(said), &document); err != nil {
 		t.Fatalf("the answer %s is not a document: %v", said, err)
 	}
 	var reasons []string
-	for _, entry := range document.Entries {
+	for _, entry := range document.Runs {
 		reasons = append(reasons, entry.Reason)
 	}
-	for _, entry := range document.Attention.Entries {
+	for _, entry := range document.Attention {
 		reasons = append(reasons, entry.Reason)
 	}
-	for _, one := range document.Attention.Unread {
+	for _, one := range document.Unread {
 		reasons = append(reasons, one.Reason)
 	}
 	return reasons
@@ -354,20 +359,20 @@ func TestTheBlockForAPersonIsWrittenFromTheSameRecords(t *testing.T) {
 
 	// The document is built first on purpose: a document that cleans the codes out of the
 	// records a caller keeps would take the words of a person with it, and the two must be
-	// the same records (docs.DESIGN.md §6a).
+	// the same records (docs/DESIGN.md §6a).
 	document := queue.Document(at)
-	if document.Attention == nil || len(document.Attention.Entries) != 1 {
+	if len(document.Attention) != 1 {
 		t.Fatalf("the document holds %+v, want the one record the block for a person was written from", document.Attention)
 	}
-	if len(queue.Entries) != 1 || queue.Entries[0].Reason != document.Attention.Entries[0].Reason {
+	if len(queue.Entries) != 1 || queue.Entries[0].Reason != document.Attention[0].Reason {
 		t.Fatalf("the queue of the caller holds %v, want the record the document was written from: %+v",
-			queue.Entries, document.Attention.Entries)
+			queue.Entries, document.Attention)
 	}
 	var out bytes.Buffer
 	if err := queue.Write(&out, screenAt(at)); err != nil {
 		t.Fatalf("Write returned an error: %v", err)
 	}
-	one := document.Attention.Entries[0]
+	one := document.Attention[0]
 	said := out.String()
 	for _, want := range []string{
 		attentionHeading,
