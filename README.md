@@ -165,6 +165,8 @@ crewflow task check-stalled   # the runs that stand — for the orchestrator's s
 crewflow task attention     # what of this project needs you right now — same queue for a schedule
 crewflow task attention -all  # what of every project on this machine needs you, out of the state alone
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
+crewflow changelog build     # build the unreleased part of CHANGELOG.md out of changelog.d/
+crewflow changelog check     # every fragment is a fragment, a task, and the journal is the build
 ```
 
 Every key of `crewflow.toml` has a status in the code: `supported`, which the code
@@ -399,21 +401,52 @@ What changed in every version — added, changed, fixed, security — is in
 [CHANGELOG.md](CHANGELOG.md), written in the language of the project. The format is
 [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/), the versions are
 [SemVer](https://semver.org/spec/v2.0.0.html), and the first release is `v0.1.0`, at the
-closing of the `v1` milestone. Every task that changes what a person sees or can do writes
-a line under `## [Не выпущено]` in its own pull request — rule 3 of
-[PROJECT_RULES.md](PROJECT_RULES.md).
+closing of the `v1` milestone.
+
+A task does not write into `CHANGELOG.md`. Every task that changes what a person sees or
+can do writes **its own fragment**, `changelog.d/<task number>.md` — the sections of the
+journal and the lines for a person, with a link to the task and to the change — in its own
+pull request, and rule 3 of [PROJECT_RULES.md](PROJECT_RULES.md) names that file as the
+boundary of the task. A task touches no other fragment: it is out of the boundaries, and
+the gate says `out-of-scope`.
+
+`CHANGELOG.md` itself is built, never written by hand in an ordinary task:
+
+```sh
+crewflow changelog build     # the unreleased section out of every fragment
+crewflow changelog check     # the gate: format, task exists, no duplicates, journal is the build
+```
+
+`build` writes the `## [Не выпущено]` section of `CHANGELOG.md` out of the fragments: by the
+sections of the journal, and inside a section by the order the changes were merged — read out
+of the history of the branch, the commit that added the fragment, and not from the number of
+the task. Fragments that entered in the same second are read by the number, the larger one
+first, so the journal is the same file on every machine. A build over a journal that already
+is what the fragments build writes nothing at all.
+
+`check` is what keeps the journal a journal: every fragment is a fragment, the number in its
+name is a task that exists, no two fragments say one thing, and the journal on the disk is what
+the fragments build. Every reason is named with the file and the line in it, and `-json`
+answers the same reasons as fields for the orchestrator. It is the only gate of a project that
+asks the host, and it belongs in `[[gates]]`:
+
+```toml
+[[gates]]
+name = "changelog"
+run = ["go", "run", "./cmd/crewflow", "changelog", "check"]
+```
 
 To cut a version:
 
-1. In `CHANGELOG.md`, give the `## [Не выпущено]` section the number and the date of the
-   release (`## [v0.1.0] - 2026-10-01`), put a fresh empty `## [Не выпущено]` above it, and
-   merge that change as any other.
-2. `scripts/release.sh v0.1.0` — it refuses, and says which part is missing, until that
-   section is there with its date and the unreleased one is empty, the tree is clean and
-   the branch is the default one. It builds `dist/crewflow` with the version, the commit
-   and the moment stamped into it (`-ldflags -X …/buildinfo.Version`) instead of `dev`,
-   prints what `crewflow version` answers, and puts an annotated tag on the commit.
-3. Push and cut the release on the host — the script prints both commands and pushes
+1. `scripts/release.sh v0.1.0` — it refuses, and says which part is missing, until there is a
+   fragment waiting in `changelog.d/`, the tree is clean and the branch is the default one. It
+   then runs `crewflow changelog release v0.1.0`, which gives the unreleased section the number
+   and the date of the release, leaves a fresh empty `## [Не выпущено]` above it and removes
+   the fragments; the script commits that as one release commit and puts an annotated tag on
+   it. It builds `dist/crewflow` with the version, the commit and the moment stamped into it
+   (`-ldflags -X …/buildinfo.Version`) instead of `dev`, and prints what `crewflow version`
+   answers. The host is not asked anything: a release does not wait for a task nobody can find.
+2. Push and cut the release on the host — the script prints both commands and pushes
    nothing itself:
 
    ```sh
