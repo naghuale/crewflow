@@ -165,10 +165,22 @@ func TestAResumeIsRefusedAndNamesWhy(t *testing.T) {
 		{
 			name: "the point is older than the term of a point",
 			before: func(_ *testing.T, standing *atTheWindow) {
-				standing.m.quiet(CheckpointValid + time.Hour)
+				standing.m.quiet(25 * time.Hour)
 			},
 			reason: RefusedStale,
 			said:   "a point is good for",
+		},
+		{
+			name: "the term of a point is the one the project named",
+			before: func(_ *testing.T, standing *atTheWindow) {
+				// `[executor] resume_within` is the term, and a project that puts a
+				// shorter one there gets a shorter one — the key is applied, not read
+				// off a constant (docs/DESIGN.md §5, §7i).
+				standing.cfg.Executor.ResumeWithin = "10m"
+				standing.m.quiet(15 * time.Minute)
+			},
+			reason: RefusedStale,
+			said:   "a point is good for 10m",
 		},
 		{
 			name: "the person refused the request",
@@ -302,7 +314,7 @@ func TestNothingGoesToTheKeyOfTheAppWithoutAPersonAsking(t *testing.T) {
 
 	// And a continuation that is refused: the point is checked before the key is asked
 	// for, so a person who is told "no" is not answered by a window of macOS.
-	m.quiet(CheckpointValid + time.Hour)
+	m.quiet(25 * time.Hour)
 	if _, err := Resume(t.Context(), env, cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err == nil {
 		t.Fatal("Resume returned no error, want the refusal of a point older than the term of a point")
 	}

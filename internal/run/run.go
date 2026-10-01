@@ -280,7 +280,8 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 //
 // The point is checked before anything of the run happens, and every refusal of it names
 // its reason: the head of the branch moved, the task changed, the point is older than
-// [CheckpointValid], or the person refused the request and a refusal is not asked again.
+// `[executor] resume_within`, or the person refused the request and a refusal is not
+// asked again.
 // A refusal creates nothing — no attempt, no journal, no worktree — and asks the machine
 // for nothing but the commit the worktree stands at: every attempt to read the key of the
 // app without the access opens a window of the system, and crewflow never opens one on its

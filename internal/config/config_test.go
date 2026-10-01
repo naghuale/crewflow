@@ -60,6 +60,10 @@ func TestLoadExample(t *testing.T) {
 		// ten minutes of silence: an executor that works says something every few
 		// minutes, and an hour of nothing is a run nobody is watching (docs/DESIGN.md §7a).
 		{"executor.stall_after", cfg.Executor.StallAfter, "15m"},
+		// The term of the checkpoint of a run that waits for a decision of a person is
+		// a key of its own, and the example says the day it puts in a file that says
+		// nothing (docs.DESIGN.md §7i).
+		{"executor.resume_within", cfg.Executor.ResumeWithin, "24h"},
 		{"len(executor.fallback)", len(cfg.Executor.Fallback), 0},
 		{
 			"access.read_from",
@@ -162,6 +166,10 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		{"project.language", cfg.Project.Language, "en"},
 		{"executor.timeout", cfg.Executor.Timeout, "90m"},
 		{"executor.stall_after", cfg.Executor.StallAfter, "10m"},
+		// A project that says nothing about how long a point of a run stays a point
+		// gets a day: a person comes back to it within a day, and a point of a week ago
+		// is a point about a machine and a task that are not the ones now (§7i).
+		{"executor.resume_within", cfg.Executor.ResumeWithin, "24h"},
 		// A project that says nothing about [access] gets no folder to read: the
 		// executor of it works in its worktree and nowhere else, and a run does not
 		// hand out a permission nobody asked for (docs/DESIGN.md §7d).
@@ -190,6 +198,35 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		if !reflect.DeepEqual(c.got, c.want) {
 			t.Errorf("%s = %#v, want %#v", c.name, c.got, c.want)
 		}
+	}
+}
+
+// TestResumeWithin is the promise of `[executor] resume_within`: the term of the point a
+// run of a task stands at while it waits for a decision of a person is a key of the file of
+// the project. A project that names one gets it, a project that says nothing gets the day
+// the load fills in, and a value that is not a term a person can wait out is refused with
+// the name of the key (docs.DESIGN.md §5, §7i).
+func TestResumeWithin(t *testing.T) {
+	for _, tc := range []struct {
+		name, file, want string
+	}{
+		{"the term of the example", "example.toml", "24h"},
+		{"the default of a project that says nothing", "minimal.toml", "24h"},
+		{"the term a project names", "resume_within_custom.toml", "2h"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := loadFile(t, tc.file)
+			if err != nil {
+				t.Fatalf("Load(%s) returned an error: %v", tc.file, err)
+			}
+			if got := cfg.Executor.ResumeWithin; got != tc.want {
+				t.Errorf("executor.resume_within = %q, want %q", got, tc.want)
+			}
+			if DefaultResumeWithin != "24h" {
+				t.Errorf("the default crewflow puts in a file that says nothing = %q, want %q",
+					DefaultResumeWithin, "24h")
+			}
+		})
 	}
 }
 

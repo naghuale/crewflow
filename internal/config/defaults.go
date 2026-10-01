@@ -11,6 +11,7 @@ const (
 	defaultWorktreesRoot     = "~/.crewflow/worktrees/{repo}"
 	defaultExecutorTimeout   = "90m"
 	defaultStallAfter        = "10m"
+	defaultResumeWithin      = "24h"
 	defaultForgeKind         = "github"
 	defaultTrackerKind       = "forge"
 	defaultIdentityMode      = "owner"
@@ -37,6 +38,14 @@ const (
 // caller that builds the settings of a project by hand must land on the same
 // place as one that reads them from a file.
 const DefaultWorktreesRoot = defaultWorktreesRoot
+
+// DefaultResumeWithin is how long the point a run of a task stands at stays a point to
+// go on from when the file of the project does not say: a day, which is the length of a
+// working day of a person and the same length the queue of attention waits before it
+// escalates a task of its own (docs.DESIGN.md §6a, §7i). It is exported for the same
+// reason [DefaultWorktreesRoot] is: a caller that builds the settings by hand must land
+// on the same place as one that reads them from a file.
+const DefaultResumeWithin = defaultResumeWithin
 
 // applyDefaults fills in what the file does not say. A key written as false or as
 // 0 is a decision, not a missing key, so for those the file itself is asked
@@ -76,6 +85,13 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	// watching (docs/DESIGN.md §6, §7a).
 	if c.Executor.StallAfter == "" {
 		c.Executor.StallAfter = defaultStallAfter
+	}
+	// A point a run of a task stood at while it waited for a decision of a person is
+	// good for a day: a person comes back to it within a day, and a point of a week
+	// ago is a point about a machine and a task that are not the ones now
+	// (docs/DESIGN.md §7i).
+	if c.Executor.ResumeWithin == "" {
+		c.Executor.ResumeWithin = defaultResumeWithin
 	}
 	// A fallback executor that says nothing about the time limit or about standing
 	// still gets the ones of the executor it stands in for: both are the limits of the

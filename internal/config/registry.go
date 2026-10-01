@@ -182,6 +182,7 @@ var settings = []Setting{
 	{Key: "executor.model_flag", Status: Supported, Applies: "spec.ModelFlag"},
 	{Key: "executor.timeout", Status: Supported, Applies: "cfg.Executor.Timeout"},
 	{Key: "executor.stall_after", Status: Supported, Applies: "cfg.Executor.StallAfter"},
+	{Key: "executor.resume_within", Status: Supported, Applies: "cfg.Executor.ResumeWithin"},
 	{
 		Key: "executor.fallback", Status: Specified,
 		Unwritten: []Asked{{

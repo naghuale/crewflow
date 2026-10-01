@@ -135,11 +135,11 @@ step to go on from, the commit the branch stands at, the task as crewflow read i
 of the request (`HUMAN_AUTHORIZATION_REQUIRED`) with the channel, the resource and the action. You
 press "Always Allow", you run `crewflow task resume <N>`, and the run goes on in the same worktree
 and the same session; you do not repeat the run. The continuation refuses and names its reason if
-the head of the branch moved, if the task changed, if the checkpoint is older than a day, or if
-you refused the request — a refusal is not asked again, and then `crewflow task run <N>` is the
-way. Nothing polls: every attempt to read the key without the access opens a window of macOS of
-its own, so the key is read only when you name the command, and even a refusal of the checkpoint
-does not open a window.
+the head of the branch moved, if the task changed, if the checkpoint is older than the term of a
+point (`[executor] resume_within`, a day), or if you refused the request — a refusal is not asked
+again, and then `crewflow task run <N>` is the way. Nothing polls: every attempt to read the key
+without the access opens a window of macOS of its own, so the key is read only when you name the
+command, and even a refusal of the checkpoint does not open a window.
 
 ## Use
 
@@ -376,6 +376,7 @@ first:
 command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"]
 timeout = "90m"           # how long a run may take: a hang is an outcome, not a wait
 stall_after = "10m"       # how long it may be quiet before it is marked as standing (§7a)
+resume_within = "24h"     # how long the checkpoint of a run waiting for your decision is good (§7i)
 ```
 
 ## Whose name the executor works under

@@ -693,11 +693,14 @@ func projectOf(t *testing.T, worktrees, timeout string) config.Config {
 		// The worktrees of a project live under a root of their own, named after
 		// it, whatever the project wrote in it (docs/DESIGN.md §5).
 		Worktrees: config.Worktrees{Root: filepath.Join(worktrees, "{repo}")},
-		Executor: config.Executor{ExecutorSpec: config.ExecutorSpec{
-			Command:    []string{"opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"},
-			Timeout:    timeout,
-			StallAfter: "10m",
-		}},
+		Executor: config.Executor{
+			ExecutorSpec: config.ExecutorSpec{
+				Command:    []string{"opencode", "run", "--dir", "{worktree}", "--format", "json", "{prompt}"},
+				Timeout:    timeout,
+				StallAfter: "10m",
+			},
+			ResumeWithin: config.DefaultResumeWithin,
+		},
 		Tasks: config.Tasks{OwnerApproval: "risky"},
 	}
 }

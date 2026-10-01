@@ -136,6 +136,13 @@ type Orchestrator struct {
 // when it turns out to be unavailable (docs/DESIGN.md §7b).
 type Executor struct {
 	ExecutorSpec
+	// ResumeWithin is how long the point a run of the task stands at while it waits
+	// for a decision of a person stays a point to go on from with `crewflow task
+	// resume`, as a duration such as "24h". It is here and not in the spec of the
+	// agent because it is not a property of the agent: it is the term of the
+	// checkpoint of a run, whatever agent runs the next attempt, and a point older
+	// than this is refused rather than guessed at (docs/DESIGN.md §7i).
+	ResumeWithin string `toml:"resume_within"`
 	// Fallback lists the executors to try, in order, after the primary one.
 	Fallback []ExecutorSpec `toml:"fallback"`
 }

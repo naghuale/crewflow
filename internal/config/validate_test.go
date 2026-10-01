@@ -22,6 +22,8 @@ func TestLoadRejects(t *testing.T) {
 		{"executor_timeout_zero.toml", []string{"executor.timeout", "0s"}},
 		{"executor_stall_after_invalid.toml", []string{"executor.stall_after", "ten minutes"}},
 		{"executor_stall_after_zero.toml", []string{"executor.stall_after", "0s"}},
+		{"executor_resume_within_invalid.toml", []string{"executor.resume_within", "a couple of days"}},
+		{"executor_resume_within_zero.toml", []string{"executor.resume_within", "0s", "must be positive"}},
 		{"ci_timeout_invalid.toml", []string{"ci.timeout", "30"}},
 		{"gate_name_empty.toml", []string{"gates[0].name"}},
 		{"gate_name_duplicate.toml", []string{"gates[1].name", "test"}},
@@ -87,7 +89,7 @@ func TestLoadRejects(t *testing.T) {
 func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
 		"example.toml", "minimal.toml", "identity_bot.toml", "orchestrator_separate.toml",
-		"attention_thresholds.toml",
+		"attention_thresholds.toml", "resume_within_custom.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

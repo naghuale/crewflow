@@ -24,21 +24,22 @@ import (
 // the reason of a run is what a person reads (docs/DESIGN.md §7i).
 const stepReadKey = "read-executor-key"
 
-// CheckpointValid is how long the point a run of a task stands at stays a point to go on
-// from: a day, which is the length of a working day of a person and the same length the
-// attention queue waits before it escalates a task of its own (§6a).
+// resumeWithin is how long the point of the task stays a point to go on from, as the
+// file of the project says it: `[executor] resume_within`, and
+// [config.DefaultResumeWithin] — a day — when the project says nothing.
 //
 // A point older than this is refused rather than guessed at: the machine may have been
 // rebuilt, the App of the host may have been given a new key, and a week of silence is a
 // new situation whatever the state file says about the old one. A person who wants the
 // task done runs it again, which is a decision of the owner and not a continuation
 // (docs/DESIGN.md §7i).
-//
-// The term is a constant of the code and not a key of `crewflow.toml`: a project that
-// wants another term names it in a setting of its own in the task that gives settings of
-// the resume to every project, and nothing of the continuation depends on this number
-// being configurable today.
-const CheckpointValid = 24 * time.Hour
+func (r *runner) resumeWithin() (time.Duration, error) {
+	within, err := time.ParseDuration(r.cfg.Executor.ResumeWithin)
+	if err != nil {
+		return 0, fmt.Errorf("executor.resume_within: %w", err)
+	}
+	return within, nil
+}
 
 // Checkpoint is where a run of a task stands when it needs a decision of a person, and
 // everything crewflow has to know to go on from there once that decision is made: the step
@@ -159,7 +160,7 @@ const (
 	RefusedAnswered = "authorization-answered"
 	// RefusedDenied is a point whose request the person refused.
 	RefusedDenied = "authorization-denied"
-	// RefusedStale is a point older than [CheckpointValid].
+	// RefusedStale is a point older than `[executor] resume_within`.
 	RefusedStale = "stale-checkpoint"
 	// RefusedTaskChanged is a point written for a task the tracker no longer holds as it
 	// was: the body of the task is what the run was given and what a continuation would
@@ -213,11 +214,15 @@ func (r *runner) checkpoint(ctx context.Context) error {
 				"or go on in the worktree by hand",
 			r.task.Number, saidAt(point.DecidedAt), r.task.Number)}
 	}
-	if r.env.Now().Sub(point.At) > CheckpointValid {
+	within, err := r.resumeWithin()
+	if err != nil {
+		return err
+	}
+	if r.env.Now().Sub(point.At) > within {
 		return Refused{Name: RefusedStale, Said: fmt.Sprintf(
 			"the point of task %d was written on %s and a point is good for %s: it is not what this "+
 				"machine and this task are now. Run the task anew with `crewflow task run %d`",
-			r.task.Number, saidAt(point.At), Idle(CheckpointValid), r.task.Number)}
+			r.task.Number, saidAt(point.At), Idle(within), r.task.Number)}
 	}
 	if fingerprint(r.task) != point.Assignment {
 		return Refused{Name: RefusedTaskChanged, Said: fmt.Sprintf(

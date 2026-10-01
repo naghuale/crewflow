@@ -1,0 +1,9 @@
+# executor.resume_within is not a duration: a point a run stands at cannot be good for
+# "a couple of days" without a unit, and a term nobody can wait out is not a term.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+resume_within = "a couple of days"

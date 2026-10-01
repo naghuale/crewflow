@@ -66,6 +66,13 @@ func (c Config) Validate() error {
 	if err := validateExecutor("executor", c.Executor.ExecutorSpec); err != nil {
 		return err
 	}
+	// The term of the checkpoint of a task is a length of time the project agreed on,
+	// in the way the time limit of a run and the silence after which it is marked
+	// standing are: a point with no term is a point that never goes stale, and a
+	// continuation a week later would be a guess about the work (docs/DESIGN.md §7i).
+	if err := validateDuration("executor.resume_within", c.Executor.ResumeWithin); err != nil {
+		return err
+	}
 	for i, fallback := range c.Executor.Fallback {
 		if err := validateExecutor(fmt.Sprintf("executor.fallback[%d]", i), fallback); err != nil {
 			return err

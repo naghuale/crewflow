@@ -1,0 +1,10 @@
+# The term of the checkpoint of a run that waits for a decision of a person: a project
+# that answers for its own runs names it here, and a day is what crewflow puts in the
+# file of a project that says nothing (§7i).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+resume_within = "2h"

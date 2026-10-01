@@ -1,0 +1,9 @@
+# executor.resume_within of no length: a point that never goes stale is a point a
+# continuation goes on from a week later, which is a guess about the work (§7i).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+resume_within = "0s"
