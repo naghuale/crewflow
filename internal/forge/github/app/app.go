@@ -10,6 +10,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -623,15 +624,19 @@ func (s *Source) DescribeOrchestrator(ctx context.Context) (forge.Identity, erro
 	if err != nil {
 		return forge.Identity{}, err
 	}
+	// The helper git takes the credentials of a push from is not a secret and is
+	// not a token: a merge pushes the approved commit through it, and a report of
+	// a machine that prints the mode of the orchestrator is expected to say how a
+	// push of it will be signed (§7h).
+	settings, err := s.gitConfig()
+	if err != nil {
+		return forge.Identity{}, err
+	}
 	return forge.Identity{
 		Mode:        ModeSeparate,
 		Account:     botLogin(app.Slug),
 		Description: fmt.Sprintf("separate — GitHub App %s (installation %d)", app.Slug, installation),
-		// The helper git takes the credentials of a push from is not a secret and is
-		// not a token: a merge pushes the approved commit through it, and a report of
-		// a machine that prints the mode of the orchestrator is expected to say how a
-		// push of it will be signed (§7h).
-		GitConfig: s.gitConfig(),
+		GitConfig:   settings,
 	}, nil
 }
 
@@ -665,10 +670,38 @@ func (s *Source) OrchestratorIdentity(ctx context.Context) (forge.Identity, erro
 // crewflow, and the helper is told which App to sign a token for: a project whose
 // executor and whose orchestrator have an App each has two of them, and a push of a
 // merge must be the one of the orchestrator (§7i).
-func (s *Source) gitConfig() map[string]string {
-	return map[string]string{
-		"credential.helper": "crewflow auth git-credential -as " + string(s.role()),
+func (s *Source) gitConfig() (map[string]string, error) {
+	helper, err := credentialHelper(s.role())
+	if err != nil {
+		return nil, err
 	}
+	return map[string]string{credentialHelperKey: helper}, nil
+}
+
+// credentialHelperKey is the setting of git that holds the helper of the credentials of
+// a push, as git names it.
+const credentialHelperKey = "credential.helper"
+
+// credentialHelper is the helper git is given for the credentials of a push: this very
+// program, told whose token it is to sign.
+//
+// Two words of it are the whole of what it took to lose a merge (F-082, 01.10.2026). The
+// `!` is what tells git that the rest is a command and not a name: without it git looks
+// for `git-credential-crewflow`, finds nothing, and refuses the push — and the gate has
+// already said yes by then. The program is named by the path it has on this machine and
+// not by its name in PATH: the push has to be signed by the build that judged the gate,
+// whichever PATH of whoever runs it, and the recovery path of §7a signs through the same
+// setting. The path is quoted because git runs the line through a shell and a folder may
+// hold a space.
+//
+// Both subjects of a project get this line and their own role in it: a run pushes as its
+// executor and a merge pushes as its orchestrator (docs/DESIGN.md §7h, §7i).
+func credentialHelper(role Role) (string, error) {
+	program, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("the program of this build, which signs the credentials of a push: %w", err)
+	}
+	return fmt.Sprintf("!'%s' auth git-credential -as %s", program, role), nil
 }
 
 // role is whose work this App works as, and the executor where the App is not told: an
@@ -698,6 +731,13 @@ func (s *Source) Identity(ctx context.Context) (forge.Identity, error) {
 	if err != nil {
 		return forge.Identity{}, err
 	}
+	// A run of an agent is longer than the life of a token, and git asks for a
+	// password every time it pushes. The helper signs a new token for the push, so
+	// that the executor never has to be handed a token twice (docs/DESIGN.md §7i).
+	settings, err := s.gitConfig()
+	if err != nil {
+		return forge.Identity{}, err
+	}
 	return forge.Identity{
 		Mode:        ModeBot,
 		Account:     bot.Login,
@@ -715,14 +755,8 @@ func (s *Source) Identity(ctx context.Context) (forge.Identity, error) {
 			"GIT_COMMITTER_NAME=" + bot.Login,
 			"GIT_COMMITTER_EMAIL=" + bot.Email,
 		},
-		GitConfig: map[string]string{
-			// A run of an agent is longer than the life of a token, and git asks for
-			// a password every time it pushes. The helper signs a new token for the
-			// push, so that the executor never has to be handed a token twice
-			// (docs/DESIGN.md §7i).
-			"credential.helper": "crewflow auth git-credential",
-		},
-		Secrets: []string{token.Value},
+		GitConfig: settings,
+		Secrets:   []string{token.Value},
 	}, nil
 }
 

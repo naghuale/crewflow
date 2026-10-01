@@ -668,6 +668,29 @@ func fixture(t *testing.T, name string) string {
 	return string(data)
 }
 
+// assertHelperOfThisBuild is what the settings of git of a worktree have to hold: the
+// helper is the crewflow of this very build, named by its path, and it is told whose token
+// it signs. The two words are F-082 (01.10.2026), and every subject of a project that
+// pushes goes through a line like this one (docs/DESIGN.md §7h, §7i).
+func assertHelperOfThisBuild(t *testing.T, settings map[string]string, role string) {
+	t.Helper()
+	program, err := os.Executable()
+	if err != nil {
+		t.Fatalf("the program of this build: %v", err)
+	}
+	helper := settings["credential.helper"]
+	if !strings.HasPrefix(helper, "!") {
+		t.Errorf("credential.helper = %q, want it to begin with %q: without it git looks for a program named after it",
+			helper, "!")
+	}
+	if !strings.Contains(helper, program) {
+		t.Errorf("credential.helper = %q, want it to name the program of this build %q", helper, program)
+	}
+	if want := "auth git-credential -as " + role; !strings.Contains(helper, want) {
+		t.Errorf("credential.helper = %q, want it to say %q", helper, want)
+	}
+}
+
 // checkNamed returns the line of the report with the name, so that a test may
 // look at one line without depending on the position of the others.
 func checkNamed(t *testing.T, checks []forge.Check, name string) forge.Check {

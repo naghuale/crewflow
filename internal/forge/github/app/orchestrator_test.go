@@ -236,9 +236,7 @@ func TestTheOrchestratorIsGivenItsTokenAndTheHelperOfGit(t *testing.T) {
 	if want := "GH_TOKEN=" + theTokenOfTheExample(t); !contains(identity.Env, want) {
 		t.Errorf("the environment of the orchestrator is %v, want %q in it", identity.Env, want)
 	}
-	if want := "crewflow auth git-credential -as orchestrator"; identity.GitConfig["credential.helper"] != want {
-		t.Errorf("the settings of git are %v, want credential.helper = %q", identity.GitConfig, want)
-	}
+	assertHelperOfThisBuild(t, identity.GitConfig, "orchestrator")
 	// The name and the address of the account are not here: nobody commits as the
 	// orchestrator, and a commit of the merge is the one the gate approved (§7h).
 	for _, unwanted := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME", "GIT_AUTHOR_EMAIL"} {

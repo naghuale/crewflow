@@ -117,9 +117,7 @@ func TestTheOrchestratorApartFromTheOwnerIsTheSecondApp(t *testing.T) {
 	if !slices.Contains(identity.Env, "GH_TOKEN=ghs_token_of_the_orchestrator") {
 		t.Errorf("the environment of the orchestrator is %v, want the token of its app in it", identity.Env)
 	}
-	if want := "crewflow auth git-credential -as orchestrator"; identity.GitConfig["credential.helper"] != want {
-		t.Errorf("the settings of git are %v, want credential.helper = %q", identity.GitConfig, want)
-	}
+	assertHelperOfThisBuild(t, identity.GitConfig, "orchestrator")
 	if !slices.Contains(identity.Secrets, "ghs_token_of_the_orchestrator") {
 		t.Errorf("the secrets of the orchestrator are %v, want the token of its app in them", identity.Secrets)
 	}

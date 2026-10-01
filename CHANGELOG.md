@@ -168,6 +168,11 @@
   знает, ворота не читают как «человека»: такая запись отказывается, а не достаётся тому, кто
   носит то же имя.
   ([#107](https://github.com/naghuale/crewflow/pull/107), задача [#102](https://github.com/naghuale/crewflow/issues/102))
+- Ворота сказали «можно сливать», а пуш был отказан: git читал `credential.helper = crewflow auth
+  git-credential` как имя программы и искал `git-credential-crewflow`. Теперь помощник — это `!`
+  и абсолютный путь той сборки, которая выполняется: пуш подписывает ровно та сборка, которая
+  судила, и не зависит от `PATH`. Роль в строке своя у прогона и у слияния.
+  ([#107](https://github.com/naghuale/crewflow/pull/107), задача [#102](https://github.com/naghuale/crewflow/issues/102))
 
 ### Безопасность
 
