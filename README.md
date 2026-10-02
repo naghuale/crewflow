@@ -254,15 +254,16 @@ ATTENTION REQUIRED
 the host of the project in it — a reviewed change is not in it at all. The two are asked the same
 way and answer about the same tasks: `task list` asks the host about the tasks whose work may be
 over and nothing else, so a table and a queue cannot call one and the same task different things.
-Both count records by the numbers the host publishes — `performed_via_github_app.id` for an App
-and `user.id` for a person — and both ask the host as the login you run crewflow as. **Neither
-reads a key of an App**: a queue that only shows the state has no reason to ask the keychain of
-macOS anything, and on a build nobody has trusted yet that question opens a window of the system
-and stands in front of it for two minutes. On 2026-10-02 that is exactly what happened to the
-queue of #37, live: every task came out as `read-failed` and the run took 120 seconds
-(`merge.reviewers[0]: … the private key of the app 5140522 … nobody answered in 2m0s`, #130).
-A record *left under a task* is a different matter: that is a write in the name of the App of
-the orchestrator, and it is made with the roles of a review.
+Both count records by numbers — `performed_via_github_app.id` for an App, `user.id` for a
+person, and the number of each App of the project is in `crewflow.toml` itself — and both ask
+the host as the login you run crewflow as. **Neither reads a key of an App**: a queue that only
+shows the state has no reason to ask the keychain of macOS anything, and on a build nobody has
+trusted yet that question opens a window of the system and stands in front of it for two
+minutes. On 2026-10-02 that is exactly what happened to the queue of #37, live: every task came
+out as `read-failed` and the run took 120 seconds (`merge.reviewers[0]: … the private key of the
+app 5140522 … nobody answered in 2m0s`, #130). A record *left under a task* is a different
+matter: that is a write in the name of the App of the orchestrator, and it is made with the
+roles of a review.
 A run whose change is merged or closed, or whose task the host has closed, is remembered as settled
 and is not asked about again for a day, so a machine that ran a hundred tasks reads a few.
 `crewflow task attention` is made for a schedule: it exits non-zero while anything in the queue

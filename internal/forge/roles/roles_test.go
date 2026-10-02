@@ -434,13 +434,15 @@ func TestTheRolesThatShowTheStateCountTheAccountsByTheirNumbers(t *testing.T) {
 	if want := (forge.Subject{Kind: forge.KindApp, ID: 5107052}); !ExecutorOf(cfg).Same(want) {
 		t.Errorf("the executor is %+v, want the app of the file %+v", ExecutorOf(cfg), want)
 	}
-	// The number of the App of the orchestrator is asked of the host and not read out of
-	// the keychain: a name in the file of a project is turned into a number by the one
-	// question every host answers about its own apps.
+	// The number of the App of the orchestrator is not asked of the host at all: it is in
+	// the settings of the project, and the host publishes no number of an App against the
+	// name of its account — `GET /apps/<slug>` answers only for the public apps, and the App
+	// of a project on its own is not one. The machine of the test refuses that question the
+	// way the host refused it in the live run of #130, and the queue does not notice (F-109).
 	if asked := slices.ContainsFunc(m.ran, func(line string) bool {
-		return strings.HasPrefix(line, "api apps/crewflow-orchestrator")
-	}); !asked {
-		t.Errorf("gh was asked %v, want the number of the app the login of the file names", m.ran)
+		return strings.HasPrefix(line, "api apps/")
+	}); asked {
+		t.Errorf("gh was asked %v, want no question about the app behind a login", m.ran)
 	}
 	// The host is asked as the person: a token of an App is minted to act in its name, and
 	// a queue is not an act (docs/DESIGN.md §7e, §7i).
@@ -486,14 +488,14 @@ func TestTheRolesThatShowTheStateHoldNoStoreAtAll(t *testing.T) {
 }
 
 // machineOfTheNumbers is the machine of a project in the mode of a second App: what gh
-// answers about the two accounts the lists of the file name, and the number it publishes for
-// the name of the App of the orchestrator (docs/DESIGN.md §7h, §7i).
+// answers about the two accounts the lists of the file name, and a refusal of the question
+// about the App behind a login, the way the host of a private App refuses it (F-109).
 func machineOfTheNumbers() *machine {
 	return newMachine().
 		prints("api users/crewflow-orchestrator%5Bbot%5D",
 			`{"id": 336252606, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`).
 		prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`).
-		prints("api apps/crewflow-orchestrator", `{"id": 5107053, "slug": "crewflow-orchestrator"}`)
+		fails("api apps/crewflow-orchestrator", "gh: Not Found (HTTP 404)")
 }
 
 // load reads a crewflow.toml of the test into the settings, and it writes the

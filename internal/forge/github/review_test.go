@@ -221,7 +221,6 @@ func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
 	}
 	m.prints("api users/crewflow-orchestrator%5Bbot%5D",
 		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
-	m.prints("api apps/crewflow-orchestrator", `{"id": 5107053, "slug": "crewflow-orchestrator"}`)
 	m.prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
 	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
 
@@ -258,25 +257,24 @@ func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
 	}
 }
 
-// TestAnAccountOfAnAppOfAnotherProjectIsARefusal: the host answers `/users/<slug>[bot]`
-// with the account of an App and with nothing about that App, so crewflow asks the host which
-// App the name belongs to — and a login of an App that is neither the one of executor nor the
-// one of the orchestrator is an account no record of which could ever be counted. It is a
-// refusal and not an account of no number: a person who wrote it into `[merge] reviewers` has
-// to be told, because the gate would count nothing and say that nobody had approved anything
-// (docs.DESIGN.md §7h, §7i).
-func TestAnAccountOfAnAppOfAnotherProjectIsARefusal(t *testing.T) {
-	m, api := machineWithTwoApps(t)
-	m.prints("api users/somebody-else%5Bbot%5D",
+// TestAnAccountOfAnAppThisProjectNamesNoNumberForIsARefusal: the host answers
+// `/users/<slug>[bot]` with the account of an App and with nothing about the App itself, and
+// there is no place to ask: `GET /apps/<slug>` answers only for the public apps, so the number
+// of an App is in the file of the project and nowhere else. A project of the shared login names
+// no App at all, so a login of an App in `[merge] reviewers` is an account no record of which
+// could ever be counted. It is a refusal and not an account of no number: a person who wrote it
+// into the file is to be told, because the gate would count nothing and say that nobody had
+// approved anything (docs.DESIGN.md §7h, §7i).
+func TestAnAccountOfAnAppThisProjectNamesNoNumberForIsARefusal(t *testing.T) {
+	m := newMachine().prints("api users/somebody-else%5Bbot%5D",
 		`{"id": 4242, "login": "somebody-else[bot]", "type": "Bot"}`)
-	m.prints("api apps/somebody-else", `{"id": 777, "slug": "somebody-else"}`)
-	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
+	a := New(repo, "", m.env(t)).ToLook()
 
 	_, err := a.Subject(t.Context(), "somebody-else[bot]")
 	if err == nil {
-		t.Fatal("Subject read an account of an app whose number it cannot learn")
+		t.Fatal("Subject read the account of an app whose number the file of the project names nowhere")
 	}
-	for _, want := range []string{"somebody-else[bot]", "executor", "orchestrator"} {
+	for _, want := range []string{"somebody-else[bot]", "app_id", "orchestrator"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not mention %q: a person has to know what to change", err, want)
 		}
@@ -299,20 +297,22 @@ func (storeNobodyMayRead) Set(string, string, []byte) error { return nil }
 func (storeNobodyMayRead) Has(string, string) (bool, error) { return false, nil }
 
 // TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp: the rules of the
-// model of rights of §7h, in the way a command that only shows the state of a project counts
-// them. The numbers are in the file of the project and in the answers of the host, so the way
-// needs no key of any App and the store of the machine is one that falls over on the read:
-// the accounts of `[merge] owners` and `[merge] reviewers` come out of it exactly as they
-// come out of the roles that hold the keys (F-109, docs/DESIGN.md §7h, §7i).
+// model of rights, in the way a command that only shows the state of a project counts them.
+// The number of an App is in the file of the project, and the number of a person is one
+// question `users/<login>` answers, so the way needs no key of any App and the store of the
+// machine is one that falls over on the read: the accounts of `[merge] owners` and
+// `[merge] reviewers` come out of it exactly as they come out of the roles that hold the keys.
+//
+// The machine of the test answers nothing about the App behind a login on purpose: the number
+// is taken from the settings, so even an answer of the host — a `404` of a private App among
+// them — changes nothing here (F-109).
 func TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp(t *testing.T) {
 	cases := []struct {
 		name string
-		// login is what the file of a project writes, answer what the host says about
-		// that account, and app the number the host publishes for the name of the App the
-		// account belongs to: the whole of what the host knows and the file does not.
+		// login is what the file of a project writes and answer what the host says about
+		// that account: the whole of what the host knows and the file does not.
 		login  string
 		answer string
-		app    int64
 		want   forge.Subject
 		// refused are the words a refusal has to hold: a person who reads it is to know
 		// which list of the file to change.
@@ -325,25 +325,16 @@ func TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp(t *tes
 			want:   forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"},
 		},
 		{
-			name:   "ID-002 the app of the orchestrator is the number of that app",
+			name:   "ID-002 the app of the orchestrator is the number the settings name",
 			login:  "crewflow-orchestrator[bot]",
 			answer: `{"id": 336252606, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`,
-			app:    5107053,
 			want:   forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]"},
 		},
 		{
-			name:   "the app of the executor is told apart by its own number",
+			name:   "a login of any app of the project counts as the app the orchestrator works as",
 			login:  "crewflow-executor[bot]",
 			answer: `{"id": 1988, "login": "crewflow-executor[bot]", "type": "Bot"}`,
-			app:    5107052,
-			want:   forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: "crewflow-executor[bot]"},
-		},
-		{
-			name:    "ID-006 the right login of an app of another project is not our app",
-			login:   "somebody-else[bot]",
-			answer:  `{"id": 4242, "login": "somebody-else[bot]", "type": "Bot"}`,
-			app:     777,
-			refused: []string{"somebody-else[bot]", "executor", "orchestrator"},
+			want:   forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-executor[bot]"},
 		},
 		{
 			name:    "ID-004 an account of a kind crewflow does not read is a refusal",
@@ -360,10 +351,7 @@ func TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp(t *tes
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			slug := strings.TrimSuffix(tc.login, botSuffix)
-			m := newMachine().
-				prints("api users/"+url.PathEscape(tc.login), tc.answer).
-				prints("api apps/"+url.PathEscape(slug), fmt.Sprintf(`{"id": %d, "slug": %q}`, tc.app, slug))
+			m := newMachine().prints("api users/"+url.PathEscape(tc.login), tc.answer)
 			m.secrets = storeNobodyMayRead{}
 			a := New(repo, "", m.env(t)).
 				WithBot(Bot{AppID: 5107052}).
@@ -392,6 +380,14 @@ func TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp(t *tes
 			if got.Login != tc.want.Login {
 				t.Errorf("Subject(%q) is written %q, want %q: a report names the account the file names",
 					tc.login, got.Login, tc.want.Login)
+			}
+			// Nothing was asked of the host about the App behind the login: its number is in
+			// the file of the project, and a question that answers it wrongly for a private
+			// app is a question crewflow does not make (F-109).
+			for _, asked := range m.ran {
+				if line := strings.Join(asked.args, " "); strings.HasPrefix(line, "api apps/") {
+					t.Errorf("gh was asked for %q, want no question about the app behind a login", line)
+				}
 			}
 		})
 	}

@@ -411,65 +411,41 @@ func (a *Adapter) Subject(ctx context.Context, login string) (forge.Subject, err
 		return forge.Subject{}, fmt.Errorf("the account %q: %w", login, err)
 	}
 	if subject.Kind == forge.KindApp {
-		return a.subjectOfOurApp(ctx, subject)
+		return a.subjectOfOurApp(subject)
 	}
 	return subject, nil
 }
 
-// subjectOfOurApp is the subject of the account of the App of this project it belongs to,
-// with the number of that App, and an error where it belongs to none. The host answers
-// `/users/<slug>[bot]` with the account of an App and with nothing about the App itself,
-// so which App it is crewflow asks the host about by the name it wrote the account under —
-// and the answer is a number, which is the whole of what a gate compares. The numbers it is
-// compared with are the two the file of the project names: the App of the executor and the
-// App of the orchestrator. A login of a third App is a number of neither of them, and no
-// record of it could ever be counted (docs/DESIGN.md §7h).
+// subjectOfOurApp is the subject of the account of an App this project works as, and an
+// error where the settings of the project name no App at all.
 //
-// The number is asked of the login of the person, with nothing of the identity of an App
-// in it: a subject has to be the same subject whether a review of a change or a queue of
-// attention counts it, and an answer of the App about itself and an answer of the person
-// about it are two answers to one question (§7i).
-func (a *Adapter) subjectOfOurApp(ctx context.Context, subject forge.Subject) (forge.Subject, error) {
-	number, err := a.numberOfAnApp(ctx, strings.TrimSuffix(subject.Login, botSuffix))
-	if err != nil {
-		return forge.Subject{}, fmt.Errorf("the account %q: %w", subject.Login, err)
-	}
+// The number of an App is in the file of the project — `[identity] github_app app_id` and
+// `[orchestrator] github_app app_id` — and nowhere else: the host publishes no number of an
+// App against the name of its account, and `GET /apps/<slug>` answers only for the public ones,
+// so a login of an App is read as «the App of this project» and its number is taken from the
+// settings rather than asked of anybody (F-109, docs/DESIGN.md §7h, §7i).
+//
+// The App of the orchestrator is the one that comes first, because in the mode of a separate
+// login the record of a review is written by it and every record it writes is counted by the
+// number that stands in `[orchestrator] github_app app_id`. A login of the App of the executor
+// in a list of the file resolves to the same account, and it buys nothing by that: a record of
+// the executor is not an approval and not a decision of the owner whatever any list names, and
+// `ExecutorOf` takes it away from the gate on its own number (§7h, §7i).
+//
+// An App the file of a project does not name at all is an account with no number under it: no
+// record of it could be counted by anyone, and a list holding such a login is a mistake in the
+// file that the person who wrote it is to hear about (§7h).
+func (a *Adapter) subjectOfOurApp(subject forge.Subject) (forge.Subject, error) {
 	for _, source := range []*app.Source{a.orchestrator, a.app} {
-		if source != nil && source.AppID == number {
-			return forge.Subject{Kind: forge.KindApp, ID: number, Login: subject.Login}, nil
+		if source != nil && source.AppID > 0 {
+			return forge.Subject{Kind: forge.KindApp, ID: source.AppID, Login: subject.Login}, nil
 		}
 	}
-	return forge.Subject{}, fmt.Errorf("the account %q is the account of an app that is neither the app of the "+
-		"executor nor the app of the orchestrator of this project: crewflow cannot tell which app it is, so no "+
-		"record of it could be counted — name the app of the orchestrator by its number", subject.Login)
+	return forge.Subject{}, fmt.Errorf("the account %q is the account of an app, and the file of this project names "+
+		"neither the app of the executor nor the app of the orchestrator: the number such an account is counted by "+
+		"is in [identity] github_app app_id and in [orchestrator] github_app app_id, and without one of them no "+
+		"record of it could be counted", subject.Login)
 }
-
-// numberOfAnApp is the number the host keeps the App of the name under. The endpoint is
-// what a host publishes about an App of it, and the account of an App is written under the
-// name of that App with the suffix the host puts behind every account of that kind, so the
-// login the file of a project holds is the whole of the question (docs/DESIGN.md §7i).
-func (a *Adapter) numberOfAnApp(ctx context.Context, slug string) (int64, error) {
-	out, err := a.jsonOfTheHost(ctx, "api", "apps/"+url.PathEscape(slug))
-	if err != nil {
-		return 0, err
-	}
-	var answer struct {
-		ID int64 `json:"id"`
-	}
-	if err := decode(out, &answer); err != nil {
-		return 0, err
-	}
-	if answer.ID <= 0 {
-		return 0, fmt.Errorf("the app %q: the answer of the host holds no number", slug)
-	}
-	return answer.ID, nil
-}
-
-// botSuffix is what the host appends to the login of every account that is an App of it.
-// It is never read out of a login to decide anything: what kind of account the host holds
-// a login as is in the answer of the host already, and a person may have a login that ends
-// in it (docs.DESIGN.md §7h, §7i).
-const botSuffix = "[bot]"
 
 // Status returns how the check runs of the commit stand. A commit with a check
 // that has not finished is a commit crewflow waits for, whatever the others say;
@@ -709,23 +685,8 @@ func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([
 	if err != nil {
 		return nil, err
 	}
-	return a.jsonWith(ctx, append(environment, extra...), args...)
-}
-
-// jsonOfTheHost is gh in the environment of the project and with nothing of the identity
-// of an App in it: the questions whose answers have to be the same whoever asks them are
-// asked of the login of the person, and the number of an App is one of them — a subject of
-// §7h has to be one subject, whether a review of a change or a queue of attention counts
-// it, and a question of the App about itself and a question of the person about it would
-// be two questions with two answers (docs.DESIGN.md §7i).
-func (a *Adapter) jsonOfTheHost(ctx context.Context, args ...string) ([]byte, error) {
-	return a.jsonWith(ctx, a.environment(), args...)
-}
-
-// jsonWith is gh in an environment and what it wrote.
-func (a *Adapter) jsonWith(ctx context.Context, environment []string, args ...string) ([]byte, error) {
 	command := append([]string{}, args...)
-	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", environment)
+	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(environment, extra...))
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %w", strings.Join(command, " "), err)
 	}

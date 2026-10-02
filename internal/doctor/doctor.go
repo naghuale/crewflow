@@ -604,8 +604,14 @@ func (c *checker) executorIdentity(ctx context.Context, set forge.Set) {
 // project do not give (DR-002, DR-003), a failure where an account of the file is one
 // crewflow cannot number, and nothing to say where the three subjects are three
 // accounts.
+//
+// The roles it is worked out with are the ones that show the state of the project: what
+// the section compares is subjects, and a subject is a number the host keeps the account
+// under and a number the file of the project names, so nothing in it has to read a key of an
+// App. The line of the mode of the orchestrator above is the check of that key, and it asks
+// for it on purpose (docs.DESIGN.md §7i, §7k).
 func (c *checker) separation(ctx context.Context, cfg config.Config) {
-	set, err := roles.AsOrchestrator(cfg, c.rolesEnv())
+	set, err := roles.ToShow(cfg, c.rolesEnv())
 	if err != nil || set.Forge == nil {
 		// Nothing to compare: the check of the mode has already said what is wrong, and a
 		// section that guessed would put an account into a report that nobody checked.
@@ -637,7 +643,7 @@ func (c *checker) separation(ctx context.Context, cfg config.Config) {
 	authority.OwnerIsOrchestrator = sharedMode(cfg) || isAmongAny(owners, signingAsOf(ctx, set))
 	c.authority = authority
 	c.trustDebt = debtsOf(cfg, authority)
-	if refused := config.Separation(cfg.Orchestrator.Mode, loginsOf(owners), loginsOf(reviewers), cfg.Project.Repo); refused != nil {
+	if refused := separationRefusal(cfg, owners, reviewers); refused != nil {
 		c.add(Check{
 			Name:   separationCheck,
 			Status: Fail,
@@ -661,6 +667,36 @@ func (c *checker) separation(ctx context.Context, cfg config.Config) {
 		return
 	}
 	c.add(Check{Name: separationCheck, Status: OK, Detail: "the owner, the orchestrator and the executor are three accounts"})
+}
+
+// separationRefusal is the rule of §7i asked twice, of two answers of the host.
+//
+// The first is the rule as [config.Separation] writes it, against the names the file of the
+// project holds: a file that puts one login in both lists is a mistake in the file, and the
+// load of it refuses it already. The second is the same rule against the accounts themselves,
+// and it is here because the account of an App of the orchestrator is in no file and the roles
+// this section is worked out with hold no key to be asked about it: the mode promises a
+// separation, the App of the orchestrator is named among the owners, and the gate would count
+// its record of a review as a decision of the owner (docs.DESIGN.md §7i, §7k).
+//
+// The overlap of the two lists is a debt of trust in the mode of a shared login and a refusal
+// in the mode of a separate one — and the mode of a shared login has no second App to divide
+// the subjects with, so the refusal is asked about where the mode promises (§7i).
+func separationRefusal(cfg config.Config, owners, reviewers []forge.Subject) error {
+	if refused := config.Separation(cfg.Orchestrator.Mode, loginsOf(owners), loginsOf(reviewers), cfg.Project.Repo); refused != nil {
+		return refused
+	}
+	if sharedMode(cfg) {
+		return nil
+	}
+	for _, owner := range owners {
+		if isAmongAny(reviewers, owner) {
+			return fmt.Errorf("separate mode requires role separation: %s is among the accounts of the reviewers "+
+				"and among the accounts of the owners, and the gate would count the record of the orchestrator as a "+
+				"decision of the owner; fix: remove overlapping identities or switch to shared mode", owner.Named())
+		}
+	}
+	return nil
 }
 
 // correspondenceCheck is the refusal of an account the file of the project names and the

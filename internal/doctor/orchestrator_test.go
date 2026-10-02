@@ -243,13 +243,11 @@ func machineWithTheOrchestrator(t *testing.T) *machine {
 		"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot",
 	}
 	// The account of the App of the orchestrator is what the lists of the gate may name,
-	// and a name in them is asked of the host for the number under it (§7h, §7i). The number
-	// is what the host publishes for the name of that App: crewflow asks every host which
-	// App a name belongs to, so that the account behind a login of the file is one subject
-	// whoever asked about it (#130).
+	// and the host is asked only what kind of account that login is: the number of the App
+	// is in the file of the project, so the machine answers no question about which App a
+	// name belongs to (§7h, §7i, #130).
 	m.prints("gh api users/crewflow-orchestrator%5Bbot%5D",
 		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
-	m.prints("gh api apps/crewflow-orchestrator", `{"id": 5107053, "slug": "crewflow-orchestrator"}`)
 	m.api.installationOfTheOrchestrator(rightsOfTheOrchestrator())
 	return m
 }
