@@ -1149,16 +1149,25 @@ func TestHabitOf(t *testing.T) {
 // shape and not about one path of one machine: a worktree that is really there with a
 // file of the project in it, the service of a project, and a command of a shell that
 // went looking at a folder (docs/DESIGN.md §7a.1).
+//
+// The home of the person is **written down and not made**, and so is every worktree of the
+// project but the one of the task: a layout under the temporary folder of the machine makes
+// the class of a refusal depend on the machine — every machine of Linux keeps `t.TempDir()`
+// under `/tmp`, and there a path of `~/.crewflow/…` is a path of `/tmp` as well — and a test
+// of the classes of §7a.1 has to say the same thing on every machine (CI Linux, #121). The
+// worktree of the task is real where the habit of a path is at stake: that habit is a habit
+// only where the file the run was after is really there.
 func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 	// The home of the person is where crewflow keeps its own, and the worktrees of a
 	// project are made in it: the state of the runs, the journals, the hooks of the push
 	// — the path of F-093 as the run wrote it — and beside them every copy of the
 	// project, one of which is the worktree of the task.
-	home := t.TempDir()
+	home := "/home/andrey"
 	root := filepath.Join(home, ".crewflow", "worktrees")
-	worktree := filepath.Join(root, "owner-repo", "43")
-	// A file of the project really there: a path written out by hand is a habit of a run
-	// only where the file it was after is.
+	written := filepath.Join(root, "owner-repo", "43")
+	// The worktree of the task, for the cases where the habit of a path is at stake and
+	// the file the run was after has to be really there.
+	worktree := filepath.Join(t.TempDir(), "owner-repo", "43")
 	write(t, filepath.Join(worktree, "internal", "run", "resume.go"), "package run\n")
 	// One worktree of another task of the project, the same project spelled with a
 	// letter out of place, and the folder git keeps its own files in: F-095 as the run
@@ -1170,10 +1179,16 @@ func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 	// a path of it is a path of the machine and nothing of the service of the tool.
 	elsewhere := filepath.Join(home, "src", "owner-repz", "2")
 	cases := []struct {
-		name    string
-		refusal string
-		calls   []profile.Call
-		want    reason
+		name string
+		// worktree is the worktree of the task of the case. A case that is about a
+		// neighbour, or about a path of the service of the project, is about what the
+		// classifier reads in the words of the refusal and takes the worktree that is
+		// beside it; a case that is about a path written out by hand is about a file that
+		// is really there, and takes the worktree that is really there.
+		worktree string
+		refusal  string
+		calls    []profile.Call
+		want     reason
 		// place is the path of the worktree the text of the habit has to name: the
 		// file a path written out by hand was after, and nothing for every other habit.
 		place string
@@ -1185,9 +1200,10 @@ func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 			place:   "internal/run/resume.go",
 		},
 		{
-			name:    "the worktree of another task of the same project",
-			refusal: "external_directory " + besideWorktree,
-			want:    reasonOutside,
+			name:     "the worktree of another task of the same project",
+			worktree: written,
+			refusal:  "external_directory " + besideWorktree,
+			want:     reasonOutside,
 		},
 		{
 			// A file of the project under the worktree of another task is not the wrong
@@ -1202,17 +1218,19 @@ func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 			// A copy of the project is not the service of the tool, and a file of a
 			// worktree of another task that is nowhere in this one is not a habit: the
 			// run is refused it and stops, as it stopped before the catalog of §7a.1 grew.
-			name:    "a file of another worktree of the project that is nowhere in this one",
-			refusal: "external_directory " + filepath.Join(besideWorktree, "docs", "notes.md"),
-			want:    reasonOther,
+			name:     "a file of another worktree of the project that is nowhere in this one",
+			worktree: written,
+			refusal:  "external_directory " + filepath.Join(besideWorktree, "docs", "notes.md"),
+			want:     reasonOther,
 		},
 		{
 			// A folder of the worktree of the task is not a service path either, and a
 			// run that is refused one of them is not told that the work of the task is
 			// outside the map of the access of the run.
-			name:    "a folder of the worktree of the task, as the run wrote it",
-			refusal: "external_directory .scratch/tmp/probe",
-			want:    reasonOther,
+			name:     "a folder of the worktree of the task, as the run wrote it",
+			worktree: written,
+			refusal:  "external_directory .scratch/tmp/probe",
+			want:     reasonOther,
 		},
 		{
 			// The file at the end of the path is not in the worktree, so the run did not
@@ -1236,19 +1254,22 @@ func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 			// worktree is what the habit of a path written out by hand is for: a run that
 			// reaches for a path of the tool is not one crewflow tells where its own files
 			// are.
-			name:    "a path of the folder of crewflow that leads to no file of the worktree",
-			refusal: "external_directory " + filepath.Join(typo, "internal", "run", "missing.go"),
-			want:    reasonService,
+			name:     "a path of the folder of crewflow that leads to no file of the worktree",
+			worktree: written,
+			refusal:  "external_directory " + filepath.Join(typo, "internal", "run", "missing.go"),
+			want:     reasonService,
 		},
 		{
-			name:    "a path of the service of the project, as the run wrote it",
-			refusal: "external_directory ~/.crewflow/hooks/owner-repo/pre-push",
-			want:    reasonService,
+			name:     "a path of the service of the project, as the run wrote it",
+			worktree: written,
+			refusal:  "external_directory ~/.crewflow/hooks/owner-repo/pre-push",
+			want:     reasonService,
 		},
 		{
-			name:    "the path git reports for the folder of its own files",
-			refusal: "external_directory " + filepath.Join(gitDir, "config"),
-			want:    reasonService,
+			name:     "the path git reports for the folder of its own files",
+			worktree: written,
+			refusal:  "external_directory " + filepath.Join(gitDir, "config"),
+			want:     reasonService,
 		},
 		{
 			name:    "a path of the worktree in a command that changed folder and asked git",
@@ -1293,7 +1314,11 @@ func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			r := &runner{worktree: worktree, env: Env{UserHome: home}}
+			root := tc.worktree
+			if root == "" {
+				root = worktree
+			}
+			r := &runner{worktree: root, env: Env{UserHome: home}}
 			got, place := r.habitOf(tc.refusal, tc.calls)
 			if got != tc.want {
 				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
@@ -1420,10 +1445,12 @@ func TestTheMostSpecificHabitOfARefusalWins(t *testing.T) {
 	write(t, filepath.Join(worktree, "internal", "run", "resume.go"), "package run\n")
 	cases := []struct {
 		name string
-		// worktree is the worktree of the task of the case, and only the cases that care
-		// where it stands name one: a path a case only writes down is not a folder, and
-		// the habit of a neighbour is told apart without asking the machine anything.
+		// worktree and home are the machine of the case, and only the cases that care
+		// where the worktree of the task stands name them: a path a case only writes down
+		// is not a folder, and the habit of a neighbour is told apart without asking the
+		// machine anything.
 		worktree string
+		home     string
 		refusal  string
 		want     reason
 		place    string
@@ -1466,14 +1493,34 @@ func TestTheMostSpecificHabitOfARefusalWins(t *testing.T) {
 			want:    reasonWorktree,
 			place:   "internal/run",
 		},
+		{
+			// A home of the person that stands in the temporary folder of the machine is a
+			// home in a container and in a test: the paths of the service of the project are
+			// paths of `/tmp` there as well, and the run that read one of them is told that
+			// the path is not what the task is about, not that it wrote to `/tmp`.
+			name:     "a service path of the project where the home of the person is in the temporary folder",
+			worktree: "/tmp/crewflow-habit/.crewflow/worktrees/owner-repo/43",
+			home:     "/tmp/crewflow-habit",
+			refusal:  "external_directory /tmp/crewflow-habit/.crewflow/hooks/owner-repo/pre-push",
+			want:     reasonService,
+		},
+		{
+			// The folder git keeps its own files in is a service path wherever it stands,
+			// temporary folder of the machine included.
+			name:     "the folder of the files of git in the temporary folder of the machine",
+			worktree: "/tmp/crewflow-habit/.crewflow/worktrees/owner-repo/43",
+			home:     "/tmp/crewflow-habit",
+			refusal:  "external_directory /tmp/crewflow-habit/owner-repo/.git/config",
+			want:     reasonService,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root := tc.worktree
+			root, at := tc.worktree, tc.home
 			if root == "" {
-				root = worktree
+				root, at = worktree, ""
 			}
-			r := &runner{worktree: root}
+			r := &runner{worktree: root, env: Env{UserHome: at}}
 			got, place := r.habitOf(tc.refusal, nil)
 			if got != tc.want {
 				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)

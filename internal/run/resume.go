@@ -324,15 +324,14 @@ func (r *runner) before(state State) (Attempt, bool) {
 // A folder beside the worktree of the task is the wrong `cd` of a run wherever the worktrees
 // of a project live, a path named only in the text of a command is a refusal of a command and
 // not of a file, and a probe of a copy in a shell is a habit of the worktree whatever the
-// folder of it is. A path that was written out by hand comes next — before the temporary
-// folder, and that is the one order this list cannot be wrong about: on a machine whose
-// worktrees live in the temporary folder — every machine of Linux, where it holds every
-// worktree of every project — the path of such a refusal is a path of `/tmp` as well, and a
-// habit that is read as "it wrote to /tmp" is a habit crewflow answers with the wrong words
-// (docs/DESIGN.md §7a.1, §7d). The temporary folder is what is left of the machine alone, and
-// a path of the service of the project is the last of them: the habit of a path that was
-// written out by hand is the one that asks the machine about a file, and it asks it about the
-// worktree and nothing else (docs/DESIGN.md §7a.1).
+// folder of it is. A path that was written out by hand comes next, and a path of the service
+// of the project after it — and both of them stand **before** the temporary folder, and that
+// is the one order this list cannot be wrong about: on a machine whose worktrees live in the
+// temporary folder — every machine of Linux, where it holds every worktree of every project —
+// the path of such a refusal is a path of `/tmp` as well, and a habit that is read as "it wrote
+// to /tmp" is a habit crewflow answers with the wrong words (docs/DESIGN.md §7a.1, §7d). The
+// temporary folder is what is left: it is the one habit that says where a folder of the machine
+// is and not what the run wanted of the path (docs/DESIGN.md §7a.1).
 func (r *runner) habitOf(refusal string, calls []profile.Call) (reason, string) {
 	path := refusedPath(refusal)
 	switch {
@@ -348,11 +347,11 @@ func (r *runner) habitOf(refusal string, calls []profile.Call) (reason, string) 
 	if place := r.placeOf(path); place != "" {
 		return reasonWorktree, place
 	}
-	if temporary(path) {
-		return reasonTmp, ""
-	}
 	if service(path, r.worktree, r.env.UserHome) {
 		return reasonService, ""
+	}
+	if temporary(path) {
+		return reasonTmp, ""
 	}
 	return reasonOther, ""
 }
