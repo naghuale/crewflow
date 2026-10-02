@@ -34,16 +34,8 @@ type Merger func(ctx context.Context, tasks []int) ([]int, error)
 // A fragment git has no commit for is not in the history yet — a task writes its fragment
 // before it commits it — and stands after every other one, by number.
 func Merged(run Run, root string) Merger {
-	return MergedAt(run, root, "")
-}
-
-// MergedAt is the merger of a revision of the history rather than of the checkout: it
-// asks when the fragment of each task entered the history of that revision. It is what a
-// journal of the default branch is read in — the order of its lines is the order their
-// changes were merged there, and not the order a branch of a task was rewritten in.
-func MergedAt(run Run, root, rev string) Merger {
 	return func(ctx context.Context, tasks []int) ([]int, error) {
-		entered, err := entered(ctx, run, root, tasks, rev)
+		entered, err := entered(ctx, run, root, tasks)
 		if err != nil {
 			return nil, err
 		}
@@ -67,7 +59,7 @@ func MergedAt(run Run, root, rev string) Merger {
 	}
 }
 
-// entered is the moment the fragment of every task entered the history of a revision, as
+// entered is the moment the fragment of every task entered the history of the branch, as
 // `git log` tells it: the oldest commit that added the file, because that is the commit
 // the change of the task went in with, and the commits after it are the work of the same
 // task going on — they are not entries in the journal.
@@ -75,13 +67,10 @@ func MergedAt(run Run, root, rev string) Merger {
 // One call asks about every fragment at once: a project with a hundred of them waits for
 // one git and not for a hundred, and the log that names the files each commit added is
 // the answer in the order it walked them.
-func entered(ctx context.Context, run Run, root string, tasks []int, rev string) (map[int]int64, error) {
-	args := []string{"log"}
-	if rev != "" {
-		args = append(args, rev)
-	}
-	args = append(args, "--reverse", "--format=%H %ct", "--diff-filter=A", "--name-only", "--", Dir)
-	stdout, stderr, code, err := run(ctx, "git", args, root)
+func entered(ctx context.Context, run Run, root string, tasks []int) (map[int]int64, error) {
+	stdout, stderr, code, err := run(ctx, "git", []string{
+		"log", "--reverse", "--format=%H %ct", "--diff-filter=A", "--name-only", "--", Dir,
+	}, root)
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("git log %s: %w", Dir, err)

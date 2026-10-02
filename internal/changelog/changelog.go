@@ -5,11 +5,9 @@
 // A task writes one file, `changelog.d/<N>.md`, and no other task writes it; the
 // unreleased part of `CHANGELOG.md` is built out of every fragment that stands, in the
 // order the changes were merged, and the parts of the versions below it are never
-// touched. Nothing here reads the history except the order of the fragments
-// ([Merged]) and the fragments of the tip of the default branch, which a check reads the
-// journal against ([Project.Check]), and nothing here asks the host anything except
-// [Project.Check]: a build is a file operation over the fragments and the journal, so that
-// it answers the same on every machine.
+// touched. Nothing here reads the history except [Merged], and nothing here asks the
+// host anything except [Project.Check]: a build is a file operation over the fragments
+// and the journal, so that it answers the same on every machine.
 package changelog
 
 import (

@@ -29,23 +29,6 @@ func theProject(repo *gitOfTheTest) Project {
 	return Project{Root: repo.dir, Language: Russian, Order: Merged(repo.Run, repo.dir)}
 }
 
-// theProjectAtTip is the journal of a repository of a test as a check reads it in a
-// checkout of a project on git: the journal is the build of the fragments of the tip of
-// the default branch, which such a checkout has as `origin/main` after a fetch or a push.
-func theProjectAtTip(repo *gitOfTheTest) Project {
-	project := theProject(repo)
-	project.Git, project.Tip = repo.Run, "origin/main"
-	return project
-}
-
-// atTip is the tip of the default branch of a repository of a test: a checkout of a
-// project on git has the branch of the host where the last fetch or push left it, and a
-// test puts it where the branch of the project stands.
-func atTip(repo *gitOfTheTest) {
-	repo.t.Helper()
-	repo.must("update-ref", "refs/remotes/origin/main", "HEAD")
-}
-
 // TestBuildWritesEveryFragmentIntoItsOwnSection: the unreleased part of the journal is
 // built out of every fragment, each line under the section its own fragment named
 // (CA-002, CL-001).
@@ -120,8 +103,8 @@ func TestBuildIsTheSameFileOnEveryMachine(t *testing.T) {
 	}
 }
 
-// TestCheckOfAWholeJournal: a journal that is what its fragments build, whose fragments
-// are the tasks of the project and that say one thing each, is not a problem at all.
+// TestCheckOfAWholeJournal: fragments that are fragments of the tasks of the project and
+// that say one thing each are not a problem at all, whatever the journal holds.
 func TestCheckOfAWholeJournal(t *testing.T) {
 	repo := projectIn(t)
 	project := theProject(repo)
@@ -135,6 +118,47 @@ func TestCheckOfAWholeJournal(t *testing.T) {
 	}
 	if len(problems) != 0 {
 		t.Errorf("Check found %v in a whole journal, want nothing", problems)
+	}
+}
+
+// TestCheckOnABranchWithAnUnbuiltJournalIsNotAProblem: the journal on the disk is not what
+// the fragments build, and that is not a problem — the journal is written by a release and
+// only by it, and a task brings its own fragment and nothing else (docs/DESIGN.md §6,
+// D-066). A check that asked a task to build the journal would ask it for a file every
+// task writes.
+func TestCheckOnABranchWithAnUnbuiltJournalIsNotAProblem(t *testing.T) {
+	repo := projectIn(t)
+	repo.must("checkout", "-q", "-b", "crewflow/128")
+	repo.write("changelog.d/128.md", fragmentFile(128, "строка 128"))
+	repo.commit("feat: 128")
+
+	before := repo.read(File)
+	if strings.Contains(before, "строка 128") {
+		t.Fatalf("the journal of the test holds the line of the fragment of the branch:\n%s", before)
+	}
+	problems, err := theProject(repo).Check(context.Background(), everyTaskIsThere)
+	if err != nil {
+		t.Fatalf("Check on the branch: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("Check found %v, want nothing — the journal is not one of the things the check reads", problems)
+	}
+	if after := repo.read(File); after != before {
+		t.Errorf("Check wrote to the journal:\n%q\nwant\n%q", after, before)
+	}
+}
+
+// TestCheckDoesNotReadTheJournal: a project whose journal is not there is a project before
+// its first release, and a check of the fragments of its tasks has nothing to say about it.
+func TestCheckDoesNotReadTheJournal(t *testing.T) {
+	repo := projectIn(t)
+	repo.must("rm", File)
+	problems, err := theProject(repo).Check(context.Background(), everyTaskIsThere)
+	if err != nil {
+		t.Fatalf("Check without a journal: %v", err)
+	}
+	if len(problems) != 0 {
+		t.Errorf("Check found %v in a project with no journal, want nothing", problems)
 	}
 }
 
@@ -189,19 +213,6 @@ func TestCheckFindsEveryWrongThing(t *testing.T) {
 			reason:  ErrDuplicate,
 			wantAny: []string{"changelog.d/77.md: the task #77 has two fragments: changelog.d/0077.md and this one"},
 		},
-		{
-			name: "a journal written by hand",
-			broken: func(repo *gitOfTheTest) {
-				if _, err := theProject(repo).Write(context.Background()); err != nil {
-					t.Fatalf("Write: %v", err)
-				}
-				repo.write(File, strings.Replace(repo.read(File), "строка 77", "строка 77, дописанная руками", 1))
-			},
-			reason: ErrOutOfSync,
-			wantAny: []string{
-				"CHANGELOG.md: the journal is not what the fragments build — run `crewflow changelog build`",
-			},
-		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -248,170 +259,6 @@ func TestCheckFindsEveryWrongThing(t *testing.T) {
 	}
 }
 
-// TestCheckOnTheDefaultBranchAsksForTheJournalOfEveryFragmentItHas: the journal of the
-// default branch is the build of every fragment that stands in it, so a fragment that was
-// merged into it without a rebuild of the journal is what the check has to name (CL-007).
-func TestCheckOnTheDefaultBranchAsksForTheJournalOfEveryFragmentItHas(t *testing.T) {
-	repo := projectIn(t)
-	project := theProjectAtTip(repo)
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	repo.commit("chore(changelog): the journal of the two tasks")
-	atTip(repo)
-	if problems, err := project.Check(context.Background(), everyTaskIsThere); err != nil || len(problems) != 0 {
-		t.Fatalf("Check of the built journal found %v, %v, want nothing", problems, err)
-	}
-
-	repo.write("changelog.d/128.md", fragmentFile(128, "строка 128"))
-	repo.commit("feat: 128")
-	atTip(repo)
-
-	problems, err := project.Check(context.Background(), everyTaskIsThere)
-	if err != nil {
-		t.Fatalf("Check after the merge: %v", err)
-	}
-	if len(problems) != 1 || !errors.Is(problems[0], ErrOutOfSync) {
-		t.Fatalf("Check after the merge found %v, want the one reason %v — a fragment merged into the default branch without a rebuild of the journal", problems, ErrOutOfSync)
-	}
-	want := "CHANGELOG.md: the journal is not what the fragments at origin/main build — " +
-		"the journal of the default branch is built on it, after the merge"
-	if got := problems[0].Error(); got != want {
-		t.Errorf("Check said\n%q\nwant\n%q", got, want)
-	}
-
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write after the merge: %v", err)
-	}
-	if problems, err := project.Check(context.Background(), everyTaskIsThere); err != nil || len(problems) != 0 {
-		t.Errorf("Check after the build found %v, %v, want nothing", problems, err)
-	}
-}
-
-// TestCheckOnABranchDoesNotAskForTheLineTheBranchBrings: a task writes only its own
-// fragment and never the journal, so the line of the change is not expected in the
-// journal before the merge — and the branch must not write it, or two branches with their
-// own fragments would not merge one after another (CL-007, CL-003).
-func TestCheckOnABranchDoesNotAskForTheLineTheBranchBrings(t *testing.T) {
-	repo := projectIn(t)
-	project := theProjectAtTip(repo)
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	repo.commit("chore(changelog): the journal of the two tasks")
-	atTip(repo)
-
-	repo.must("checkout", "-q", "-b", "crewflow/128")
-	repo.write("changelog.d/128.md", fragmentFile(128, "строка 128"))
-	repo.commit("feat: 128")
-
-	if ref, inTip := project.Merged(context.Background()); !inTip || ref != "origin/main" {
-		t.Errorf("Merged said %q, %v, want origin/main, true", ref, inTip)
-	}
-	if problems, err := project.Check(context.Background(), everyTaskIsThere); err != nil || len(problems) != 0 {
-		t.Fatalf("Check on the branch found %v, %v, want nothing — the line of the branch goes into the journal when the default branch is built", problems, err)
-	}
-	if journal := repo.read(File); strings.Contains(journal, "строка 128") {
-		t.Errorf("the branch wrote the line of its own fragment into the journal:\n%s", journal)
-	}
-}
-
-// TestCheckOnABranchAfterTheChangeBuiltTheJournal: a task that has the journal in its
-// boundaries may build it, and the journal it builds is the build of the fragments of the
-// tip with the fragments of the change added to them — the second of the two journals the
-// check accepts in a branch (CL-007).
-func TestCheckOnABranchAfterTheChangeBuiltTheJournal(t *testing.T) {
-	repo := projectIn(t)
-	project := theProjectAtTip(repo)
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	repo.commit("chore(changelog): the journal of the two tasks")
-	atTip(repo)
-
-	repo.must("checkout", "-q", "-b", "crewflow/128")
-	repo.write("changelog.d/128.md", fragmentFile(128, "строка 128"))
-	repo.commit("feat: 128")
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write on the branch: %v", err)
-	}
-	repo.commit("chore(changelog): the line of 128")
-
-	if journal := repo.read(File); !strings.Contains(journal, "строка 128") {
-		t.Fatalf("the build of the branch left the line of its own fragment out:\n%s", journal)
-	}
-	if problems, err := project.Check(context.Background(), everyTaskIsThere); err != nil || len(problems) != 0 {
-		t.Fatalf("Check of the journal the branch built found %v, %v, want nothing", problems, err)
-	}
-
-	repo.write(File, strings.Replace(repo.read(File), "строка 128", "строка 128, дописанная руками", 1))
-	repo.commit("fix(changelog): a line written by hand")
-	problems, err := project.Check(context.Background(), everyTaskIsThere)
-	if err != nil {
-		t.Fatalf("Check of the journal written by hand: %v", err)
-	}
-	if len(problems) != 1 || !errors.Is(problems[0], ErrOutOfSync) {
-		t.Fatalf("Check found %v, want the one reason %v — a journal that is neither of the two builds", problems, ErrOutOfSync)
-	}
-	want := "CHANGELOG.md: the journal is neither the build of the fragments at origin/main nor the build of " +
-		"the fragments of this checkout — run `crewflow changelog build`"
-	if got := problems[0].Error(); got != want {
-		t.Errorf("Check said\n%q\nwant\n%q", got, want)
-	}
-}
-
-// TestCheckOnABranchAfterATaskRewroteItsOwnFragment: the journal is the build of the
-// fragments the default branch has, and a task that rewrites its own fragment after the
-// merge has not broken anything yet — its line changes in the journal when the default
-// branch is built, and not before (CL-007).
-func TestCheckOnABranchAfterATaskRewroteItsOwnFragment(t *testing.T) {
-	repo := projectIn(t)
-	project := theProjectAtTip(repo)
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	repo.commit("chore(changelog): the journal of the two tasks")
-	atTip(repo)
-
-	repo.must("checkout", "-q", "-b", "crewflow/124")
-	repo.write("changelog.d/124.md", "### Изменено\n\n- **строка 124, дописанная задачей.** Строка задачи 124.\n"+
-		"  (задача [#124](https://github.com/naghuale/crewflow/issues/124))\n")
-	repo.commit("fix(changelog): its own line once more")
-
-	if problems, err := project.Check(context.Background(), everyTaskIsThere); err != nil || len(problems) != 0 {
-		t.Errorf("Check found %v, %v, want nothing — the journal is the build of the fragments of the tip, and the fragment of the branch is not one of them yet", problems, err)
-	}
-}
-
-// TestCheckWithoutATipAsksForEveryFragmentThatStands: a project that names no default
-// branch, or a checkout that never fetched it, has no tip to read the fragments of — and
-// then the journal is the build of every fragment that stands, which is the strictest
-// reading of the rule and the one a checkout outside a project on git gets.
-func TestCheckWithoutATipAsksForEveryFragmentThatStands(t *testing.T) {
-	repo := projectIn(t)
-	project := theProject(repo)
-	if _, err := project.Write(context.Background()); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	repo.write("changelog.d/128.md", fragmentFile(128, "строка 128"))
-	repo.commit("feat: 128")
-
-	if ref, inTip := project.Merged(context.Background()); inTip || ref != "" {
-		t.Errorf("Merged said %q, %v, want nothing, false — a checkout with no tip of the default branch has none to name", ref, inTip)
-	}
-	problems, err := project.Check(context.Background(), everyTaskIsThere)
-	if err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	if len(problems) != 1 || !errors.Is(problems[0], ErrOutOfSync) {
-		t.Fatalf("Check found %v, want the one reason %v", problems, ErrOutOfSync)
-	}
-	want := "CHANGELOG.md: the journal is not what the fragments build — run `crewflow changelog build`"
-	if got := problems[0].Error(); got != want {
-		t.Errorf("Check said\n%q\nwant\n%q", got, want)
-	}
-}
-
 // TestCheckAsksTheHostOnceAboutEveryTask: the host is asked about a number once, in the
 // order the fragments stand on the disk, so that a check of the same journal twice asks
 // the same questions of the host.
@@ -433,20 +280,26 @@ func TestCheckAsksTheHostOnceAboutEveryTask(t *testing.T) {
 	}
 }
 
-// TestCheckLeavesTheJournalAloneWhenAFragmentIsBroken: a fragment that is not a fragment
-// has no journal it could be compared with, and a check that said it twice would name one
-// problem twice.
-func TestCheckLeavesTheJournalAloneWhenAFragmentIsBroken(t *testing.T) {
+// TestCheckNamesABrokenFragmentOnce: a fragment that is not a fragment is one problem, and
+// the check does not go on to ask the host about the task of a fragment it could not read —
+// a refusal about a file that is not there to be read says nothing about its task.
+func TestCheckNamesABrokenFragmentOnce(t *testing.T) {
 	repo := projectIn(t)
 	repo.write("changelog.d/124.md", "### Убрано\n\n- строка\n")
-	problems, err := theProject(repo).Check(context.Background(), everyTaskIsThere)
+	var asked []int
+	tasks := func(_ context.Context, number int) error {
+		asked = append(asked, number)
+		return nil
+	}
+	problems, err := theProject(repo).Check(context.Background(), tasks)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
-	for _, problem := range problems {
-		if errors.Is(problem, ErrOutOfSync) {
-			t.Errorf("Check said the journal is out of sync as well:\n%v", problem)
-		}
+	if len(problems) != 1 || !errors.Is(problems[0], ErrFormat) {
+		t.Fatalf("Check found %v, want the one reason %v", problems, ErrFormat)
+	}
+	if want := []int{77}; !equal(asked, want) {
+		t.Errorf("Check asked the host about %v, want %v — a fragment it could not read is not a task to ask about", asked, want)
 	}
 }
 
