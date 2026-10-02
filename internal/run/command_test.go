@@ -211,6 +211,9 @@ func TestPrompt(t *testing.T) {
 		"/w/43", "crewflow/43-crewflow-task-run",
 		".scratch/", "AGENTS.md", "BLOCKED:", "t.TempDir()",
 		"go test -race -count=1 ./...", "golangci-lint run ./...",
+		// What a refusal costs is said in the rules of a run, and it is said with the
+		// names crewflow writes itself (TestThePromptTellsTheTruthAboutGoingOn).
+		reasonRepeated, continueCommand(43),
 		"Closes #43",
 		task.Title, task.Body,
 	} {
@@ -239,6 +242,118 @@ func TestPromptWithoutGates(t *testing.T) {
 
 	if !strings.Contains(prompt, "no gates") {
 		t.Errorf("the prompt of a project without gates does not say so:\n%s", prompt)
+	}
+}
+
+// TestThePromptTellsTheTruthAboutGoingOn: the rules of a run name the price of a stop,
+// and the price is not the one the assignment used to name. A refusal keeps the work —
+// the worktree, the branch and the state of the task stay as they are — crewflow goes on
+// once by itself for a habit it knows, with the exact rule of it, and a run that stops
+// goes on afterwards by hand. An assignment that says the opposite gives a run the wrong
+// price of stopping, and a run told that a refusal is the end of its work guesses instead
+// of stopping (F-137, docs/DESIGN.md §7a.1).
+func TestThePromptTellsTheTruthAboutGoingOn(t *testing.T) {
+	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"},
+		config.Config{}, "crewflow/43-t", "/w/43", access.Policy{})
+	if err != nil {
+		t.Fatalf("Prompt returned an error: %v", err)
+	}
+
+	said := folded(prompt)
+	// The three claims that are not true of the mechanism: a refusal is not the end of
+	// the work, and what is said after the words of a stop is part of the fact.
+	for _, told := range []string{
+		"no way to go on",
+		"with the work uncommitted",
+		"say nothing after it",
+	} {
+		if strings.Contains(said, told) {
+			t.Errorf("the assignment of a run says %q, want a truth about what a refusal costs:\n%s", told, prompt)
+		}
+	}
+	for _, want := range []string{
+		"the worktree, the branch and the state of the task stay as they are",
+		reasonRepeated,
+		continueCommand(43),
+	} {
+		if !strings.Contains(said, want) {
+			t.Errorf("the assignment of a run holds no %q about going on:\n%s", want, prompt)
+		}
+	}
+}
+
+// TestThePromptAndTheContractOfTheExecutorSayTheSameAboutGoingOn: the permanent contract
+// of the role and the assignment of a run are two views of one thing, and a run is
+// started with one of them and stopped by the other — a divergence between the two is
+// what no test of a run sees and what an executor cannot (docs/agents/README.md,
+// MODEL IV-043). Both are asked here for the names crewflow itself writes: the reason of
+// a repeated habit and the command that goes on with a run that stopped. A mechanism that
+// moves leaves a text behind, and this is the place where it is said.
+func TestThePromptAndTheContractOfTheExecutorSayTheSameAboutGoingOn(t *testing.T) {
+	prompt, err := Prompt(forge.Task{Number: 43, Title: "t", Body: "b"},
+		config.Config{}, "crewflow/43-t", "/w/43", access.Policy{})
+	if err != nil {
+		t.Fatalf("Prompt returned an error: %v", err)
+	}
+	path := filepath.Join(rootOfTheProject(t), "docs", "agents", "executor.md")
+	contract, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the contract of the executor: %v", err)
+	}
+	// The contract of a role is read by a person and for every task, so the number of
+	// the task in the command is a placeholder there, and the command itself is the one
+	// crewflow gives — a command in a document is copied, not translated.
+	facts := []struct {
+		what, inPrompt, inContract string
+	}{
+		{
+			what:       "the same refusal a second time stops the run",
+			inPrompt:   reasonRepeated,
+			inContract: reasonRepeated,
+		},
+		{
+			what:       "a run that stopped goes on by hand",
+			inPrompt:   continueCommand(43),
+			inContract: strings.Replace(continueCommand(43), " 43 ", " <N> ", 1),
+		},
+	}
+	for _, f := range facts {
+		if !strings.Contains(folded(prompt), f.inPrompt) {
+			t.Errorf("the assignment of a run holds no %q, and %s is what it is about", f.inPrompt, f.what)
+		}
+		if !strings.Contains(string(contract), f.inContract) {
+			t.Errorf("docs/agents/executor.md holds no %q, and %s is what the contract of the role is about",
+				f.inContract, f.what)
+		}
+	}
+}
+
+// folded is a text as a person reads it and not as the template of it holds it: the
+// rules of a run are wrapped to the width of a line, and a fact of two lines is one
+// fact. What is checked is the words of it, not where the line was broken.
+func folded(text string) string {
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// rootOfTheProject is the folder the project is in, looked for by walking up from the
+// folder the tests of the package are run in: the contract of the role is a file of the
+// project, and the path to it is not written down (the same way internal/merge reads
+// the design of §7h).
+func rootOfTheProject(t *testing.T) string {
+	t.Helper()
+	started, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("the folder the tests are run in: %v", err)
+	}
+	for folder := started; ; {
+		if _, err := os.Stat(filepath.Join(folder, "go.mod")); err == nil {
+			return folder
+		}
+		parent := filepath.Dir(folder)
+		if parent == folder {
+			t.Fatalf("no go.mod above %s: the contract of the role is a file of the project", started)
+		}
+		folder = parent
 	}
 }
 

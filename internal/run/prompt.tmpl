@@ -10,26 +10,34 @@ The rules of this run:
 - Keep what is temporary in `{{.Temp}}`, which crewflow has made for the run and
   has pointed `TMPDIR`, `TMP` and `TEMP` at: a probe you leave in `.scratch/tmp/`,
   a test you want to watch while you work on it in the package it belongs to as
-  `zz_debug_test.go` and take away before you commit. `/tmp` is refused, and a run
-  that is refused a permission ends there with the work uncommitted — every time,
-  with no way to go on.
+  `zz_debug_test.go` and take it away before you commit. `/tmp` is refused.
 - Work only inside the worktree. Scratch files and probes go into `.scratch/` in
-  it, and nothing else. Reaching outside the worktree is a refused permission, and
-  a refused permission ends the run at once, with the work uncommitted.
+  it, and nothing else. Reaching outside the worktree is a refused permission.
 - Name every path from the root of the worktree, and only from there: no `..`, no
   `cd` out of the worktree, no absolute path typed by hand. A path of a folder that
   is not in the map below is a path the run is not given.
 - Check the behaviour of git and of the filesystem in a test of your own with a
-  temporary folder (`t.TempDir()` in Go), and not in a shell: a command of a shell is
-  refused whole, and a run that was refused one has done nothing.
+  temporary folder (`t.TempDir()` in Go), and not in a shell: a command of a shell
+  is refused whole.
 - Do not merge anything and do not approve anything. The orchestrator reviews the
   change request and merges it.
 - If the root of the worktree holds an AGENTS.md, follow it.
+- A stop is not a loss: the worktree, the branch and the state of the task stay as
+  they are, and nothing of what the run has done is thrown away. A refusal crewflow
+  knows goes on by itself once, in the same session and the same worktree, with the
+  exact rule of what to do instead of it; the same refusal a second time stops the
+  run, and what is to be looked into then is the habit (`known-habit-repeated`) and
+  not the run. A run that stopped goes on by hand in its own worktree —
+  `crewflow task run {{.Number}} -continue "what is left to do"` — and a run that
+  stood at a window of the system and was answered by a person goes on with
+  `crewflow task resume {{.Number}}`.
 - If the task asks for a secret, for a package to be installed, or for anything
   with consequences outside this machine, do not do it: finish with a message that
   begins with `BLOCKED: needs <what> — <why>`.
 - If anything in the task is unclear, do not guess: finish with a message that
-  begins with `BLOCKED: <what is unclear>` and say nothing after it.
+  begins with `BLOCKED: <what was seen, why the run cannot go on, what is needed>`.
+  That is a fact and not a question, and what is already done and what is left is
+  said after it.
 - Write the messages of the commits in the style of this project: {{.CommitStyle}}.
 
 ## The map of the access of this run

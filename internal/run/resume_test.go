@@ -1378,8 +1378,129 @@ func TestTheAssignmentLeadsWithTheTemporaryFiles(t *testing.T) {
 			t.Errorf("the first rule of the run does not hold %q:\n%s", want, first)
 		}
 	}
-	if !strings.Contains(first, "ends there") {
-		t.Errorf("the first rule of the run does not say what a refusal ends:\n%s", first)
+	if !strings.Contains(first, "`/tmp` is refused") {
+		t.Errorf("the first rule of the run does not say that /tmp is refused:\n%s", first)
+	}
+	// What a refusal costs is said in one rule of the rules and not in the first of
+	// them: a rule that names the price of a stop is read before the rules around it,
+	// and a price named twice is a price believed twice (docs/DESIGN.md §7a.1).
+	if strings.Contains(first, "no way to go on") {
+		t.Errorf("the first rule of the run prices a refusal as the end of the work:\n%s", first)
+	}
+}
+
+// TestEveryHabitCrewflowKnowsIsToldToTheAgent: a habit of the catalog is the one text
+// crewflow answers a refusal with, and a habit of the catalog whose text the mechanism
+// does not pass to an agent is a refusal answered with silence: the run stops there the
+// second time and the queue says a habit crewflow has already answered once. Every habit
+// is therefore run here as a run meets it, and the next attempt is asked the text of it —
+// and the cases and the catalog are checked against each other, so that a habit added to
+// the catalog and run by nobody is a failure of a test and not a habit that sits there
+// unwritten (docs/DESIGN.md §7a.1).
+func TestEveryHabitCrewflowKnowsIsToldToTheAgent(t *testing.T) {
+	const application = "~/Library/Application Support/crewflow"
+	cases := []struct {
+		// name is the habit the case is about, and the cases are the catalog: a habit
+		// that is in one and in the other is a habit the mechanism is asked about.
+		name reason
+		// command is what the run called a shell with before it was refused, and refusal
+		// what the permission of the run was asked for: the two are what the classifier
+		// reads, and a path of the machine the case stands on is written out of it.
+		command string
+		refusal func(m *machine) string
+		// file is the path from the root of the worktree that the text of the habit has
+		// to name, and the empty one for a habit that is not about one file.
+		file string
+	}{
+		{
+			name:    reasonTmp,
+			refusal: func(*machine) string { return "/tmp/*" },
+		},
+		{
+			name: reasonOutside,
+			refusal: func(m *machine) string {
+				return filepath.Join(m.worktrees, "naghuale-crewflow", "44")
+			},
+		},
+		{
+			name:    reasonMention,
+			command: "cat > docs/DESIGN.md <<'EOF'\nthe application is " + application + "\nEOF",
+			refusal: func(*machine) string { return application },
+		},
+		{
+			// A path written out by hand is a habit of a run only where the file at the end
+			// of it is really in this worktree, and the copy it was written out of has a
+			// letter out of place in its name — the case of F-095. The one thing a run
+			// always has in its own worktree is the scratch it is started with, so the
+			// refusal is really about that path.
+			name: reasonWorktree,
+			refusal: func(m *machine) string {
+				return filepath.Join(m.worktrees, "naghuale-tele", "43", scratchFolder, "tmp")
+			},
+			file: scratchFolder + "/tmp",
+		},
+		{
+			name:    reasonService,
+			command: "cat ~/.crewflow/hooks/naghuale-crewflow/pre-push",
+			refusal: func(*machine) string { return "~/.crewflow/hooks/naghuale-crewflow/pre-push" },
+		},
+		{
+			name:    reasonProbe,
+			command: "cd .scratch/tmp/probe && git init",
+			refusal: func(*machine) string { return ".scratch/tmp/probe" },
+		},
+	}
+	answered := make(map[reason]bool, len(cases))
+	for _, tc := range cases {
+		if answered[tc.name] {
+			t.Fatalf("the habit %q is run twice in this test: the cases and the catalog are told apart", tc.name)
+		}
+		answered[tc.name] = true
+	}
+	for name := range habits {
+		if !answered[name] {
+			t.Errorf("the catalog knows the habit %q and this test runs none of it: nothing checks that the "+
+				"mechanism passes its text to the agent", name)
+		}
+	}
+	if len(cases) != len(habits) {
+		t.Errorf("the catalog knows %d habits and this test runs %d of them", len(habits), len(cases))
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.name), func(t *testing.T) {
+			m := newMachine(t)
+			m.says("opencode",
+				answer{stdout: theCall(tc.command) + theRun,
+					stderr: "! permission requested: external_directory (" + tc.refusal(m) + "); auto-rejecting\n"},
+				answer{stdout: theRun},
+			)
+			host := &host{task: taskOf(43), opened: true}
+
+			result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+				Request{Number: 43, RepoDir: m.repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			if result.Outcome != ChangeRequestOpened || result.Attempt != 2 {
+				t.Fatalf("the run is the attempt %d and ended as %q, want the second and %q",
+					result.Attempt, result.Outcome, ChangeRequestOpened)
+			}
+			if result.AutoResumed != string(tc.name) {
+				t.Errorf("the run went on by itself for %q, want %q", result.AutoResumed, tc.name)
+			}
+			// The text of the habit, and nothing of the catalog around it: the run is told
+			// the rule of the one refusal it was stopped by.
+			told := (resume{habit: habits[tc.name], place: tc.file}).tells()
+			if told == "" {
+				t.Fatalf("the habit %q is in the catalog with no text to go on with: %+v", tc.name, habits[tc.name])
+			}
+			asked := strings.Join(m.commandsOf("opencode")[1].args, "\n")
+			if !strings.Contains(asked, told) {
+				t.Errorf("the next attempt was asked no text of the habit %q:\n%s\nthe text is:\n%s",
+					tc.name, asked, told)
+			}
+		})
 	}
 }
 
