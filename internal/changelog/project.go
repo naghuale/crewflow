@@ -49,6 +49,8 @@ var (
 	ErrDuplicate = errors.New("two fragments say one thing")
 	// ErrNoSuchTask is a fragment of a task the host does not have.
 	ErrNoSuchTask = errors.New("the host has no such task")
+	// ErrAbsorbed is a line of the journal that a version below already holds.
+	ErrAbsorbed = errors.New("a version below already holds this line")
 )
 
 // Build is the unreleased part of the journal built out of every fragment that stands:
@@ -161,10 +163,57 @@ func (p Project) Write(ctx context.Context) (written bool, err error) {
 	if string(current) == string(assembled) {
 		return false, nil
 	}
-	if err := os.WriteFile(journal, assembled, 0o644); err != nil {
-		return false, fmt.Errorf("write %s: %w", File, err)
+	if err := p.put(assembled); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// put writes the journal whole or not at all: the content goes into a file of its own next
+// to the journal and the rename that follows is the moment the journal changes. A build
+// that was interrupted, a machine without room for the file and a folder that cannot hold
+// a new one leave the journal of the last release as it was — half a section of a version
+// is a journal a reader cannot follow back to a task (REL-030, CHG-REL-012).
+func (p Project) put(content []byte) error {
+	beside, err := os.CreateTemp(p.Root, "."+File+".*")
+	if err != nil {
+		return fmt.Errorf("write %s: %w", File, err)
+	}
+	// A rename has taken the file away already, and nothing else is to be done about it;
+	// a write that failed has to take its own file back with it, or the next build would
+	// find a file of the journal that is not a journal.
+	defer os.Remove(beside.Name())
+	if _, err := beside.Write(content); err != nil {
+		return p.failedToWrite(beside, err)
+	}
+	// The bytes are on the disk before the name of the journal points at them: a machine
+	// that lost the power in between would otherwise leave the journal holding a name and
+	// nothing under it.
+	if err := beside.Sync(); err != nil {
+		return p.failedToWrite(beside, err)
+	}
+	if err := beside.Close(); err != nil {
+		return fmt.Errorf("write %s: %w", File, err)
+	}
+	// A file of a temporary one is private to the person who made it, and the journal of a
+	// project is read by everybody who has the checkout.
+	if err := os.Chmod(beside.Name(), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", File, err)
+	}
+	if err := os.Rename(beside.Name(), path.Join(p.Root, File)); err != nil {
+		return fmt.Errorf("write %s: %w", File, err)
+	}
+	return nil
+}
+
+// failedToWrite is a write of the journal that stopped before the rename, with the file of
+// it closed on the way out — a file that is still open when a program ends is a file the
+// system has not finished with.
+func (p Project) failedToWrite(beside *os.File, err error) error {
+	if closed := beside.Close(); closed != nil && !errors.Is(closed, os.ErrClosed) {
+		return fmt.Errorf("write %s: %w", File, errors.Join(err, closed))
+	}
+	return fmt.Errorf("write %s: %w", File, err)
 }
 
 // Problem is one thing a check found wrong: where it is, what is wrong and the reason,
@@ -176,7 +225,7 @@ type Problem struct {
 	Line int
 	// What says what is wrong, for a person.
 	What string
-	// Err is the reason: [ErrFormat], [ErrNoSuchTask] or [ErrDuplicate].
+	// Err is the reason: [ErrFormat], [ErrNoSuchTask], [ErrDuplicate] or [ErrAbsorbed].
 	Err error
 }
 
@@ -205,7 +254,7 @@ func (p Problem) MarshalJSON() ([]byte, error) {
 
 // reasonOf is the name of the reason a problem was found for, as this package names it.
 func reasonOf(err error) string {
-	for _, reason := range []error{ErrFormat, ErrNoSuchTask, ErrDuplicate} {
+	for _, reason := range []error{ErrFormat, ErrNoSuchTask, ErrDuplicate, ErrAbsorbed} {
 		if errors.Is(err, reason) {
 			return reason.Error()
 		}
@@ -348,6 +397,14 @@ type Release struct {
 // release is one commit, and a fragment that stood in it would write its line into the
 // next version a second time.
 //
+// What a release puts into the journal of a version is not looked at twice: two fragments
+// that say one thing and a line a version below already holds are refused before the
+// journal is touched, and the fragments stand where they were. A refused release has moved
+// nothing (REL-006, REL-026, CHG-REL-003, CHG-REL-004).
+//
+// The host is not asked here — only a check asks it, and a version is not held up by a
+// task nobody can find (docs/DESIGN.md §6).
+//
 // The link at the end of the journal is left as it is: it names the commits of the branch
 // of the project, and the unreleased part of the journal is them.
 func (p Project) Release(ctx context.Context, version, date string) (Release, error) {
@@ -364,13 +421,19 @@ func (p Project) Release(ctx context.Context, version, date string) (Release, er
 	if err != nil {
 		return Release{}, err
 	}
+	if problems := duplicatesOf(fragments); len(problems) > 0 {
+		return Release{}, fmt.Errorf("%w: %s", ErrDuplicate, saidBy(problems))
+	}
+	if problems := absorbedBy(released, fragments); len(problems) > 0 {
+		return Release{}, fmt.Errorf("%w: %s", ErrAbsorbed, saidBy(problems))
+	}
 	out := above + "\n## [" + version + "] - " + date + "\n\n"
 	if body != "" {
 		out += body + "\n\n"
 	}
 	out += released
-	if err := os.WriteFile(path.Join(p.Root, File), []byte(out), 0o644); err != nil {
-		return Release{}, fmt.Errorf("write %s: %w", File, err)
+	if err := p.put([]byte(out)); err != nil {
+		return Release{}, err
 	}
 	cut := Release{Version: version, Date: date, Journal: File}
 	for _, fragment := range fragments {
@@ -380,6 +443,39 @@ func (p Project) Release(ctx context.Context, version, date string) (Release, er
 		cut.Moved = append(cut.Moved, fragment.Path)
 	}
 	return cut, nil
+}
+
+// absorbedBy is every line of the fragments that a version below already holds. A fragment
+// that came back after the version that took it would put its line into the next version a
+// second time, and the journal would hold one change in two sections without saying which
+// of them is the release of it (REL-026, CHG-REL-004).
+func absorbedBy(released string, fragments []Fragment) []Problem {
+	var problems []Problem
+	for _, fragment := range fragments {
+		for _, entry := range fragment.Entries {
+			if !strings.Contains(released, entry.Text) {
+				continue
+			}
+			problems = append(problems, Problem{
+				Path: fragment.Path,
+				Line: entry.Line,
+				What: "a version below holds this line already — one line of the journal is in one version",
+				Err:  ErrAbsorbed,
+			})
+		}
+	}
+	return problems
+}
+
+// saidBy is what a release found wrong, in one line: the file, the line in it and what is
+// wrong there, one problem after another. A release that has written nothing can say all of
+// it at once, and a person has one place to look.
+func saidBy(problems []Problem) string {
+	what := make([]string, 0, len(problems))
+	for _, problem := range problems {
+		what = append(what, problem.Error())
+	}
+	return strings.Join(what, "; ")
 }
 
 // Version is the number of a release out of the word that names it: `v0.2.0` is

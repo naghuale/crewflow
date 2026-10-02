@@ -174,7 +174,7 @@ crewflow task attention     # what of this project needs you right now — same 
 crewflow task attention -all  # what of every project on this machine needs you, out of the state alone
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 crewflow changelog build     # build the unreleased part of CHANGELOG.md out of changelog.d/
-crewflow changelog check     # every fragment is a fragment, a task, and the journal is the build
+crewflow changelog check     # every fragment is a fragment of a task, and no two say one thing
 crewflow doctor network      # what the route to the network can do, one capability at a time
 ```
 
@@ -515,7 +515,7 @@ the gate says `out-of-scope`.
 
 ```sh
 crewflow changelog build     # the unreleased section out of every fragment
-crewflow changelog check     # the gate: format, task exists, no duplicates, journal is the build
+crewflow changelog check     # the gate: format, task exists, no duplicates
 ```
 
 `build` writes the `## [Не выпущено]` section of `CHANGELOG.md` out of the fragments: by the
@@ -526,10 +526,11 @@ first, so the journal is the same file on every machine. A build over a journal 
 is what the fragments build writes nothing at all.
 
 `check` is what keeps the journal a journal: every fragment is a fragment, the number in its
-name is a task that exists, no two fragments say one thing, and the journal on the disk is what
-the fragments build. Every reason is named with the file and the line in it, and `-json`
-answers the same reasons as fields for the orchestrator. It is the only gate of a project that
-asks the host, and it belongs in `[[gates]]`:
+name is a task that exists, and no two fragments say one thing. It does not read
+`CHANGELOG.md` at all — a release writes that file, and a task that had to bring it to its
+fragment would be a task writing the file every task writes. Every reason is named with the
+file and the line in it, and `-json` answers the same reasons as fields for the orchestrator.
+It is the only gate of a project that asks the host, and it belongs in `[[gates]]`:
 
 ```toml
 [[gates]]
@@ -547,6 +548,11 @@ To cut a version:
    it. It builds `dist/crewflow` with the version, the commit and the moment stamped into it
    (`-ldflags -X …/buildinfo.Version`) instead of `dev`, and prints what `crewflow version`
    answers. The host is not asked anything: a release does not wait for a task nobody can find.
+   The release refuses what a version of the journal cannot hold twice — two fragments that
+   say one thing, and a line a version below already holds — and it refuses before it writes,
+   so a refused release has moved nothing and every version below stands byte for byte. The
+   journal is replaced whole, by a rename: a release that was interrupted leaves either the
+   journal of before or the one after, and never half of one of them.
 2. Push and cut the release on the host — the script prints both commands and pushes
    nothing itself:
 
@@ -555,6 +561,11 @@ To cut a version:
    git push origin refs/tags/v0.1.0
    gh release create v0.1.0 --title "crewflow v0.1.0"
    ```
+
+Between two releases `changelog.d/` may not be there at all: a project that has released
+everything has no fragments, and that is not a fault of the check — it is nothing to build
+from. The folder is back with the first fragment of the next task, and a release with nothing
+waiting refuses itself.
 
 A build from a tag answers `crewflow version` with that version; a build from a worktree
 answers `dev`, because a build from a worktree is no release.

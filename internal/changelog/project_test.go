@@ -361,6 +361,130 @@ func TestReleaseMovesTheFragmentsIntoTheSectionOfTheVersion(t *testing.T) {
 	}
 }
 
+// TestTheVersionsBelowSurviveAReleaseByteForByte: a release writes the section of its own
+// version and leaves every version below it as it was — the history of a journal of a
+// project is not rewritten by the next release, not by a byte (CHG-REL-005, REL-025).
+func TestTheVersionsBelowSurviveAReleaseByteForByte(t *testing.T) {
+	repo := projectIn(t)
+	before := belowTheFirstVersion(t, repo.read(File))
+	if _, err := theProject(repo).Release(context.Background(), "v0.2.0", "2026-10-03"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if after := belowTheFirstVersion(t, repo.read(File)); after != before {
+		t.Errorf("the release rewrote the versions below it:\n%q\nwant\n%q", after, before)
+	}
+}
+
+// TestReleaseRefusesTwoFragmentsThatSayOneThing: a line that stands in two fragments would
+// be in the journal of the version twice, and a reader of it cannot tell which of the two
+// tasks wrote it. A release refuses that before the journal is touched, and the fragments
+// stand where they were — a refused release has moved nothing (CHG-REL-003, REL-006).
+func TestReleaseRefusesTwoFragmentsThatSayOneThing(t *testing.T) {
+	repo := projectIn(t)
+	repo.write("changelog.d/0077.md", fragmentFile(77, "строка 77"))
+	repo.commit("chore: the line of 77 in a second file")
+	before := repo.read(File)
+
+	_, err := theProject(repo).Release(context.Background(), "v0.2.0", "2026-10-03")
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("Release refused with %v, want the reason that two fragments say one thing", err)
+	}
+	if got := repo.read(File); got != before {
+		t.Errorf("a refused release wrote to the journal:\n%q\nwant\n%q", got, before)
+	}
+	if repo.gone("changelog.d/77.md") {
+		t.Error("a refused release took a fragment away from the folder")
+	}
+}
+
+// TestReleaseRefusesALineThatAVersionBelowHolds: a fragment that came back after the version
+// that took it would put its line into the next version a second time, and the journal
+// would hold one change in two sections without saying which of them is the release of it
+// (CHG-REL-004, REL-026).
+func TestReleaseRefusesALineThatAVersionBelowHolds(t *testing.T) {
+	repo := gitIn(t)
+	repo.write(File, journalOfTheTest)
+	repo.write("changelog.d/1.md", "### Добавлено\n\n- строка выпуска\n"+
+		"  ([#1](https://github.com/naghuale/crewflow/pull/1), задача [#1](https://github.com/naghuale/crewflow/issues/1))\n")
+	repo.commit("feat: the line of the version below, in a fragment again")
+	before := repo.read(File)
+
+	_, err := theProject(repo).Release(context.Background(), "v0.2.0", "2026-10-03")
+	if !errors.Is(err, ErrAbsorbed) {
+		t.Fatalf("Release refused with %v, want the reason that a version below holds the line", err)
+	}
+	if got := repo.read(File); got != before {
+		t.Errorf("a refused release wrote to the journal:\n%q\nwant\n%q", got, before)
+	}
+	if repo.gone("changelog.d/1.md") {
+		t.Error("a refused release took a fragment away from the folder")
+	}
+}
+
+// TestWriteReplacesTheJournalWithAnotherFile: a build puts the body of the journal under
+// the name of it as a whole, because the journal is replaced by a rename and not written
+// into. A build that was interrupted in the middle of the file leaves either the journal of
+// before or the journal after, and never half of one of them (CHG-REL-012, REL-030).
+func TestWriteReplacesTheJournalWithAnotherFile(t *testing.T) {
+	repo := projectIn(t)
+	journal := filepath.Join(repo.dir, File)
+	before, err := os.Stat(journal)
+	if err != nil {
+		t.Fatalf("the journal of the test: %v", err)
+	}
+	if _, err := theProject(repo).Write(context.Background()); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	after, err := os.Stat(journal)
+	if err != nil {
+		t.Fatalf("the journal after the build: %v", err)
+	}
+	if os.SameFile(before, after) {
+		t.Error("the build wrote the journal in place, want it replaced whole: a file that is written into holds half a journal while it is being written")
+	}
+}
+
+// TestAWriteThatCouldNotFinishLeavesTheJournalAsItWas: a folder that cannot hold a new file
+// is a machine without room or a permission that says no, and the journal of the last
+// release stands as it was — the section of that version is the one a reader can still read
+// (CHG-REL-012, REL-030).
+func TestAWriteThatCouldNotFinishLeavesTheJournalAsItWas(t *testing.T) {
+	repo := projectIn(t)
+	before := repo.read(File)
+	// The root of the test and not the folder of the fragments: the file a build writes
+	// first stands in the root, next to the journal it is going to replace.
+	if err := os.Chmod(repo.dir, 0o555); err != nil {
+		t.Fatalf("close the root of the test: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(repo.dir, 0o755); err != nil {
+			t.Fatalf("open the root of the test back: %v", err)
+		}
+	})
+	// Without the order of the merges: the test is about the write of the journal, and
+	// git wants a root it can write into.
+	project := Project{Root: repo.dir, Language: Russian}
+
+	if written, err := project.Write(context.Background()); err == nil || written {
+		t.Fatalf("Write into a root that holds no new file wrote %v, %v, want the refusal", written, err)
+	}
+	if got := repo.read(File); got != before {
+		t.Errorf("a build that could not finish changed the journal:\n%q\nwant\n%q", got, before)
+	}
+}
+
+// belowTheFirstVersion is the part of the journal that no release touches: from the first
+// version on. The test takes it with its own hands — a part of the journal read with the
+// function of the release would be the release checked against itself.
+func belowTheFirstVersion(t *testing.T, journal string) string {
+	t.Helper()
+	at := strings.Index(journal, "## [v0.1.0]")
+	if at < 0 {
+		t.Fatalf("the journal of the test holds no version below it:\n%s", journal)
+	}
+	return journal[at:]
+}
+
 // TestTheJournalOfAReleaseIsWhatTheFragmentsBuild: a journal with nothing unreleased in
 // it is a journal a build over it does not change — otherwise the first build after a
 // release would put a section of nothing under the heading.

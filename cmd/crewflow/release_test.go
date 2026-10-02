@@ -29,6 +29,7 @@ func TestReleaseScriptCutsAVersionOnACopyOfTheProject(t *testing.T) {
 		t.Skip("the script builds a binary of the project, and a short run is not the place for it")
 	}
 	copyOfProject := copiedProjectIn(t)
+	waiting := aFragmentToReleaseIn(t, copyOfProject)
 	on := repositoryOf(t, copyOfProject)
 
 	ctx, stop := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -50,6 +51,14 @@ func TestReleaseScriptCutsAVersionOnACopyOfTheProject(t *testing.T) {
 	if want := "## [Не выпущено]\n\n## [v9.9.9] - "; !strings.Contains(journal, want) {
 		t.Errorf("the unreleased section of the copy does not stand empty above the version:\n%s", journal)
 	}
+	// Every line that was waiting is in the section of the version exactly once: a release
+	// that lost a line says nothing, and a line in two sections is a journal a reader
+	// cannot follow back to a task (CL-001, REL-026).
+	for _, line := range waiting {
+		if times := strings.Count(journal, line); times != 1 {
+			t.Errorf("the line is in the journal of the copy %d times, want once:\n%s", times, line)
+		}
+	}
 	if fragments, err := filepath.Glob(filepath.Join(copyOfProject, changelog.Dir, "*.md")); err != nil || len(fragments) != 0 {
 		t.Errorf("the copy stands %d fragments after the release, want none", len(fragments))
 	}
@@ -64,6 +73,22 @@ func TestReleaseScriptCutsAVersionOnACopyOfTheProject(t *testing.T) {
 	}
 	if left := git(t, on, "status", "--porcelain"); left != "" {
 		t.Errorf("the copy holds %q after the release, want nothing", left)
+	}
+}
+
+// TestTheReleaseScriptNamesNoIdentityAndTouchesNoConfigOfTheMachine: the commit of a
+// release is the commit of whoever cut it, so the script asks git for the identity and says
+// nothing about it — and it changes no config that belongs to the machine, neither the
+// identity of the person nor the helper that holds the credentials (CHG-REL-008, REL-011).
+func TestTheReleaseScriptNamesNoIdentityAndTouchesNoConfigOfTheMachine(t *testing.T) {
+	script := readOfTheTest(t, filepath.Join("..", "..", "scripts", "release.sh"))
+	for _, forbidden := range []string{
+		"user.name", "user.email", "GIT_AUTHOR", "GIT_COMMITTER", "--author",
+		"git config", "--global", "--system", "osxkeychain", "credential.helper",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("scripts/release.sh holds %q, want it to take the identity and the credentials of the machine from git and to change no config of it", forbidden)
+		}
 	}
 }
 
@@ -106,6 +131,19 @@ func TestReleaseScriptRefusesWhatItCannotRelease(t *testing.T) {
 			want: "changelog.d holds no fragment",
 		},
 		{
+			name:    "a project that has released everything",
+			version: "v9.9.9",
+			before: func(t *testing.T, on gitOfTheTest) {
+				t.Helper()
+				if err := os.RemoveAll(filepath.Join(on.repo, changelog.Dir)); err != nil {
+					t.Fatalf("take the folder of the fragments away: %v", err)
+				}
+				git(t, on, "add", "-A")
+				git(t, on, "commit", "-q", "-m", "everything released")
+			},
+			want: "changelog.d holds no fragment",
+		},
+		{
 			name:    "a branch that is not the branch of the project",
 			version: "v9.9.9",
 			before: func(t *testing.T, on gitOfTheTest) {
@@ -118,6 +156,7 @@ func TestReleaseScriptRefusesWhatItCannotRelease(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			copyOfProject := copiedProjectIn(t)
+			aFragmentToReleaseIn(t, copyOfProject)
 			on := repositoryOf(t, copyOfProject)
 			if c.before != nil {
 				c.before(t, on)
@@ -140,6 +179,28 @@ func TestReleaseScriptRefusesWhatItCannotRelease(t *testing.T) {
 			}
 		})
 	}
+}
+
+// aFragmentToReleaseIn is the fragment the copy of the project is given before its release,
+// and the lines it adds to the answer of that release.
+//
+// It is a fragment of the test and not of the project on purpose: what waits in
+// `changelog.d/` of the project changes with every release — after one it is gone, and a
+// test of the release that waits for it breaks on the day of a release and says nothing
+// about the release. The lines are returned so that a test can say where they went.
+func aFragmentToReleaseIn(t *testing.T, copyOf string) []string {
+	t.Helper()
+	const line = "- **Строка теста.** Строка, которую выпуск должен унести в раздел версии."
+	folder := filepath.Join(copyOf, changelog.Dir)
+	if err := os.MkdirAll(folder, 0o755); err != nil {
+		t.Fatalf("the folder of the fragments of the copy: %v", err)
+	}
+	fragment := "### Добавлено\n\n" + line + "\n" +
+		"  (задача [#1](https://github.com/naghuale/crewflow/issues/1))\n"
+	if err := os.WriteFile(filepath.Join(folder, "1.md"), []byte(fragment), 0o644); err != nil {
+		t.Fatalf("write the fragment of the test: %v", err)
+	}
+	return []string{line}
 }
 
 // copiedProjectIn is the module of this repository in a folder of the test: every file

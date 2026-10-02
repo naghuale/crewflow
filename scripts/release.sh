@@ -31,9 +31,8 @@ version=$1
 echo "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' ||
 	die "$version is not vMAJOR.MINOR.PATCH"
 
-[ -f CHANGELOG.md ] && [ -f go.mod ] &&
-	[ -d changelog.d ] ||
-	die "run it in the root of the repository, where CHANGELOG.md, go.mod and changelog.d are"
+[ -f CHANGELOG.md ] && [ -f go.mod ] ||
+	die "run it in the root of the repository, where CHANGELOG.md and go.mod are"
 
 # The commit that is released is the head of the default branch, so the tree is
 # clean and the branch is that one: a tag on a work in progress is not a release.
@@ -50,15 +49,21 @@ if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
 fi
 
 # There is something to release: a version whose section would hold no line is a
-# version a reader has nothing to read, and it is not worth a tag.
-fragments=$(find changelog.d -maxdepth 1 -name '*.md' -type f | wc -l)
+# version a reader has nothing to read, and it is not worth a tag. The folder of the
+# fragments is not a part of the root: a project that has released everything has
+# none of it, and that is the refusal below rather than a wrong folder.
+fragments=0
+if [ -d changelog.d ]; then
+	fragments=$(find changelog.d -maxdepth 1 -name '*.md' -type f | wc -l)
+fi
 [ "$fragments" -gt 0 ] ||
 	die "changelog.d holds no fragment; there is nothing to release"
 
 # The fragments go into the section of the version with the day of the release, the
 # empty unreleased part stands above, and the fragments are removed. A fragment that
-# is not a fragment is refused here, before it reaches the journal of a version, and
-# the host is not asked anything: a release does not need it and a version is not
+# is not a fragment, two fragments that say one thing and a line a version below
+# already holds are refused here, before any of it reaches the journal of a version,
+# and the host is not asked anything: a release does not need it and a version is not
 # held up by a task nobody can find.
 go run ./cmd/crewflow changelog release "$version"
 
