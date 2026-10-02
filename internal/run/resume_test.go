@@ -255,7 +255,7 @@ func TestASecretBesideTheWorktreeIsStillASecret(t *testing.T) {
 	// reached a key, whatever the folder of it looks like.
 	refused, _, _ := strings.Cut(result.Rejections[0], " — ")
 	worktree := filepath.Join(m.worktrees, "naghuale-crewflow", "43")
-	if got := (&runner{worktree: worktree}).habitOf(refused, nil); got != reasonOutside {
+	if got, _ := (&runner{worktree: worktree}).habitOf(refused, nil); got != reasonOutside {
 		t.Errorf("the habit of %q is %q, want %q beside a worktree", refused, got, reasonOutside)
 	}
 }
@@ -326,6 +326,170 @@ func TestRunGoesOnByItselfAfterAPathOfTheMachineWasOnlyWrittenDown(t *testing.T)
 	asked := strings.Join(m.commandsOf("opencode")[1].args, "\n")
 	if !strings.Contains(asked, "Edit such files with the tools of edit and write") {
 		t.Errorf("the second run was asked no rule about editing such files:\n%s", asked)
+	}
+}
+
+// TestRunGoesOnByItselfAfterAServicePathWasReadAndAfterAProbeInAShell: the two habits of
+// 01.10.2026 that need nothing of the worktree to be told apart — a run that read a
+// service path of the project, and a run that changed folder in a shell and asked git
+// about it. Each of them goes on by itself, once, in the same session, with the text of
+// the habit (docs/DESIGN.md §7a.1).
+func TestRunGoesOnByItselfAfterAServicePathWasReadAndAfterAProbeInAShell(t *testing.T) {
+	cases := []struct {
+		name string
+		// command is what the run called a shell with, and refusal what it was refused:
+		// the events of the run are what tells crewflow which shape of refusal this is.
+		command, refusal string
+		want             reason
+		// told is what the text of the habit has to say for the run to stop stopping
+		// there, and it is the words a person reads in the assignment of the second run.
+		told string
+	}{
+		{
+			name:    "a service path of the project, as the run wrote it",
+			command: "cat ~/.crewflow/hooks/naghuale-crewflow/pre-push",
+			refusal: "~/.crewflow/hooks/naghuale-crewflow/pre-push",
+			want:    reasonService,
+			told:    "outside the map of the access of this run",
+		},
+		{
+			name:    "a probe of a copy in a shell",
+			command: "cd .scratch/tmp/probe && git init",
+			// The refusal names the folder the shell changed into, which is what the
+			// permission of the shell was asked for.
+			refusal: ".scratch/tmp/probe",
+			want:    reasonProbe,
+			told:    "t.TempDir()",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t)
+			cfg := projectOf(t, m.worktrees, "")
+			m.says("opencode",
+				answer{stdout: theCall(tc.command) + theRun,
+					stderr: "! permission requested: external_directory (" + tc.refusal + "); auto-rejecting\n"},
+				answer{stdout: theRun},
+			)
+			host := &host{task: taskOf(43), opened: true}
+
+			result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			if result.Outcome != ChangeRequestOpened || result.Attempt != 2 {
+				t.Fatalf("the run is the attempt %d and ended as %q, want the second and %q",
+					result.Attempt, result.Outcome, ChangeRequestOpened)
+			}
+			if result.AutoResumed != string(tc.want) {
+				t.Errorf("the run went on by itself for %q, want %q", result.AutoResumed, tc.want)
+			}
+			asked := strings.Join(m.commandsOf("opencode")[1].args, "\n")
+			if !strings.Contains(asked, tc.told) {
+				t.Errorf("the second run was asked no text about the habit %q:\n%s", tc.want, asked)
+			}
+			// The journal of the attempt that ended says which habit crewflow went on
+			// for, and the state of the task keeps the mark of it: both are what the
+			// orchestrator reads to know that nobody has to continue the task by hand.
+			state := stateOf(t, m, 43)
+			journal := read(t, state.Attempts[0].Journal)
+			if want := (resume{habit: habits[tc.want]}).line(); !strings.Contains(journal, want) {
+				t.Errorf("the journal of the attempt that ended holds no line %q:\n%s", want, journal)
+			}
+			if state.Attempts[1].AutoResumed != string(tc.want) {
+				t.Errorf("the second attempt is marked %q, want %q", state.Attempts[1].AutoResumed, tc.want)
+			}
+		})
+	}
+}
+
+// TestRunThatRepeatsAKnownHabitStopsAndNamesIt: an executor that was told the rule of a
+// habit and came to the same refusal again is not told it twice — the run is over, and
+// the reason of it names the habit crewflow has already answered, so that the queue says
+// what is to be looked into: the mechanism behind the habit or the rule of it
+// (docs/DESIGN.md §7a.1, §7j).
+func TestRunThatRepeatsAKnownHabitStopsAndNamesIt(t *testing.T) {
+	m := newMachine(t)
+	refused := answer{stdout: theCall("cd .scratch/tmp/probe && git init") + theRun,
+		stderr: "! permission requested: external_directory (.scratch/tmp/probe); auto-rejecting\n"}
+	m.says("opencode", refused, refused)
+	host := &host{task: taskOf(43), opened: true}
+
+	result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+		Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	if result.Outcome != BlockedPermission {
+		t.Errorf("the outcome = %q, want %q: the same habit twice is a refusal a person decides about",
+			result.Outcome, BlockedPermission)
+	}
+	if got := len(m.commandsOf("opencode")); got != 2 {
+		t.Errorf("the executor was run %d times, want the first and one resume", got)
+	}
+	if want := reasonRepeated + ": " + string(reasonProbe); result.Reason != want {
+		t.Errorf("the reason of the run = %q, want %q", result.Reason, want)
+	}
+	// The state of the task holds the reason with the habit in it: the queue of attention
+	// and a list of runs read the state and not the report of a run that is over.
+	state := stateOf(t, m, 43)
+	if len(state.Attempts) != 2 {
+		t.Fatalf("the state holds %d attempts, want the one that ended and its resume", len(state.Attempts))
+	}
+	if want := reasonRepeated + ": " + string(reasonProbe); state.Attempts[1].Reason != want {
+		t.Errorf("the attempt that stopped holds the reason %q, want %q", state.Attempts[1].Reason, want)
+	}
+	// The queue says that the run is over and what is to be looked into, and names no
+	// command: there is nothing to run here, the habit is the thing to look into.
+	one, wanted := AttentionOf(attentionEnvOf(m.clock), "naghuale-crewflow", state, HostFacts{})
+	if !wanted {
+		t.Fatalf("the queue holds nothing of the task: %+v", state)
+	}
+	if one.Reason != ReasonBlockedPermission {
+		t.Errorf("the reason of the entry = %q, want %q", one.Reason, ReasonBlockedPermission)
+	}
+	for _, want := range []string{"mechanism", "rule of it"} {
+		if !strings.Contains(one.Next, want) {
+			t.Errorf("the entry says no %q about what may be done: %q", want, one.Next)
+		}
+	}
+}
+
+// TestTheQueueSaysThatCrewflowWentOnByItself: a run crewflow went on with by itself is
+// said in the entry of the queue — the habit, the one line of what it was told and the
+// fact that the rights of the run are the ones of its first try. The habits of a project
+// are counted over the entries of its queue, and an entry that said nothing of the run
+// counts nothing (docs/DESIGN.md §7a.1, §6a).
+func TestTheQueueSaysThatCrewflowWentOnByItself(t *testing.T) {
+	m := newMachine(t)
+	m.says("opencode",
+		answer{stdout: theCall("cd .scratch/tmp/probe && git init") + theRun,
+			stderr: "! permission requested: external_directory (.scratch/tmp/probe); auto-rejecting\n"},
+		answer{stdout: theRun},
+	)
+	host := &host{task: taskOf(43), opened: true}
+
+	result, err := Run(t.Context(), m.env(), projectOf(t, m.worktrees, ""), host.set(),
+		Request{Number: 43, RepoDir: m.repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	one, wanted := AttentionOf(attentionEnvOf(m.clock), "naghuale-crewflow", stateOf(t, m, 43), HostFacts{})
+	if !wanted {
+		t.Fatalf("the queue holds nothing of a run that went on by itself: %+v", result)
+	}
+	for _, want := range []string{string(reasonProbe), "attempt 1 of 1", "rights of the run unchanged"} {
+		if !strings.Contains(one.Hint, want) {
+			t.Errorf("the entry of the queue holds no %q about the resume: %q", want, one.Hint)
+		}
+	}
+	// The words of what the run was told are in the hint as well: a person reading the
+	// queue learns the habit and the rule of it without opening the journal.
+	if !strings.Contains(one.Hint, habits[reasonProbe].headline) {
+		t.Errorf("the entry of the queue holds no text of the habit %q: %q", reasonProbe, one.Hint)
 	}
 }
 
@@ -971,10 +1135,195 @@ func TestHabitOf(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &runner{worktree: tc.worktree}
-			if got := r.habitOf(tc.refusal, tc.calls); got != tc.want {
+			if got, _ := r.habitOf(tc.refusal, tc.calls); got != tc.want {
 				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestTheHabitsOfTheRefusalsOfTheFirstOfOctober: on 01.10.2026 three runs of a day were
+// stopped by a shape of refusal the catalog did not know, and each of them was
+// continued by hand through `task run -continue` (F-084, F-093, F-095). The paths here
+// are made up and of the form the recorded ones are of, so that the test is about the
+// shape and not about one path of one machine: a worktree that is really there with a
+// file of the project in it, the service of a project, and a command of a shell that
+// went looking at a folder (docs/DESIGN.md §7a.1).
+func TestTheHabitsOfTheRefusalsOfTheFirstOfOctober(t *testing.T) {
+	// The home of the person is where crewflow keeps its own, and the worktrees of a
+	// project are made in it: the state of the runs, the journals, the hooks of the push
+	// — the path of F-093 as the run wrote it — and beside them every copy of the
+	// project, one of which is the worktree of the task.
+	home := t.TempDir()
+	root := filepath.Join(home, ".crewflow", "worktrees")
+	worktree := filepath.Join(root, "owner-repo", "43")
+	// A file of the project really there: a path written out by hand is a habit of a run
+	// only where the file it was after is.
+	write(t, filepath.Join(worktree, "internal", "run", "resume.go"), "package run\n")
+	// One worktree of another task of the project, the same project spelled with a
+	// letter out of place, and the folder git keeps its own files in: F-095 as the run
+	// wrote it, a copy of the project that is not the worktree.
+	besideWorktree := filepath.Join(root, "owner-repo", "44")
+	typo := filepath.Join(root, "owner-repz", "2")
+	gitDir := filepath.Join(root, "owner-repo", ".git", "worktrees", "43")
+	// A copy of the project the person made of their own, outside the folder of crewflow:
+	// a path of it is a path of the machine and nothing of the service of the tool.
+	elsewhere := filepath.Join(home, "src", "owner-repz", "2")
+	cases := []struct {
+		name    string
+		refusal string
+		calls   []profile.Call
+		want    reason
+		// place is the path of the worktree the text of the habit has to name: the
+		// file a path written out by hand was after, and nothing for every other habit.
+		place string
+	}{
+		{
+			name:    "a path of the worktree under a folder spelled with a letter out of place",
+			refusal: "external_directory " + filepath.Join(typo, "internal", "run", "resume.go"),
+			want:    reasonWorktree,
+			place:   "internal/run/resume.go",
+		},
+		{
+			name:    "the worktree of another task of the same project",
+			refusal: "external_directory " + besideWorktree,
+			want:    reasonOutside,
+		},
+		{
+			// A file of the project under the worktree of another task is not the wrong
+			// `cd` — the run is not looking for a folder, it is after a file — and the
+			// file it is after is in this worktree, which is what it is told.
+			name:    "a file of the project under the worktree of another task",
+			refusal: "external_directory " + filepath.Join(besideWorktree, "internal", "run", "resume.go"),
+			want:    reasonWorktree,
+			place:   "internal/run/resume.go",
+		},
+		{
+			// A copy of the project is not the service of the tool, and a file of a
+			// worktree of another task that is nowhere in this one is not a habit: the
+			// run is refused it and stops, as it stopped before the catalog of §7a.1 grew.
+			name:    "a file of another worktree of the project that is nowhere in this one",
+			refusal: "external_directory " + filepath.Join(besideWorktree, "docs", "notes.md"),
+			want:    reasonOther,
+		},
+		{
+			// A folder of the worktree of the task is not a service path either, and a
+			// run that is refused one of them is not told that the work of the task is
+			// outside the map of the access of the run.
+			name:    "a folder of the worktree of the task, as the run wrote it",
+			refusal: "external_directory .scratch/tmp/probe",
+			want:    reasonOther,
+		},
+		{
+			// The file at the end of the path is not in the worktree, so the run did not
+			// mean it: a path written out by hand is a habit of a run only where the file
+			// it was after is really there.
+			name:    "a path written out by hand that leads to a file of no copy of the project",
+			refusal: "external_directory " + filepath.Join(elsewhere, "internal", "run", "missing.go"),
+			want:    reasonOther,
+		},
+		{
+			// A name of a file of the root of the project is not a path a run meant: the
+			// beginning of a path written out by hand is a guess, and one part of it is
+			// too little to tell a guess from a name that happens to be the same.
+			name:    "a name of a file of the root of the worktree and nothing more",
+			refusal: "external_directory " + filepath.Join(elsewhere, "go.mod"),
+			want:    reasonOther,
+		},
+		{
+			// A path in the folder crewflow keeps its own in is a service path whether or
+			// not a file of the worktree stands at the end of it, and the file of the
+			// worktree is what the habit of a path written out by hand is for: a run that
+			// reaches for a path of the tool is not one crewflow tells where its own files
+			// are.
+			name:    "a path of the folder of crewflow that leads to no file of the worktree",
+			refusal: "external_directory " + filepath.Join(typo, "internal", "run", "missing.go"),
+			want:    reasonService,
+		},
+		{
+			name:    "a path of the service of the project, as the run wrote it",
+			refusal: "external_directory ~/.crewflow/hooks/owner-repo/pre-push",
+			want:    reasonService,
+		},
+		{
+			name:    "the path git reports for the folder of its own files",
+			refusal: "external_directory " + filepath.Join(gitDir, "config"),
+			want:    reasonService,
+		},
+		{
+			name:    "a path of the worktree in a command that changed folder and asked git",
+			refusal: "external_directory .scratch/tmp/probe",
+			calls:   []profile.Call{{Tool: "bash", Argument: "cd .scratch/tmp/probe && git init"}},
+			want:    reasonProbe,
+		},
+		{
+			name:    "the same folder in a command that changed folder and asked the filesystem",
+			refusal: "external_directory .scratch/tmp/probe",
+			calls:   []profile.Call{{Tool: "bash", Argument: "cd .scratch/tmp/probe; ls -la"}},
+			want:    reasonProbe,
+		},
+		{
+			name:    "the same folder in a command that asked git without changing folder",
+			refusal: "external_directory .scratch/tmp/probe",
+			calls:   []profile.Call{{Tool: "bash", Argument: "git status .scratch/tmp/probe"}},
+			want:    reasonOther,
+		},
+		{
+			// A `cd` in a shell is not a probe on its own: a command that changes folder
+			// and runs the gates of the project is the work of the task and not a habit,
+			// and a habit crewflow answers for it would tell a run to do in a test what
+			// it is doing for the task.
+			name:    "a command that changed folder and ran the gates of the project",
+			refusal: "external_directory internal/run",
+			calls:   []profile.Call{{Tool: "bash", Argument: "cd internal/run && go test ./..."}},
+			want:    reasonOther,
+		},
+		{
+			name:    "a file of the worktree read by a tool of the agent and not by a shell",
+			refusal: "external_directory " + filepath.Join(worktree, "internal", "run", "resume.go"),
+			calls:   []profile.Call{{Tool: "read", Argument: filepath.Join(worktree, "internal", "run", "resume.go")}},
+			want:    reasonWorktree,
+			place:   "internal/run/resume.go",
+		},
+		{
+			name:    "a program of the machine that is not the service of the project",
+			refusal: "external_directory /opt/homebrew/bin/git",
+			want:    reasonOther,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := &runner{worktree: worktree, env: Env{UserHome: home}}
+			got, place := r.habitOf(tc.refusal, tc.calls)
+			if got != tc.want {
+				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
+			}
+			if place != tc.place {
+				t.Errorf("the file of the worktree the refusal %q is about = %q, want %q", tc.refusal, place, tc.place)
+			}
+		})
+	}
+}
+
+// TestTheTextOfTheHabitNamesTheFileItIsAbout: the answer to a path written out by hand is
+// about one file, and a text that does not name it tells a run how to address files
+// without telling it which file it was after (docs/DESIGN.md §7a.1).
+func TestTheTextOfTheHabitNamesTheFileItIsAbout(t *testing.T) {
+	one := resume{habit: habits[reasonWorktree], place: "internal/run/resume.go"}
+	if strings.Contains(one.tells(), theFile) {
+		t.Errorf("the text the next attempt is asked holds the hole of it:\n%s", one.tells())
+	}
+	if !strings.Contains(one.tells(), "internal/run/resume.go") {
+		t.Errorf("the text the next attempt is asked names no file of the worktree:\n%s", one.tells())
+	}
+	if !strings.Contains(one.line(), "internal/run/resume.go") {
+		t.Errorf("the line of the journal names no file of the worktree: %q", one.line())
+	}
+	// A habit with no file of its own is asked as it is written: there is no hole in it
+	// and a path of a refusal has no place in it.
+	other := resume{habit: habits[reasonService]}
+	if other.tells() != other.text {
+		t.Errorf("the text of the habit %q is not what the next attempt is asked:\n%s", reasonService, other.tells())
 	}
 }
 
@@ -1010,28 +1359,44 @@ func TestTheAssignmentLeadsWithTheTemporaryFiles(t *testing.T) {
 }
 
 // TestTheHabitsAreTextCrewflowCanGive: a habit without a text is a habit crewflow
-// cannot answer, and a text that names no place to write is an answer of no use to
-// the executor that stopped (docs/DESIGN.md §7a).
+// cannot answer, and a text that names no rule of the project is an answer of no use to
+// the executor that stopped (docs/DESIGN.md §7a, §7a.1).
 func TestTheHabitsAreTextCrewflowCanGive(t *testing.T) {
-	for _, want := range []reason{reasonTmp, reasonOutside, reasonMention} {
-		one, known := habits[want]
+	cases := []struct {
+		reason reason
+		// text is what the habit has to say for the run to stop stopping there: the rule
+		// of the project that answers this refusal and not another one.
+		text []string
+	}{
+		{reasonTmp, []string{".scratch/tmp", "zz_debug_test.go"}},
+		{reasonOutside, []string{"(cd dir && command)"}},
+		{reasonMention, []string{"Edit such files with the tools of edit and write"}},
+		{reasonWorktree, []string{theFile, "from the root of the worktree"}},
+		{reasonService, []string{"outside the map of the access of this run"}},
+		{reasonProbe, []string{"t.TempDir()", "and not in a shell"}},
+	}
+	for _, tc := range cases {
+		one, known := habits[tc.reason]
 		if !known {
-			t.Errorf("crewflow knows no habit %q", want)
+			t.Errorf("crewflow knows no habit %q", tc.reason)
 			continue
 		}
-		if one.reason != want {
-			t.Errorf("the habit %q is stored as %q", want, one.reason)
+		if one.reason != tc.reason {
+			t.Errorf("the habit %q is stored as %q", tc.reason, one.reason)
 		}
 		if one.headline == "" || one.text == "" {
-			t.Errorf("the habit %q has no text to go on with: %+v", want, one)
+			t.Errorf("the habit %q has no text to go on with: %+v", tc.reason, one)
 		}
-	}
-	for _, want := range []string{".scratch/tmp", "zz_debug_test.go"} {
-		if !strings.Contains(habits[reasonTmp].text, want) {
-			t.Errorf("the text of the habit %q does not hold %q", reasonTmp, want)
+		for _, want := range tc.text {
+			if !strings.Contains(one.text, want) {
+				t.Errorf("the text of the habit %q does not hold %q:\n%s", tc.reason, want, one.text)
+			}
 		}
-	}
-	if !strings.Contains(habits[reasonOutside].text, "(cd dir && command)") {
-		t.Errorf("the text of the habit %q does not hold a subshell", reasonOutside)
+		// Every habit ends with the one thing a run of a task is for, whatever it was
+		// refused for: a text of a habit that only says what is wrong leaves a run with
+		// nothing to do about it.
+		if want := "open the change request of its branch"; !strings.Contains(one.text, want) {
+			t.Errorf("the text of the habit %q says nothing about the work: %q", tc.reason, one.text)
+		}
 	}
 }

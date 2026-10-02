@@ -1,6 +1,7 @@
 package run
 
 import (
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -17,6 +18,12 @@ import (
 // a constant of this file, `/tmp` stays closed — it holds the temporary files and the
 // sockets of other programs — and a refusal crewflow has no habit for is a refusal an
 // orchestrator decides about. That is what the list is: the line between the two.
+//
+// The list grows by the facts of the journals: 01.10.2026 three runs of a day were
+// stopped by the same three shapes of refusal, and each of them was continued by hand
+// (F-084, F-093, F-095) — a shape a run is answered by itself on is a shape an
+// orchestrator is not asked about twice. Nothing of the list is about the rights of a
+// run: every text in it narrows what a run is to do and widens nothing.
 
 // reason is the habit of an executor that a refusal is about. The names are the same
 // in the state of a task, in a journal and in the answer of a run, and they are short
@@ -39,10 +46,30 @@ const (
 	// text and never opens: a heredoc or a script that writes a file of the project,
 	// where the run is refused the whole command for what it writes down.
 	reasonMention reason = "mention"
+	// reasonWorktree is a path of the machine whose end is a path of the worktree: a
+	// path written out by hand whose beginning leads to a folder that is not this
+	// worktree, a copy of the project or a worktree spelled with a letter out of
+	// place (F-095, 01.10.2026).
+	reasonWorktree reason = "worktree-path"
+	// reasonService is a path of the service of the project — the state of the runs,
+	// the journals, the hooks of the push, the folder git keeps its own files in —
+	// and nothing of the work of the task is in it (F-093, 01.10.2026).
+	reasonService reason = "service-path"
+	// reasonProbe is a command of a shell that changed folder and asked git or the
+	// filesystem about it: a copy probed by hand where a test of the run would answer
+	// the same question (F-084, 01.10.2026).
+	reasonProbe reason = "shell-probe"
 	// reasonNone is a run that goes on with nothing: no attempt of it was refused a
 	// habit crewflow knows, and the run of the task stops for the orchestrator.
 	reasonNone reason = ""
 )
+
+// reasonRepeated is the reason a run carries that stopped on a habit crewflow has
+// already answered in this very run. The refusal is honest about itself — the run is
+// over, and it is over because the same habit came twice — and what is to be looked
+// into is the habit: its mechanism or the rule of it, and not a run that has been told
+// (docs/DESIGN.md §7a.1, §7j).
+const reasonRepeated = "known-habit-repeated"
 
 // habits is what crewflow knows of the ways an executor stops a run, and the one text
 // each of them goes on with. The texts are in English whatever the language of the
@@ -84,7 +111,52 @@ var habits = map[reason]habit{
 			"path of the machine in the text you write rather than in a command that opens it.\n" +
 			"Do the work of the task and open the change request of its branch.",
 	},
+	reasonWorktree: {
+		reason:   reasonWorktree,
+		headline: "a path written out by hand was refused, and the file is a path from the root of the worktree",
+		text: "The run was refused a permission for a path of the machine and stopped there. The file " +
+			"it was after is " + theFile + " — a file of this worktree, named by a path whose " +
+			"beginning leads somewhere else: a copy of the project, the worktree of another task, " +
+			"another machine.\n" +
+			"Address every file of the project by the path it has from the root of the worktree, from " +
+			"the root and down. The map of the access of this run stands in the first lines of this " +
+			"journal: the worktree is where the work of the task is, and the machine in front of a " +
+			"path of the worktree is the machine of somebody else's copy.\n" +
+			"Do the work of the task and open the change request of its branch.",
+	},
+	reasonService: {
+		reason:   reasonService,
+		headline: "a path of the service of the project is refused, and it is not what the task is about",
+		text: "The run was refused a permission for a path of the machine and stopped there. What is " +
+			"on that path belongs to the service of this project — the state of the runs, the " +
+			"journals, the hooks of the push, the folder git keeps its own files in — and nothing of " +
+			"the work of the task is in it. That path is outside the map of the access of this run.\n" +
+			"A run does not learn the rules of the project by reading the files of the tool: the " +
+			"rules are in the assignment of this run and in the files of the worktree, and the hooks " +
+			"of the push say what they say without being read.\n" +
+			"Go on with the work of the task and open the change request of its branch.",
+	},
+	reasonProbe: {
+		reason:   reasonProbe,
+		headline: "a probe of a copy in a shell is refused, check it in a test with t.TempDir()",
+		text: "The run was refused a permission for one command of a shell and stopped there. The " +
+			"command changed folder and asked git or the filesystem about it: a copy of the project " +
+			"probed by hand, in a folder of the worktree or in the scratch of the run. A command of a " +
+			"shell is refused whole, so the probe ends the run without a word of what git would have " +
+			"said.\n" +
+			"Check what a program does in a test of your own with a temporary folder — `t.TempDir()` " +
+			"in Go, and not in a shell — and let the toolchain manage the files it needs for itself. " +
+			"A test you want to watch while you work on it belongs in the package with the other " +
+			"tests, as `zz_debug_test.go`, and you take it away before you commit.\n" +
+			"Do the work of the task and open the change request of its branch.",
+	},
 }
+
+// theFile is where the text of a habit takes the file of the refusal the run was
+// stopped at. The answer to a path written out by hand is about that one file, and a
+// text that named no file would tell a run how to address files without telling it
+// which file it was after.
+const theFile = "`the file of the worktree`"
 
 // habit is what crewflow knows of one way of stopping a run: the name of it, the one
 // line a journal and a report show of it, and the text the next attempt of the task is
@@ -101,22 +173,57 @@ type habit struct {
 }
 
 // resume is a run that goes on by itself: the habit the attempt before it was refused
-// for, and the text it goes on with. An empty one is a run that stops and waits for
-// the orchestrator, and its reason is the empty one.
+// for, the path of the refusal the text of that habit answers about, and the text it
+// goes on with. An empty one is a run that stops and waits for the orchestrator, and
+// its reason is the empty one.
 type resume struct {
 	habit
+	// place is what the text of the habit has to name and the refusal held: the file of
+	// the worktree that a path written out by hand was after. It is empty for a habit
+	// whose answer is the same for every refusal of it, and so is the hole in the text
+	// of the one habit that has a place for the refusal.
+	place string
 }
 
 // line is what the journal of the attempt holds about a run that goes on by itself,
 // and what a watch shows of it: the attempt ended here, and crewflow went on in the
-// same session because of this habit (docs/DESIGN.md §7a).
+// same session because of this habit (docs/DESIGN.md §7a). Where the habit answers
+// about one path, the line names it: a person reading the refusal above wants to see
+// which file that refusal was really about.
 func (n resume) line() string {
-	return "crewflow: resumed once — " + n.headline
+	line := "crewflow: resumed once — " + n.headline
+	if n.place != "" {
+		line += " (" + n.place + ")"
+	}
+	return line
+}
+
+// tells is what the next attempt of the task is asked: the text of the habit with the
+// file of the refusal in the one place of it that is about this refusal and not about
+// the habit (docs/DESIGN.md §7a).
+func (n resume) tells() string {
+	if n.place == "" {
+		return n.text
+	}
+	return strings.Replace(n.text, theFile, n.place, 1)
+}
+
+// told is the one line of what a run was told when crewflow went on with it by itself,
+// and the empty one for a habit this build of crewflow does not know: a state of
+// yesterday may name a habit the catalog has dropped since, and a queue has no words for
+// a habit it cannot name (docs/DESIGN.md §7a.1, §6a).
+func told(habit string) string {
+	one, known := habits[reason(habit)]
+	if !known {
+		return ""
+	}
+	return " — " + one.headline
 }
 
 // goesOnByItself is what crewflow goes on with after an attempt that stopped on a
-// habit it knows, and an empty resume where a run has to stop. Five things keep a run
-// from going on by itself:
+// habit it knows, an empty resume where a run has to stop, and the state of the task
+// with the reason of the refusal written into the attempt that has just ended. Five
+// things keep a run from going on by itself:
 //
 //   - it did not stop on a refusal at all, or it was stopped by a person or by the
 //     time of the project: those are decided by a person, and the orchestrator knows
@@ -134,29 +241,32 @@ func (n resume) line() string {
 //   - the attempt that ended went on by itself for this very habit: an executor that
 //     was told where its scratch is and wrote into /tmp again is not to be told a
 //     second time, and the orchestrator decides (docs/DESIGN.md §7a, §7j).
-func (r *runner) goesOnByItself(result Result, state State, calls []profile.Call) resume {
+func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Call) (resume, State) {
 	if result.Outcome != BlockedPermission {
-		return resume{}
+		return resume{}, state
 	}
 	// A task that was stopped for reaching a secret is not continued by crewflow at all,
 	// whatever the next attempt was refused: the attempt before this one is what says
 	// that, and its outcome is what a person reads before the next run (docs/DESIGN.md
 	// §7a.1, §8).
 	if before, was := r.before(state); was && before.Outcome == BlockedSecret {
-		return resume{}
+		return resume{}, state
 	}
 	next, known := r.oneHabitOf(result.Rejections, calls)
 	if !known {
-		return resume{}
+		return resume{}, state
 	}
 	// The attempt of the run that has just ended is the one before the resume that is
 	// being worked out, and its own mark says whether crewflow is the one that went on
 	// into it: a habit crewflow has already answered once in this run is a habit it does
-	// not answer twice.
+	// not answer twice. The refusal says so in the report and in the state, with the
+	// habit that was answered in it: what is to be looked into is the habit and not a
+	// run that has been told (docs/DESIGN.md §7a.1, §7j).
 	if before := r.ended(state); before.AutoResumed == string(next.reason) {
-		return resume{}
+		result.Reason = reasonRepeated + ": " + string(next.reason)
+		return resume{}, state.Reason(result.Reason)
 	}
-	return next
+	return next, state
 }
 
 // oneHabitOf is the habit every refusal of an attempt is about, and whether crewflow
@@ -166,16 +276,17 @@ func (r *runner) oneHabitOf(rejections []string, calls []profile.Call) (resume, 
 	if len(rejections) == 0 {
 		return resume{}, false
 	}
-	one, known := habits[r.habitOf(rejections[0], calls)]
+	name, place := r.habitOf(rejections[0], calls)
+	one, known := habits[name]
 	if !known {
 		return resume{}, false
 	}
 	for _, rejection := range rejections[1:] {
-		if r.habitOf(rejection, calls) != one.reason {
+		if other, _ := r.habitOf(rejection, calls); other != one.reason {
 			return resume{}, false
 		}
 	}
-	return resume{habit: one}, true
+	return resume{habit: one, place: place}, true
 }
 
 // ended is the attempt of the run that has just ended, which is the last one in the
@@ -199,10 +310,11 @@ func (r *runner) before(state State) (Attempt, bool) {
 	return state.Attempts[len(state.Attempts)-2], true
 }
 
-// habitOf is the habit one refusal of a run is about — the classifier of a refusal,
-// and the whole of what crewflow knows of the ways an executor stops (docs/DESIGN.md
-// §7a). A refusal names the kind of the permission and what it was about, and only
-// the second of the two says whether the run made a mistake crewflow knows of.
+// habitOf is the habit one refusal of a run is about and the file of the worktree the
+// text of that habit has to name — the classifier of a refusal, and the whole of what
+// crewflow knows of the ways an executor stops (docs/DESIGN.md §7a). A refusal names the
+// kind of the permission and what it was about, and only the second of the two says
+// whether the run made a mistake crewflow knows of.
 //
 // A refusal of a place of secrets never reaches this: such a run is `blocked-secret`
 // from the start and goes on by itself nothing (§7a.1, §7d, §8).
@@ -212,22 +324,137 @@ func (r *runner) before(state State) (Attempt, bool) {
 // wherever the worktrees of a project live — on a machine whose worktrees live in the
 // temporary folder, every one of them is under `/tmp`, and a habit that is read as "it
 // wrote to /tmp" is a habit crewflow answers with the wrong words. A path named only in
-// the text of a command is the same case for the same reason. The temporary folder is
-// what is left, and it is the only habit of the three that is about the machine alone.
-func (r *runner) habitOf(refusal string, calls []profile.Call) reason {
+// the text of a command is the same case for the same reason. A probe of a copy in a
+// shell is a habit of the worktree whatever the folder is, and the answer to it is the
+// same wherever the worktrees live. The temporary folder is what is left of the machine
+// alone, and the two that follow it are about paths a run wrote out by hand or took
+// from the service of the project — the last of the three before `other` is the one
+// that asks the machine about a file, and it asks it about the worktree and nothing
+// else (docs/DESIGN.md §7a.1).
+func (r *runner) habitOf(refusal string, calls []profile.Call) (reason, string) {
 	path := refusedPath(refusal)
 	switch {
 	case path == "":
-		return reasonOther
+		return reasonOther, ""
 	case beside(path, r.worktree):
-		return reasonOutside
+		return reasonOutside, ""
 	case onlyNamed(path, calls, r.worktree):
-		return reasonMention
+		return reasonMention, ""
+	case probed(path, calls, r.worktree):
+		return reasonProbe, ""
 	case temporary(path):
-		return reasonTmp
-	default:
-		return reasonOther
+		return reasonTmp, ""
 	}
+	if place := r.placeOf(path); place != "" {
+		return reasonWorktree, place
+	}
+	if service(path, r.worktree, r.env.UserHome) {
+		return reasonService, ""
+	}
+	return reasonOther, ""
+}
+
+// placeOf is the path of the worktree a refused path is about, as a path from the root
+// of the worktree: the file a run was after, named by a path of the machine that does not
+// lead to this worktree. It is the empty one for a path that leads to no file of the
+// worktree, and the answer of a habit that has no place of its own holds nothing
+// (docs/DESIGN.md §7a.1).
+//
+// This is the one question the classifier asks the machine, and it asks it about the
+// worktree of the task and nothing else: a path written out by hand is a habit of a run
+// only where the file it was after is really there, and a run of a project that is
+// checked out somewhere else has to be told the same thing.
+func (r *runner) placeOf(path string) string {
+	folder := plain(path)
+	root := filepath.Clean(r.worktree)
+	if folder == "" || root == "" || root == "." || !filepath.IsAbs(folder) {
+		return ""
+	}
+	parts := strings.Split(folder, string(filepath.Separator))
+	// The end of the path is looked through from the longest one down, and the longest
+	// end that is a path of the worktree is the file the run was after: `internal/run/
+	// resume.go` says more of it than `run/resume.go` would, and the part a run wrote by
+	// hand is the beginning of the path. Two parts are the least there may be — a folder
+	// and a file of the worktree — because a name that matches a file of the root of the
+	// project is a coincidence of names and not a path a run meant.
+	for at := 1; at <= len(parts)-2; at++ {
+		rest := filepath.Join(parts[at:]...)
+		if _, err := os.Stat(filepath.Join(root, rest)); err == nil {
+			return filepath.ToSlash(rest)
+		}
+	}
+	return ""
+}
+
+// probed says that the refusal is about a copy of the project that a command of a shell
+// went looking at: the command changed folder into it and asked git or the filesystem
+// about it. The folder is of the worktree — its scratch included — and the rule of the
+// project is about a `cd` in a shell whatever the folder of it is: a command of a shell
+// is refused whole, so a probe ends the run without a word of what it would have learned
+// (docs/DESIGN.md §7a.1).
+func probed(path string, calls []profile.Call, worktree string) bool {
+	if !inside(path, worktree) {
+		return false
+	}
+	folder := plain(path)
+	for _, call := range calls {
+		if !isShell(call.Tool) || !strings.Contains(call.Argument, folder) {
+			continue
+		}
+		if folderChangedInto(call.Argument) != "" && asksAbout(call.Argument) {
+			return true
+		}
+	}
+	return false
+}
+
+// probes are the names of the programs a command of a shell asks git or the filesystem
+// with: what a run of a task reaches for when it wants to know how a folder behaves. A
+// name is not a shell word on its own and is read as it is written, in a mark of a shell
+// and without the folder of the program in front of it.
+var probes = map[string]bool{
+	"git": true, "ls": true, "cat": true, "cp": true, "mv": true, "rm": true,
+	"mkdir": true, "touch": true, "stat": true, "find": true, "pwd": true, "tree": true,
+}
+
+// asksAbout is whether a command of a shell asks git or the filesystem about something,
+// which is what a command that changed folder and then said `ls` or `git status` does.
+func asksAbout(command string) bool {
+	for _, word := range strings.Fields(command) {
+		if probes[filepath.Base(bareWord(word))] {
+			return true
+		}
+	}
+	return false
+}
+
+// service says that the path belongs to the service of the project rather than to the
+// work of a task: the folder crewflow keeps the state, the journals and the hooks of the
+// push in under the home of the person, and the folder git keeps its own files in, which
+// is what `git rev-parse --git-dir` and `git rev-parse --git-path` report and what a
+// run reads when it wants to know where the hooks of the project are (docs/DESIGN.md
+// §7a.1, §7f).
+//
+// Everything under the folder the worktrees of the project are made in is out of it: a
+// copy of the project is not the service of the tool, and a run that was refused a file
+// of another worktree is a run the wrong `cd` and a path written out by hand are habits
+// of — whether or not they are habits crewflow knows is not this question to answer. A
+// path in the folder of crewflow whose end is a file of the worktree is a path written
+// out by hand, and it is looked for before this one.
+func service(path, worktree, home string) bool {
+	folder := plain(path)
+	root := filepath.Clean(worktree)
+	if folder == "" || root == "" || root == "." {
+		return false
+	}
+	for _, part := range strings.Split(filepath.ToSlash(folder), "/") {
+		if part == ".git" {
+			return true
+		}
+	}
+	place := resolved(folder, root, home)
+	return home != "" && !under(filepath.Dir(root), place) &&
+		under(filepath.Join(home, ".crewflow"), place)
 }
 
 // refusedPath is the path or the command a refusal is about, and an empty string for

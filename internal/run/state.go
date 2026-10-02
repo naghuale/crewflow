@@ -338,6 +338,19 @@ func (s State) Ended(ended time.Time, outcome Kind) State {
 	return s
 }
 
+// Reason is the reason the attempt that has just ended is to be read with, and it is
+// written into that attempt while it is still the one that ended: the state of a task is
+// where the queue of attention and a list of runs read why a run stopped, and a run that
+// repeated a habit crewflow had already answered says so in the state and not only in
+// the journal it is over (docs/DESIGN.md §7a.1, §6a).
+func (s State) Reason(reason string) State {
+	if len(s.Attempts) == 0 {
+		return s
+	}
+	s.Attempts[len(s.Attempts)-1].Reason = reason
+	return s
+}
+
 // Alive is a sign of life of the attempt that is going: when crewflow last did
 // something of its own for the run, what that was, and what the run stands at where
 // crewflow knows it. A run whose executor writes is alive whatever crewflow writes into

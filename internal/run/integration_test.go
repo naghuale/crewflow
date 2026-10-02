@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/naghuale/crewflow/internal/proc"
+	"github.com/naghuale/crewflow/internal/run/profile"
 )
 
 // theEvents is what an agent of a real run writes: one line of JSON per event, each
@@ -265,6 +266,203 @@ func TestRunGoesOnByItselfAfterARealExecutorWroteToTmp(t *testing.T) {
 	if want := "crewflow: resumed once — " + habits[reasonTmp].headline; !strings.Contains(first, want) {
 		t.Errorf("the journal of the attempt that ended holds no line %q:\n%s", want, first)
 	}
+}
+
+// TestRunGoesOnByItselfAfterAPathOfTheWorktreeWasWrittenOutByHand: the case of F-095 —
+// the run wrote a path of the worktree out by hand, the project of the path is spelled
+// with a letter out of place, and the path leads to a copy of the project and not to the
+// worktree of the task. The file it was after is in the worktree, and the run is told
+// which file and told to address it from the root of the worktree, in the same worktree
+// and in the same session, and the work goes on (docs/DESIGN.md §7a.1).
+func TestRunGoesOnByItselfAfterAPathOfTheWorktreeWasWrittenOutByHand(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	repo, _ := repository(t)
+	// The project of a task of a test has files in it, so that a path written out by
+	// hand has a file of the worktree at the end of it: the habit of a path is a habit
+	// only where the file is really there.
+	write(t, filepath.Join(repo, "internal", "run", "resume.go"), "package run\n")
+	gitOf(t, repo, "add", ".")
+	gitOf(t, repo, "commit", "-m", "feat: the project of a test")
+	gitOf(t, repo, "push", "origin", "main")
+	cfg := projectOf(t, t.TempDir(), "1h")
+	worktree, err := Worktree(cfg, 43)
+	if err != nil {
+		t.Fatalf("the worktree of the task: %v", err)
+	}
+	// The copy of the project the run addressed: the same worktree, the same task
+	// number, and the name of the project with a letter out of place.
+	typo := filepath.Join(filepath.Dir(filepath.Dir(worktree)), "owner-repz", "2", "internal", "run", "resume.go")
+	// The fake executor writes the file of the worktree the run meant — the events of the
+	// call say which file — and is refused for the path of the copy. In the second run it
+	// does the work of the task and opens the change request.
+	executor := fakeExecutor(t, "opencode",
+		"mkdir -p .scratch/tmp\n"+
+			"printf '%s\\n' \"$*\" >> .scratch/tmp/args\n"+
+			"printf '%s' '"+theCall("edit "+typo)+theEvents+"'\n"+
+			"if [ -f .scratch/tmp/refused ]; then\n"+
+			commit("internal/run/resume.go", "package run // the work of the run\n")+
+			"else\n"+
+			"  touch .scratch/tmp/refused\n"+
+			said("! permission requested: external_directory ("+typo+"); auto-rejecting\n")+
+			"fi\n")
+	cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+	home := t.TempDir()
+
+	result, err := Run(t.Context(), System(home), cfg, (&host{task: taskOf(43), opened: true}).set(),
+		Request{Number: 43, RepoDir: repo})
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	if result.Outcome != ChangeRequestOpened || result.Attempt != 2 {
+		t.Fatalf("the run is the attempt %d and ended as %q, want the second and %q",
+			result.Attempt, result.Outcome, ChangeRequestOpened)
+	}
+	if result.AutoResumed != string(reasonWorktree) {
+		t.Errorf("the run went on by itself for %q, want %q", result.AutoResumed, reasonWorktree)
+	}
+	// The next attempt is told which file the run was after, and told it as a path from
+	// the root of the worktree: a rule about files and not only about the refusal.
+	state, err := LoadState(newJournals(home, "naghuale-crewflow").StatePath(43))
+	if err != nil {
+		t.Fatalf("load the state of the task: %v", err)
+	}
+	asked := read(t, filepath.Join(worktree, ".scratch", "tmp", "args"))
+	if want := "internal/run/resume.go"; !strings.Contains(asked, want) {
+		t.Errorf("the second run was asked no path of the file it was after:\n%s", asked)
+	}
+	first := read(t, state.Attempts[0].Journal)
+	one := resume{habit: habits[reasonWorktree], place: "internal/run/resume.go"}
+	if want := one.line(); !strings.Contains(first, want) {
+		t.Errorf("the journal of the attempt that ended holds no line %q:\n%s", want, first)
+	}
+}
+
+// TestASecretIsNotAHabitWhateverTheShapeOfItIs: the places that stay closed are looked
+// for before every habit of §7a.1, and each of the shapes those habits are of can be worn
+// by a refusal of a secret — a probe of a copy where a `.env` of the worktree stands, a
+// path written out by hand whose end is a `.env` that is really in the worktree, a
+// worktree that is itself in a place of secrets. The classifier calls each of them the
+// habit it is, and the run stops for the secret all the same: a run that reached a key is
+// a run a person decides about, whatever the shape of the command was (§7a.1, §7d, §8).
+func TestASecretIsNotAHabitWhateverTheShapeOfItIs(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("the home of the person: %v", err)
+	}
+	cases := []struct {
+		name string
+		// command and refusal are what the run called a shell with and what it was
+		// refused for, as functions of the worktree of the task: the habit of a path is
+		// a habit only where the file the run was after is really there.
+		command, refusal func(worktree string) string
+		habit            reason
+		kind             string
+		inSecrets        bool
+	}{
+		{
+			name:    "a probe of a copy that stands where a `.env` of the worktree does",
+			command: func(string) string { return "cd .scratch/tmp/.env.production && git init" },
+			refusal: func(string) string { return ".scratch/tmp/.env.production" },
+			habit:   reasonProbe,
+			kind:    accessCd,
+		},
+		{
+			name: "a path written out by hand whose end is a `.env` of the worktree",
+			command: func(worktree string) string {
+				return "cat " + copied(worktree, "config", ".env.local")
+			},
+			refusal: func(worktree string) string {
+				return copied(worktree, "config", ".env.local")
+			},
+			habit: reasonWorktree,
+			kind:  accessRead,
+		},
+		{
+			name:      "a probe of a copy in a worktree that stands in a place of secrets",
+			command:   func(string) string { return "cd .scratch/tmp/probe && git init" },
+			refusal:   func(string) string { return ".scratch/tmp/probe" },
+			habit:     reasonProbe,
+			kind:      accessCd,
+			inSecrets: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A repository of its own for every case: the worktrees of a task are made
+			// with the branch of the task, and one repository cannot hold that branch
+			// twice.
+			repo, _ := repository(t)
+			write(t, filepath.Join(repo, "config", ".env.local"), "TOKEN=one\n")
+			gitOf(t, repo, "add", ".")
+			gitOf(t, repo, "commit", "-m", "feat: the project of a test")
+			gitOf(t, repo, "push", "origin", "main")
+			cfg := projectOf(t, t.TempDir(), "1h")
+			if tc.inSecrets {
+				// The worktrees of the project are made where a place of secrets is,
+				// which no project would name and this test has to: it is the only way
+				// the check of a secret and a habit of a folder of the worktree meet on
+				// one refusal (docs/DESIGN.md §7d).
+				cfg.Worktrees.Root = filepath.Join(userHome, ".ssh", "{repo}")
+			}
+			worktree, err := Worktree(cfg, 43)
+			if err != nil {
+				t.Fatalf("the worktree of the task: %v", err)
+			}
+			refused := tc.refusal(worktree)
+			executor := fakeExecutor(t, "opencode",
+				"printf '%s' '"+theCall(tc.command(worktree))+theEvents+"'\n"+
+					said("! permission requested: external_directory ("+refused+"); auto-rejecting\n"))
+			cfg.Executor.Command = []string{executor, "{worktree}", "--prompt", "{prompt}"}
+
+			result, err := Run(t.Context(), System(t.TempDir()), cfg, (&host{task: taskOf(43), opened: true}).set(),
+				Request{Number: 43, RepoDir: repo})
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+
+			// The habit the refusal is about, worked out the way a run works it out and
+			// after the worktree of the task is really there: a run that reached a secret
+			// is stopped before the habits are looked at, and this is what the check of
+			// a secret is there for.
+			r := &runner{worktree: worktree, env: Env{UserHome: userHome}}
+			if got, _ := r.habitOf("external_directory "+refused, []profile.Call{{
+				Tool: "bash", Argument: tc.command(worktree),
+			}}); got != tc.habit {
+				t.Errorf("the habit of the refusal %q = %q, want %q: the test is about this habit", refused, got, tc.habit)
+			}
+			if result.Outcome != BlockedSecret {
+				t.Fatalf("the outcome = %q, want %q: a habit does not make a secret one of its own",
+					result.Outcome, BlockedSecret)
+			}
+			if result.Attempt != 1 || result.AutoResumed != "" {
+				t.Errorf("the run is the attempt %d (resumed for %q), want the first and no resume",
+					result.Attempt, result.AutoResumed)
+			}
+			if len(result.Rejections) != 1 {
+				t.Fatalf("the result holds the refusals %q, want the one of the run", result.Rejections)
+			}
+			for _, want := range []string{tc.kind, recoveryDisabled} {
+				if !strings.Contains(result.Rejections[0], want) {
+					t.Errorf("the refusal %q does not hold %q", result.Rejections[0], want)
+				}
+			}
+		})
+	}
+}
+
+// copied is a file of the worktree named by the path of another copy of the project: the
+// worktree of the task, the same worktree spelled with the name of the project with a
+// letter out of place and the number of the task changed — what a run writes out by hand
+// when it has the shape of the worktree and not the worktree itself (docs/DESIGN.md §7a.1).
+func copied(worktree string, parts ...string) string {
+	project := filepath.Dir(filepath.Dir(worktree))
+	return filepath.Join(append([]string{project, "owner-repz", "2"}, parts...)...)
 }
 
 // TestRunKeepsTheScratchOfTheExecutorOutOfTheProject runs a task against a real

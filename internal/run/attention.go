@@ -978,8 +978,23 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 		// went in a week ago is a zombie of its own, and the oldest kind there is (F-061).
 		one.Actable = ActUnknown
 	}
+	one.answered(last)
 	one.measured(env, now)
 	return one, true
+}
+
+// answered is what the entry says about a run crewflow went on with by itself: the habit
+// it was answered for, the one line of what it was told, and the fact that the rights of
+// the run are the ones of its first try. A queue a person reads is where the habits of a
+// project are counted: an answer crewflow gave by itself is a fact of the run that the
+// catalog of the habits grows out of, and an entry that said nothing of it would count
+// nothing (docs/DESIGN.md §7a.1, §6a).
+func (a *Attention) answered(last Attempt) {
+	if last.AutoResumed == "" || a.Hint != "" {
+		return
+	}
+	a.Hint = fmt.Sprintf("crewflow went on by itself once, for the habit %s%s; "+
+		"attempt 1 of 1, the rights of the run unchanged", last.AutoResumed, told(last.AutoResumed))
 }
 
 // waits is a run that is going and waits for something crewflow knows the name of: the
@@ -1053,6 +1068,13 @@ func (a *Attention) refused(last Attempt, silence Stall, point *Checkpoint) {
 	}
 	a.NextActor, a.Actable, a.Since = ActorOrchestrator, ActNow, endedAt(last)
 	a.LastStep, a.Subject = silence.LastStep, last.Reason
+	// A run that came to the same refusal after crewflow had already answered it once is
+	// not a run to answer again, and the thing to look into is the habit: a mechanism
+	// that refuses a shape nobody expected, or a rule of the catalog that has grown old
+	// (docs/DESIGN.md §7a.1, §7j).
+	if named(last.Reason) == reasonRepeated {
+		a.Next = "look into the mechanism behind the habit, or into the rule of it"
+	}
 	window, in := windowOf(last.Reason)
 	switch {
 	case in:

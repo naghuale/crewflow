@@ -267,7 +267,7 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 		// are the ones of that attempt, the attempt after it is a continuation like
 		// any other with the number of it one higher, and the outcome of the task is
 		// the one of the last attempt (docs/DESIGN.md §7a, §7h).
-		r.auto, r.req.Continue, r.session = string(r.resume.reason), r.resume.text, result.Session
+		r.auto, r.req.Continue, r.session = string(r.resume.reason), r.resume.tells(), result.Session
 		r.resume = resume{}
 	}
 }
@@ -839,7 +839,9 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// What the run is going on with is worked out and said in the same place: the line
 	// belongs to the attempt that ended here, and a watch of it shows why the next one
 	// was given what it was (docs/DESIGN.md §7a).
-	if next := r.goesOnByItself(result, state, calls); next.reason != reasonNone {
+	next, withReason := r.goesOnByItself(&result, state, calls)
+	state = withReason
+	if next.reason != reasonNone {
 		fmt.Fprintf(files.Out, "%s\n", next.line())
 		r.resume = next
 	}
