@@ -630,6 +630,46 @@ A refused path simply stops the run; a refusal on a secret stops it as `blocked-
 crewflow never resumes such a run by itself (in progress). A false alarm is cheaper than a leaked
 secret.
 
+**The only mode crewflow runs in is `host`, and `host` is not a sandbox of the operating
+system.** The executor runs on your own machine, in a worktree of its own. Crewflow limits what a
+run may do through the map of paths, the powers of its identity, the commands it checks and the
+gates — it does not stop a process from reaching anything else on the host by means of the
+operating system. "Isolation" in this mode means process and project separation, not containment
+of the environment. The owner of the project set this boundary down after a review of the
+documents of 02.10 found the word promising more than the mechanism gives
+([#162](https://github.com/naghuale/crewflow/issues/162)).
+
+What `host` **does** guarantee:
+
+- a worktree and a branch of its own for the task, and your own checkout is never changed;
+- a declarative map of paths: where to write, what to read outside the worktree, what is never
+  readable — a place of a secret is closed whatever the project says;
+- checks before the action: `crewflow task check` before the run, a refusal before the worktree is
+  made, and a `pre-push` hook that takes the branch of the task and nothing else;
+- credentials that are apart where the mode of a project asks for it: the executor under its own
+  GitHub App (`identity.mode = "bot"`), the orchestrator under its own
+  (`orchestrator.mode = "separate"`), the private key in the keychain of the machine —
+  `crewflow doctor` says which of the two a run has;
+- fail-closed: what crewflow cannot read or cannot name is refused, no right is granted by
+  default, and the outcome of a run that reached for it is `blocked`, `blocked-secret` or
+  `blocked-permission`.
+
+What `host` **does not** guarantee:
+
+- a container, a sandbox of the operating system, a namespace or a jail: there is none, and
+  `isolation.mode = "sandbox"` or `= "container"` is refused when the file of the project is read;
+- that a run cannot touch arbitrary paths of the host: the rights of a run are the permissions of
+  the profile of the agent and the `CREWFLOW_READ` / `CREWFLOW_DENY` lists it is given, not a limit
+  of the kernel, and a program that ignores the profile reads what the user who started it reads;
+- network isolation: a proxy is put into the environment of the processes crewflow starts, and the
+  traffic is limited by whatever limits the process of the owner;
+- isolation of system APIs: the Keychain, `security`, sockets — everything the user who starts a
+  run may do, the run may do too.
+
+A separate environment is a decision of a person
+([R1](docs/MODEL.md#решение-человека)): `sandbox` and `container` are described in §7d of the
+design and not written yet.
+
 ## A secret in a commit
 
 A secret that reached a commit is not gone with the file it was in. The gate `secrets` of
@@ -756,7 +796,9 @@ refused by `crewflow task check` before anything starts.
 The rights of a run come from crewflow alone. If the global OpenCode config of the
 person holds a `permission` table, `doctor` says so and `crewflow task run` refuses to
 start: OpenCode merges that file with the settings of the run, so those rights would
-never have been written by crewflow.
+never have been written by crewflow. They are the rights of the profile of the agent, not a
+sandbox of the operating system: what the mode `host` does and does not guarantee is in
+[Fail-closed access](#fail-closed-access).
 
 Places of secrets (`~/.ssh`, `~/.gnupg`, `~/Library/Keychains`, `~/.config/gh`, `~/.aws`,
 `~/.netrc`, `.env` files…) stay closed whatever a project or a task says. See §7d of the
