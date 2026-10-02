@@ -99,15 +99,14 @@ func Remove(path, name string) error {
 	})
 }
 
-// Mode writes the route of the project. Only the modes crewflow does are written: the
-// mode `fallback` is refused here as well as in the registry, because a command that
-// promised a route and then refused the file would leave a person with the error of a
-// load instead of the one of the command (#145).
+// Mode writes the route of the project. Only the modes crewflow does are written: a command
+// that promised a route and then let the loader refuse the file would leave a person with the
+// error of a load instead of the one of the command (§7d).
 func Mode(path, mode string) error {
 	switch mode {
-	case "direct", "proxy":
+	case "direct", "proxy", "fallback":
 	default:
-		return fmt.Errorf("network.mode: unknown value %q: direct or proxy", mode)
+		return fmt.Errorf("network.mode: unknown value %q: direct, proxy or fallback", mode)
 	}
 	return change(path, func(file *file) error {
 		file.keyOfTable(networkTable, modeKey, quote(mode))

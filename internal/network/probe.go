@@ -264,6 +264,13 @@ type Machine struct {
 	// not one: what git lists is one of them, and a check that could not tell which is
 	// which would read the complaint as the answer.
 	Git func(ctx context.Context, args []string, environment []string) (stdout, stderr string, exitCode int, err error)
+	// Dial is how the check of the host opens a connection: the dialer of the machine
+	// where it is nil, and the dialer of a machine of a test where a test handed one in.
+	// The check of a route is a test of the route and not a test of the network of the
+	// machine the tests run on, and that is true of every connection it makes: a check that
+	// answered from a proxy of the machine of a person would be a check of that proxy
+	// (docs/DESIGN.md §7d).
+	Dial func(ctx context.Context, network, address string) (net.Conn, error)
 }
 
 // Check asks every capability of the route, one by one, and says what came of it. A
@@ -417,7 +424,7 @@ func (m Machine) api(ctx context.Context, route Route, credentials string) State
 	if err != nil {
 		return unclassified(err.Error())
 	}
-	transport := transportOf(proxied)
+	transport := transportOf(proxied, m.Dial)
 	client := &http.Client{Timeout: m.Timeout, Transport: transport}
 	ctx, cancel := context.WithTimeout(ctx, m.Timeout)
 	defer cancel()
@@ -587,9 +594,10 @@ func oneLine(said string) string {
 // is verified as it is everywhere else in crewflow, because a route crewflow cannot
 // verify a certificate through is a way to read somebody else's traffic rather than a
 // route to their own network (docs/DESIGN.md §7e, §8).
-func transportOf(proxy func(*http.Request) (*url.URL, error)) *http.Transport {
+func transportOf(proxy func(*http.Request) (*url.URL, error), dial func(context.Context, string, string) (net.Conn, error)) *http.Transport {
 	return &http.Transport{
 		Proxy:               proxy,
+		DialContext:         dial,
 		TLSClientConfig:     &tls.Config{MinVersion: tls.VersionTLS12},
 		TLSHandshakeTimeout: 10 * time.Second,
 	}

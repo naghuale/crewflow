@@ -214,16 +214,8 @@ var settings = []Setting{
 	// asked of the machine, one capability at a time, and what came of it is in that
 	// answer and not in the file of a project.
 	{
-		Key: "network.mode", Status: Specified, Supported: []string{"direct", "proxy"},
+		Key: "network.mode", Status: Supported, Supported: []string{"direct", "proxy", "fallback"},
 		Applies: "cfg.Network.Mode",
-		Unwritten: []Asked{
-			{
-				Key: "network.mode", Value: "fallback", Task: 145,
-				Instead: `put mode = "direct" or mode = "proxy" here: a straight route, ` +
-					`or the active profile`,
-				asks: func(c Config) bool { return c.Network.Mode == "fallback" },
-			},
-		},
 	},
 	{Key: "network.active_proxy", Status: Supported, Applies: "cfg.Network.ActiveProxy"},
 	{Key: "network.no_proxy", Status: Supported, Applies: "cfg.Network.NoProxy"},

@@ -217,8 +217,10 @@ type Worktrees struct {
 type Network struct {
 	// Mode is how a request of a program of crewflow goes out: "direct" for a
 	// straight route, "proxy" for the active profile, "fallback" for a straight
-	// route and one attempt through the profile. The last is described and not
-	// written yet (#145).
+	// route and one attempt through the profile. In the last one the second
+	// attempt is made only on a proven repeatable failure of the network, and it
+	// is made for that one request: the calls after it go out straight as they
+	// did (docs/DESIGN.md §7d).
 	Mode string `toml:"mode"`
 	// ActiveProxy is the name of the profile requests go through in the mode
 	// "proxy". It names a profile of the table below and never a host: the address

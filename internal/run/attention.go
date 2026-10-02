@@ -208,6 +208,14 @@ const (
 	// crewflow repeats none of it, and what it needs is a decision of a person (F-119,
 	// §6a, §7e).
 	ReasonProviderErrorUnknown = "provider-error-unknown"
+	// ReasonRouteUnavailable is a run that could not reach the host of the project through
+	// either route of the mode `fallback`: straight out and through the active profile, each
+	// of them unavailable with a proven reason of the network. It is a wait for a resource of
+	// the machine and not a defect of the task — the work of the task is kept in the worktree
+	// and in the session of the run — and crewflow does not go on by itself: the second route
+	// is spent, and a third attempt is not a decision a program of crewflow may take alone
+	// (F-119, §6a, §7d).
+	ReasonRouteUnavailable = "network-route-unavailable"
 
 	// The reasons of the fact crewflow remembers о прогоне, чья работа кончена. They
 	// are not reasons of a wait — nobody waits for a merged change — but the words of
@@ -263,6 +271,10 @@ const (
 	// of the project gets it from, and a run that cannot get it waits rather than fails
 	// (F-119, §6a, §7d).
 	SubjectModelProvider = "the model provider of the run"
+	// SubjectNetworkRoute is the way out of the machine a project has named: the straight one
+	// and the profile of the mode `fallback`. Both of them refused the run, and what it waits
+	// for is the network getting there (§7d).
+	SubjectNetworkRoute = "the route to the network"
 )
 
 // The actors the queue waits for: the orchestrator, the owner, either of them, and nobody
@@ -1202,7 +1214,36 @@ func (a *Attention) refused(last Attempt, silence Stall, point *Checkpoint) {
 		a.Subject, a.NextActor, a.Actable = "", ActorOwner, ActUnknown
 	case a.waitedOfProvider(last):
 		a.answerOf(point)
+	case a.waitedOfRoute(last):
+		// Nothing more to add: the entry above says every route, the work and the command.
 	}
+}
+
+// waitedOfRoute is a run that could not reach the host of the project through either route
+// of the project, and the answer the queue gives it. It is a wait and not a failure of the
+// task: the mode `fallback` has spent its one second attempt, and the four things a person
+// needs are in the entry — both routes unavailable with their own reasons, the work of the
+// task kept where it is, and the command that goes on from it (F-119, docs/DESIGN.md §6a,
+// §7d, §7i).
+//
+// Crewflow does not go on by itself here, and the entry says so: the second route is spent,
+// and a run that started a third attempt nobody asked for would be a run spending a person's
+// proxy and their time on a network that is not there (§7a.1, §7j).
+func (a *Attention) waitedOfRoute(last Attempt) bool {
+	if named(last.Reason) != ReasonRouteUnavailable {
+		return false
+	}
+	a.State, a.Reason, a.Priority = AttentionBlocked, ReasonRouteUnavailable, High
+	a.Subject, a.NextActor, a.Actable = SubjectNetworkRoute, ActorOrchestrator, ActNow
+	// The time of the entry is the wait for the route and nothing else: the run did work and
+	// did not stand, and it is counted from the moment the network refused it (§6a).
+	a.Since = endedAt(last)
+	// The words of the refusal name both routes with the reason each of them proved, and a
+	// person reads them here rather than opening the journal of the run (§6a, §7i).
+	a.Hint = fmt.Sprintf("%s; the work of the task is kept in the worktree and the session of the run, "+
+		"and crewflow does not go on by itself", after(last.Reason))
+	a.Next = continueCommand(a.Task)
+	return true
 }
 
 // waitedOfProvider is a run that stopped for the model provider, and the answer the queue
@@ -1784,6 +1825,14 @@ func windowOf(reason string) (window, bool) {
 func named(reason string) string {
 	name, _, _ := strings.Cut(reason, ":")
 	return strings.TrimSpace(name)
+}
+
+// after is what a reason says behind its name: a reason of §6a is a code and then the words of
+// what happened, and the queue shows the words where a person reads them (docs/DESIGN.md §6a,
+// §7i).
+func after(reason string) string {
+	_, words, _ := strings.Cut(reason, ":")
+	return strings.TrimSpace(words)
 }
 
 // refusalOf is the reason of a refused run as the queue names it: the name the state of the

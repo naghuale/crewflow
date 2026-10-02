@@ -506,7 +506,7 @@ func TestCFNET002TheGitOfAReviewAndAMergeGoesThroughTheRoute(t *testing.T) {
 		Mode:        "proxy",
 		ActiveProxy: "home",
 		Proxies: map[string]config.Proxy{
-			"home": {Type: "http", Host: "192.168.0.4", Port: 1082, Credentials: "none"},
+			"home": {Type: "http", Host: "192.0.2.10", Port: 1082, Credentials: "none"},
 		},
 	}}
 
@@ -516,7 +516,7 @@ func TestCFNET002TheGitOfAReviewAndAMergeGoesThroughTheRoute(t *testing.T) {
 		t.Fatalf("the environment of the commands of git: %v", err)
 	}
 	joined := strings.Join(environment, " ")
-	for _, want := range []string{"HTTP_PROXY=http://192.168.0.4:1082", "git-credential -as orchestrator"} {
+	for _, want := range []string{"HTTP_PROXY=http://192.0.2.10:1082", "git-credential -as orchestrator"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("the environment of the commands of git is %v, want %q in it", environment, want)
 		}

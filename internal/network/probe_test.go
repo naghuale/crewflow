@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -107,6 +108,9 @@ func machine(t *testing.T, m *machineOfTheTest) (Machine, func()) {
 		APIURL: answer.URL + "/rate_limit",
 		GitURL: "https://github.com/naghuale/crewflow.git",
 		GitRef: "refs/heads/main",
+		// The dialer of the test: a check of a route here connects to a loopback address
+		// where a server of the test listens, and to nothing else (guard_test.go).
+		Dial: dialOfTheTest(t),
 	}
 	if !m.withoutGit {
 		checked.Git = m.git
@@ -170,8 +174,8 @@ func TestTheGitOfTheCheckGoesThroughTheRoute(t *testing.T) {
 	fake := &machineOfTheTest{}
 	checked, closeServer := machine(t, fake)
 	defer closeServer()
-	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`,
-		"no_proxy", `[".internal.example"]`))
+	proxied := &machineOfTheTest{}
+	cfg := aProxyOfTheTest(t, "here", "none", proxied, "no_proxy", `[".internal.example"]`)
 	route, err := Choose(cfg, "api.github.com")
 	if err != nil {
 		t.Fatalf("the route of a request: %v", err)
@@ -184,9 +188,16 @@ func TestTheGitOfTheCheckGoesThroughTheRoute(t *testing.T) {
 	if len(fake.gitWasGiven) != 1 {
 		t.Fatalf("git was started %d times, want once", len(fake.gitWasGiven))
 	}
+	// The address is the one of the profile of the test, named by the same code that puts
+	// it into the environment of a child process: a case that wrote the address out here
+	// would go on passing while the route went somewhere else.
+	address, err := route.Address("")
+	if err != nil {
+		t.Fatalf("the address of the profile of the test: %v", err)
+	}
 	for _, want := range []string{
-		"HTTP_PROXY=http://192.168.0.4:1082",
-		"HTTPS_PROXY=http://192.168.0.4:1082",
+		"HTTP_PROXY=" + address,
+		"HTTPS_PROXY=" + address,
 		"NO_PROXY=.internal.example",
 	} {
 		if !contains(fake.gitWasGiven[0], want) {
@@ -303,13 +314,13 @@ func TestACheckOlderThanTheTermOfTheProjectIsStale(t *testing.T) {
 // crewflow cannot verify a certificate through is a way to read somebody else's traffic
 // (docs/DESIGN.md §7e, §8).
 func TestTheTLSOfACheckIsNotWeakened(t *testing.T) {
-	route, err := ProxyOf(Route{Name: "home", Profile: profileOf("http", "192.168.0.4", 1082)},
-		"http://192.168.0.4:1082")
+	route, err := ProxyOf(Route{Name: "home", Profile: profileOf("http", "192.0.2.10", 1082)},
+		"http://192.0.2.10:1082")
 	if err != nil {
 		t.Fatalf("the proxy of the route: %v", err)
 	}
 
-	transport := transportOf(route)
+	transport := transportOf(route, nil)
 
 	if transport.TLSClientConfig.InsecureSkipVerify {
 		t.Error("the check of a route does not verify the certificate of the host, want it verified")
@@ -340,13 +351,15 @@ func TestAStraightRouteHasNoProxyAtAll(t *testing.T) {
 // proxy that takes a login cannot be reached without it (docs/DESIGN.md §7e).
 func TestNET010WhatACheckSaysCarriesNoCredentialOfTheProfile(t *testing.T) {
 	store := &storeOfTheTest{values: map[string]string{
-		secret.Service + "/" + secret.ProxyKey("work"): "ann:s3cret",
+		secret.Service + "/" + secret.ProxyKey("tunnel"): "ann:s3cret",
 	}}
 	fake := &machineOfTheTest{gitSaid: "fatal: unable to access 'https://proxy.example.com/': Connection refused"}
 	checked, closeServer := machine(t, fake)
 	defer closeServer()
+	// The profile of the proxy of the test takes the credentials of the store, because a
+	// proxy that cannot be reached without a login is the case this is about.
+	cfg := aProxyOfTheTest(t, "tunnel", "secret-store", &machineOfTheTest{})
 	checked.Secrets = store
-	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"work"`))
 	route, err := Choose(cfg, "api.github.com")
 	if err != nil {
 		t.Fatalf("the route of a request: %v", err)
@@ -487,6 +500,32 @@ func contains(environment []string, name string) bool {
 
 // hostAndPort are the host and the port of an address of the test, which is the only way
 // to name a proxy of a route in a case of this file.
+// aProxyOfTheTest is a profile that a check of a route may really dial: a server of the
+// test on 127.0.0.1 that answers what the case wrote, written into the file of a project
+// under this name and made the active one. A check through a profile dials that profile, and
+// the only profile a test may dial is one of its own — the check that dialed the proxy named
+// in a file made a person answer a window of their machine (guard_test.go).
+func aProxyOfTheTest(t *testing.T, name, credentials string, answered *machineOfTheTest, keys ...string) config.Config {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(answered.api))
+	t.Cleanup(server.Close)
+	host, port := hostAndPort(t, server.URL)
+	path, _ := withFile(t, keysOf(slices.Concat([]string{"mode", `"proxy"`}, keys)...))
+	if err := Add(path, name, config.Proxy{
+		Type: "http", Host: host, Port: port, Credentials: credentials,
+	}); err != nil {
+		t.Fatalf("add the profile %q of the proxy of the test: %v", name, err)
+	}
+	if err := Use(path, name); err != nil {
+		t.Fatalf("use the profile %q of the proxy of the test: %v", name, err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("the file of the project does not load: %v", err)
+	}
+	return cfg
+}
+
 func hostAndPort(t *testing.T, address string) (string, int) {
 	t.Helper()
 	parsed, err := url.Parse(address)

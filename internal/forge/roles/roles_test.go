@@ -1,6 +1,7 @@
 package roles
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github"
+	"github.com/naghuale/crewflow/internal/network"
 	"github.com/naghuale/crewflow/internal/secret"
 )
 
@@ -543,10 +545,14 @@ type machine struct {
 	ran []string
 	// environment is the environment each of those commands was started with.
 	environment [][]string
-	// answers is what gh writes, by the first words of its command line, and refusals
-	// is what it says when the host says no.
+	// answers is what gh writes, by the first words of its command line, refusals is what
+	// it says when the host says no, and broken is how many starts of it are left with the
+	// words of a machine whose network is not there (§7d).
 	answers  map[string]string
 	refusals map[string]string
+	broken   map[string]int
+	// unreachable is the words the machine answers with while the network is not there.
+	unreachable string
 	// secrets is where the key of an App of a project would be kept. It is a store
 	// of the test and never the keychain of a person: no test of crewflow opens the
 	// secrets of the machine it runs on (docs/DESIGN.md §7i).
@@ -556,7 +562,12 @@ type machine struct {
 // newMachine returns a machine with every program installed and nothing
 // answering: what a test needs of gh, it says with prints.
 func newMachine() *machine {
-	return &machine{answers: map[string]string{}, refusals: map[string]string{}, secrets: &storeOfTheTest{}}
+	return &machine{
+		answers:  map[string]string{},
+		refusals: map[string]string{},
+		broken:   map[string]int{},
+		secrets:  &storeOfTheTest{},
+	}
 }
 
 // prints makes gh succeed and write output.
@@ -569,6 +580,16 @@ func (m *machine) prints(commandLine, output string) *machine {
 // and the code is not zero, and the caller has to tell that from an answer.
 func (m *machine) fails(commandLine, said string) *machine {
 	m.refusals[commandLine] = said
+	return m
+}
+
+// unrouteable makes the machine answer the next starts of that command line the way a
+// machine whose network is not there does: nothing of the answer, the words of the failure
+// on the error stream and the code of a refused gh. The starts after those are answered as
+// the case said, which is what lets a case see one straight attempt and one through the
+// profile (docs.DESIGN.md §7d).
+func (m *machine) unrouteable(commandLine, said string, times int) *machine {
+	m.unreachable, m.broken[commandLine] = said, times
 	return m
 }
 
@@ -585,6 +606,10 @@ func (m *machine) env(t *testing.T) forge.Env {
 			m.ran = append(m.ran, line)
 			m.environment = append(m.environment, env)
 			words := strings.Join(args[:min(2, len(args))], " ")
+			if m.broken[words] > 0 {
+				m.broken[words]--
+				return nil, []byte(m.unreachable + "\n"), 1, nil
+			}
 			if said, refused := m.refusals[words]; refused {
 				return nil, []byte(said + "\n"), 1, nil
 			}
@@ -601,4 +626,190 @@ func (m *machine) commandLine(i int) string {
 		return ""
 	}
 	return m.ran[i]
+}
+
+// theNetworkOf is what a project says when it wants the mode `fallback` with one profile
+// to try: straight out first, and one attempt through "home" when the network is not there
+// (docs/DESIGN.md §7d).
+const theNetworkOf = `
+[network]
+mode = "fallback"
+active_proxy = "home"
+
+[network.proxies.home]
+type = "http"
+host = "192.0.2.10"
+port = 1082
+credentials = "none"
+`
+
+// The words gh writes on a machine whose network is not there. They are the words of the
+// live machine of F-119, and the closed list of §7d reads them as `dns-failed` — a proven
+// failure of the network and not a refusal of the host.
+const noSuchHost = "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host"
+
+// TestTheHostIsAskedOneMoreTimeThroughTheProfileWhenTheNetworkIsNotThere is the mode
+// `fallback` through the real adapter of the host, not through one component of it: gh is
+// started with nothing in its environment, it says that the name did not resolve, and the
+// same program is started once more with the profile of the project in it — and the task is
+// read as it is (docs/DESIGN.md §7d, F-119).
+func TestTheHostIsAskedOneMoreTimeThroughTheProfileWhenTheNetworkIsNotThere(t *testing.T) {
+	m := newMachine().
+		prints("issue view", `{"number": 5, "title": "a task", "state": "OPEN", "url": "u", "labels": []}`).
+		unrouteable("issue view", noSuchHost, 1)
+	cfg := load(t, baseConfig+theNetworkOf)
+	var said bytes.Buffer
+	env := m.env(t)
+	env.Events = secret.NewNotices(&said)
+
+	set, err := New(cfg, env)
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	task, err := set.Tracker.Task(t.Context(), 5)
+
+	if err != nil {
+		t.Fatalf("Task(5) returned an error: %v", err)
+	}
+	if task.Number != 5 {
+		t.Errorf("the task is %+v, want the one gh wrote", task)
+	}
+	if len(m.ran) != 2 {
+		t.Fatalf("gh was started %d times, want twice: straight out and once through the profile", len(m.ran))
+	}
+	if first := m.environment[0]; len(first) != 0 {
+		t.Errorf("the straight attempt was given %q, want nothing: it goes out as it is", first)
+	}
+	for _, name := range []string{"HTTP_PROXY=http://192.0.2.10:1082", "HTTPS_PROXY=http://192.0.2.10:1082"} {
+		if !slices.Contains(m.environment[1], name) {
+			t.Errorf("the second attempt was given %q, want %q in it", m.environment[1], name)
+		}
+	}
+	for _, event := range []string{network.EventRouteSelected, network.EventRouteFailed, network.EventFallbackStarted, network.EventFallbackSucceeded} {
+		if !strings.Contains(said.String(), "event "+event) {
+			t.Errorf("the journal of the route holds no %s: %q", event, said.String())
+		}
+	}
+}
+
+// TestSECNET009TheSecondRouteWorksUnderTheSameAccountAsTheFirst is the whole of §7i for
+// this mode: the second attempt is the same program, under the same account, with the same
+// token as the first one. Another road to the same host is not another right, and a run
+// that got more of the host through a proxy than it had straight out would be a run whose
+// report says the wrong thing about who worked under whose name (SEC-NET-009, §7i).
+func TestSECNET009TheSecondRouteWorksUnderTheSameAccountAsTheFirst(t *testing.T) {
+	m := newMachine().
+		prints("issue view", `{"number": 5, "title": "a task", "state": "OPEN", "url": "u", "labels": []}`).
+		unrouteable("issue view", noSuchHost, 1)
+	cfg := load(t, baseConfig+"\n[forge]\nhost = \"github.company.com\"\n"+theNetworkOf)
+
+	set, err := New(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	if _, err := set.Tracker.Task(t.Context(), 5); err != nil {
+		t.Fatalf("Task(5) returned an error: %v", err)
+	}
+
+	if len(m.environment) != 2 {
+		t.Fatalf("gh was started %d times, want twice", len(m.environment))
+	}
+	if got := valueOf(m.environment[0], "GH_HOST"); got != "github.company.com" {
+		t.Fatalf("the straight attempt ran against %q, want the host of the project", got)
+	}
+	straight, through := m.environment[0], m.environment[1]
+	for _, one := range straight {
+		if valueOf(through, strings.SplitN(one, "=", 2)[0]) != strings.SplitN(one, "=", 2)[1] {
+			t.Errorf("the second attempt was given %q where the first had %q: the account of the subject changed",
+				one, one)
+		}
+	}
+	for _, added := range []string{"HTTP_PROXY=http://192.0.2.10:1082", "HTTPS_PROXY=http://192.0.2.10:1082", "ALL_PROXY=http://192.0.2.10:1082"} {
+		if valueOf(through, strings.SplitN(added, "=", 2)[0]) != strings.SplitN(added, "=", 2)[1] {
+			t.Errorf("the second attempt is not %q, want the profile of the project beside the account", added)
+		}
+	}
+}
+
+// TestTheHostIsRefusedWithBothRoutesNamedWhenNeitherOfThemIsThere is the end of the mode
+// through the real adapter: neither road reaches the host, and the error the caller gets
+// names both of them — straight out unavailable with its reason, the profile unavailable
+// with its own. A caller that has to tell that from a failure of the task asks about it and
+// does not read words (docs.DESIGN.md §6a, §7d).
+func TestTheHostIsRefusedWithBothRoutesNamedWhenNeitherOfThemIsThere(t *testing.T) {
+	m := newMachine().unrouteable("issue view", noSuchHost, 2)
+	cfg := load(t, baseConfig+theNetworkOf)
+
+	set, err := New(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("New returned an error: %v", err)
+	}
+	_, err = set.Tracker.Task(t.Context(), 5)
+
+	closed, both := network.RouteUnavailable(err)
+	if !both {
+		t.Fatalf("the error of the host is %v, want the refusal of both routes of the project", err)
+	}
+	if closed.Profile != "home" || closed.Direct != network.ReasonDNS {
+		t.Errorf("the refusal says %+v, want the profile %q unavailable with %q", closed, "home", network.ReasonDNS)
+	}
+	if len(m.ran) != 2 {
+		t.Errorf("gh was started %d times, want twice: a second attempt and no third", len(m.ran))
+	}
+}
+
+// TestAHostThatRefusedIsNotAskedAgainThroughTheProfile is the other half of the promise
+// through the real adapter: 401 and 403 are answers of the host, not a network that is not
+// there, and asking again through another road repeats a refusal of the account behind a
+// longer wait (F-119, docs/DESIGN.md §7d, §7e).
+func TestAHostThatRefusedIsNotAskedAgainThroughTheProfile(t *testing.T) {
+	for _, said := range []string{
+		"HTTP 401: Bad credentials (https://api.github.com/graphql)",
+		"HTTP 403: Resource not accessible by integration (https://api.github.com/graphql)",
+	} {
+		t.Run(said, func(t *testing.T) {
+			m := newMachine().fails("issue view", said)
+			cfg := load(t, baseConfig+theNetworkOf)
+
+			set, err := New(cfg, m.env(t))
+			if err != nil {
+				t.Fatalf("New returned an error: %v", err)
+			}
+			if _, err := set.Tracker.Task(t.Context(), 5); err == nil {
+				t.Fatal("Task(5) of a host that refused returned no error, want the refusal of the host")
+			}
+
+			if len(m.ran) != 1 {
+				t.Errorf("gh was started %d times, want once: %q is not a failure of the network", len(m.ran), said)
+			}
+		})
+	}
+}
+
+// TestAProjectInTheModeFallbackWithNoProfileIsRefusedBeforeAnythingIsAsked: the roles are
+// not built at all, because gh would then go out the way the shell of the machine happened
+// to leave it while the file of the project promises a second road (docs/DESIGN.md §7d).
+func TestAProjectInTheModeFallbackWithNoProfileIsRefusedBeforeAnythingIsAsked(t *testing.T) {
+	m := newMachine()
+	cfg := load(t, baseConfig+"\n[network]\nmode = \"fallback\"\n")
+
+	if _, err := New(cfg, m.env(t)); err == nil {
+		t.Fatal("New of a project in the mode fallback with no profile returned no error, want a refusal")
+	} else if !strings.Contains(err.Error(), "network proxy use") {
+		t.Errorf("the refusal %q does not say how to choose a profile", err)
+	}
+	if len(m.ran) != 0 {
+		t.Errorf("gh was started %d times although the roles were not built", len(m.ran))
+	}
+}
+
+// valueOf is what the environment of a start of a program says under a name, or nothing
+// where the program was not given that name.
+func valueOf(environment []string, name string) string {
+	for _, one := range environment {
+		if value, named := strings.CutPrefix(one, name+"="); named {
+			return value
+		}
+	}
+	return ""
 }

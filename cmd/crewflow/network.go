@@ -94,10 +94,11 @@ func runNetworkProxy(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// runNetworkMode is `crewflow network mode direct|proxy`: which route the programs of
-// crewflow go out by. Only the modes crewflow does are written — the mode `fallback` is
-// described and not written yet, and a file that asks for it is refused by the registry
-// (#145).
+// runNetworkMode is `crewflow network mode direct|proxy|fallback`: which route the programs
+// of crewflow go out by. The three modes of §7d are the three that can be written, and the
+// refusal of the command names them: a project cannot be left in a mode no program of it can
+// work with, and a command that promised a route and then let the loader refuse the file
+// would leave a person with the error of a load instead of the one of the command.
 func runNetworkMode(args []string, stdout, stderr io.Writer) int {
 	flags := networkFlags("network mode", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
@@ -106,8 +107,8 @@ func runNetworkMode(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	if mode == "" || flags.NArg() > 0 {
-		fmt.Fprintf(stderr, "crewflow network mode: the route of the project, direct or proxy, "+
-			"as in `crewflow network mode proxy`\n\n")
+		fmt.Fprintf(stderr, "crewflow network mode: the route of the project, direct, proxy or "+
+			"fallback, as in `crewflow network mode proxy`\n\n")
 		usage(stderr)
 		return exitUsage
 	}
@@ -117,19 +118,27 @@ func runNetworkMode(args []string, stdout, stderr io.Writer) int {
 		return networkFailed(stderr, err)
 	}
 	// A route that names nothing is not a route, and the file is not changed before the
-	// route is known to be one: a project whose mode says `proxy` and whose active
-	// profile names nobody is a file no program can work with (§7d).
-	if mode == "proxy" && cfg.Network.ActiveProxy == "" {
-		return networkFailed(stderr, fmt.Errorf("network.mode = \"proxy\" and no network.active_proxy: "+
-			"choose a profile with `crewflow network proxy use <name>`"))
+	// route is known to be one: a project whose mode says `proxy` — or `fallback`, whose
+	// second attempt has to go through a profile — and whose active profile names nobody
+	// is a file no program can work with (§7d).
+	if (mode == "proxy" || mode == "fallback") && cfg.Network.ActiveProxy == "" {
+		return networkFailed(stderr, fmt.Errorf("network.mode = %q and no network.active_proxy: "+
+			"choose a profile with `crewflow network proxy use <name>`", mode))
 	}
 	if err := network.Mode(*configPath, mode); err != nil {
 		return networkFailed(stderr, err)
 	}
 	sayRouteChanged(stderr, "mode", network.Route{Why: fmt.Sprintf("mode=%s", mode)})
 	fmt.Fprintf(stdout, "the route of the project is %s\n", mode)
-	if mode == "proxy" {
+	switch mode {
+	case "proxy":
 		fmt.Fprintf(stdout, "through the profile %q\n", cfg.Network.ActiveProxy)
+	case "fallback":
+		// The second route is told here because a person who switched the mode has to know
+		// which profile the one more attempt goes through, and where to look when it does
+		// not answer (§7d).
+		fmt.Fprintf(stdout, "straight out first, and one attempt through the profile %q when the network is not there\n",
+			cfg.Network.ActiveProxy)
 	}
 	return exitOK
 }
@@ -243,7 +252,7 @@ func runNetworkAdd(args []string, stdout, stderr io.Writer) int {
 	}
 	if name == "" || flags.NArg() > 0 {
 		fmt.Fprintf(stderr, "crewflow network proxy add: the name of the profile and where it listens, "+
-			"as in `crewflow network proxy add home --type http --host 192.168.0.4 --port 1082`\n\n")
+			"as in `crewflow network proxy add home --type http --host 192.0.2.10 --port 1082`\n\n")
 		usage(stderr)
 		return exitUsage
 	}

@@ -189,7 +189,7 @@ func TestTheReasonOfAFailureIsReadFromTheWordsThatNameIt(t *testing.T) {
 		},
 		{
 			"a name the proxy could not resolve",
-			"proxyconnect tcp: dial tcp: lookup github.com on 192.168.0.4:53: " +
+			"proxyconnect tcp: dial tcp: lookup github.com on 192.0.2.10:53: " +
 				"no such host",
 			StateUnavailable, ReasonDNS,
 		},
@@ -393,11 +393,14 @@ func TestGITNET012TheResultsOfTwoRoutesAreTwoResults(t *testing.T) {
 	}}
 	checked, closeServer := machine(t, fake)
 	defer closeServer()
-	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`))
+	// The profile of the proxied route is a server of the test on 127.0.0.1: a check of a
+	// route dials the profile it goes through, and the only profile a test may dial is one
+	// of its own (guard_test.go).
+	cfg := aProxyOfTheTest(t, "here", "none", &machineOfTheTest{})
 	straight := Route{Direct: true, Why: `network.mode = "direct"`}
-	proxied, err := Through(cfg, "home")
+	proxied, err := Through(cfg, "here")
 	if err != nil {
-		t.Fatalf("the route through the profile home: %v", err)
+		t.Fatalf("the route through the profile here: %v", err)
 	}
 
 	direct, err := Check(t.Context(), checked, straight, cfg.Network.NoProxy)
@@ -413,7 +416,7 @@ func TestGITNET012TheResultsOfTwoRoutesAreTwoResults(t *testing.T) {
 		t.Errorf("the straight route came out as %q (%s), want %q", direct[1].Result, direct[1].Detail, StateAvailable)
 	}
 	if through[1].Result != StateUnavailable || through[1].Reason != ReasonConnectionRefused {
-		t.Errorf("the route through home came out as %q/%q (%s), want %q/%q",
+		t.Errorf("the route through the profile came out as %q/%q (%s), want %q/%q",
 			through[1].Result, through[1].Reason, through[1].Detail, StateUnavailable, ReasonConnectionRefused)
 	}
 	if direct[1].Reason != ReasonRequestSucceeded {
@@ -427,8 +430,13 @@ func TestGITNET012TheResultsOfTwoRoutesAreTwoResults(t *testing.T) {
 	if len(fake.gitWasGiven[0]) != 0 {
 		t.Errorf("the straight route started git with %q, want no proxy in it", fake.gitWasGiven[0])
 	}
-	if !contains(fake.gitWasGiven[1], "HTTP_PROXY=http://192.168.0.4:1082") {
-		t.Errorf("the route through home started git with %q, want the profile of the route in it", fake.gitWasGiven[1])
+	address, err := proxied.Address("")
+	if err != nil {
+		t.Fatalf("the address of the profile of the test: %v", err)
+	}
+	if !contains(fake.gitWasGiven[1], "HTTP_PROXY="+address) {
+		t.Errorf("the route through the profile started git with %q, want the profile of the route in it",
+			fake.gitWasGiven[1])
 	}
 }
 

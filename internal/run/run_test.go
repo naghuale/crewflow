@@ -735,6 +735,10 @@ type host struct {
 	opened bool
 	// asked is every branch the host was asked about.
 	asked []string
+	// noChange is the answer of a host that could not be reached at all: the run asks for
+	// the change request of its branch after its work is done, and a host whose network is
+	// not there says so instead of answering (§7d, §7h).
+	noChange error
 	// identity is whose name the executor of a run of this host works under, and a
 	// host with none works as the person who runs crewflow: that is the mode every
 	// run has been in, and a test says otherwise on purpose (§7i). A host with no
@@ -823,6 +827,9 @@ func (h *host) Task(_ context.Context, number int) (forge.Task, error) {
 // run of a task is.
 func (h *host) FindChangeRequest(_ context.Context, branch string) (forge.ChangeRequest, bool, error) {
 	h.asked = append(h.asked, branch)
+	if h.noChange != nil {
+		return forge.ChangeRequest{}, false, h.noChange
+	}
 	if !h.opened {
 		return forge.ChangeRequest{}, false, nil
 	}

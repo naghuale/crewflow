@@ -14,7 +14,7 @@ import (
 // the milestone that write what the design describes and crewflow has not. A
 // registry that names anything else names a task nobody waits for, and the
 // registry is where a person reads what to wait for.
-var tasksOfTheRegistry = []int{51, 54, 55, 56, 57, 58, 59, 60, 61, 62, 145}
+var tasksOfTheRegistry = []int{51, 54, 55, 56, 57, 58, 59, 60, 61, 62}
 
 // choices are the keys of the file whose values crewflow names, with the values
 // Validate allows: every one of them is in the registry, either as a value

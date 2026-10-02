@@ -265,6 +265,14 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 	if next, marked, ok := r.afterProvider(result, state); ok {
 		return next, state.Reason(result.Reason).Provider(marked)
 	}
+	// A run that could not reach the host through either route of the project has said so in
+	// its reason, and the reason goes into the attempt that has just ended: the queue of
+	// attention reads it from there and reads no journal (§6a, §7d). Crewflow does not go on
+	// by itself — the one second attempt of the mode `fallback` is spent, and a third attempt
+	// is a decision a person makes, not a program of crewflow (§7a.1, §7j).
+	if named(result.Reason) == ReasonRouteUnavailable {
+		return resume{}, state.Reason(result.Reason)
+	}
 	// A run crewflow stopped because it stood with a provider that has answered is a run
 	// whose agent has hung, and it goes on in the same session once — the same habit of a
 	// known shape, and the same one line in the journal (F-143, docs.DESIGN.md §7a).

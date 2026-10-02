@@ -49,6 +49,11 @@ type Route struct {
 	// calls it. Both are empty in a direct route.
 	Profile config.Proxy `json:"-"`
 	Name    string       `json:"profile,omitempty"`
+	// Fallback is the profile one more attempt of this request may go through, and it is
+	// empty in every mode but `fallback`. It is a name and not a route: the second attempt
+	// is made for the one request that failed and is not kept afterwards, so a route that
+	// outlived its request would be a route nobody chose (docs/DESIGN.md §7d).
+	Fallback string `json:"fallback,omitempty"`
 	// Why is the rule of the file the route came out of, in the words of the file: a
 	// report that says "through home" without saying why is a report a person has to
 	// read the file to understand.
@@ -90,9 +95,14 @@ func (r Route) Address(credentials string) (string, error) {
 
 // Choose is the route of a request to target in the configuration of the project, in
 // the order the owner decided on 02.10.2026: a target of `no_proxy` goes straight out
-// whatever the mode says, a straight mode goes straight out, and the mode `proxy` goes
-// through the active profile. The mode `fallback` is described and not written yet, and
-// the file that asks for it is refused by the registry before it gets here (#145).
+// whatever the mode says, a straight mode goes straight out, the mode `proxy` goes
+// through the active profile, and the mode `fallback` goes straight out and names the
+// profile one more attempt of the same request may go through (docs/DESIGN.md §7d).
+//
+// A route of the mode `fallback` is a straight one: the executor of a run, the git of the
+// run and every program crewflow starts afterwards go out as they always did, and only
+// the request that could not reach the network is made again through the profile
+// ([Fallback].Once).
 //
 // The target is what the request names: a host, a host with a port, or a whole address.
 // It may be empty — the route of a program that reaches nothing in particular.
@@ -115,6 +125,20 @@ func Choose(cfg config.Config, target string) (Route, error) {
 				"choose a profile with `crewflow network proxy use <name>`")
 		}
 		return Through(cfg, cfg.Network.ActiveProxy)
+	case "fallback":
+		// The mode without a profile is a promise of a second road there is none of. It is
+		// refused here and not read as a project that happens to go straight out, because a
+		// run whose fallback was silently a straight route is a run that failed and told
+		// nobody that the second route was never there (§7d, §7e).
+		if cfg.Network.ActiveProxy == "" {
+			return Route{}, errors.New("network.mode = \"fallback\" and no network.active_proxy: " +
+				"choose a profile with `crewflow network proxy use <name>`")
+		}
+		if _, err := Through(cfg, cfg.Network.ActiveProxy); err != nil {
+			return Route{}, err
+		}
+		return Route{Direct: true, Fallback: cfg.Network.ActiveProxy,
+			Why: `network.mode = "fallback" and one attempt through network.active_proxy`}, nil
 	default:
 		return Route{}, fmt.Errorf("network.mode: unknown value %q", cfg.Network.Mode)
 	}

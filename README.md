@@ -182,7 +182,8 @@ Every key of `crewflow.toml` has a status in the code: `supported`, which the co
 applies, or `specified`, which the design describes and the code has not written
 yet. A value that asks for the second — `isolation.mode = "sandbox"`,
 `merge.via = "forge"`, `parallel.max_tasks > 1`, a non-empty `capabilities` or
-`fallback`, a `forge.kind` that is not `github` — is refused when the file is read,
+`[executor] fallback`, a `forge.kind` that is not `github` — is refused when the file is
+read,
 and the refusal says what is not written, which issue writes it and what to write
 instead. `crewflow doctor` shows the same list under `specified settings`, and in
 `-json` under `specified`.
@@ -194,8 +195,10 @@ A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-
 the one a run that stopped by itself ends with, and it carries the reason — `keychain-approval`
 when nobody answered the window of the keychain, `provider-unavailable` or
 `provider-error-unknown` when the model provider refused the run (see
-[A provider that is not there](#a-provider-that-is-not-there)), the words of the executor
-otherwise.
+[A provider that is not there](#a-provider-that-is-not-there)),
+`network-route-unavailable` when neither route of the project reached the host and the work
+of the task is kept (see [the route to the network](#the-route-to-the-network)), the words
+of the executor otherwise.
 `blocked-secret` is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
 report says which path it reached for and how. `task list` says which
 project the tasks are counted on, who ran each of them and whose name it worked under
@@ -788,7 +791,7 @@ changes when you move, so `crewflow.toml` names the profiles and the commands ch
 them.
 
 ```sh
-crewflow network proxy add home --type http --host 192.168.0.4 --port 1082
+crewflow network proxy add home --type http --host 192.0.2.10 --port 1082
 crewflow network proxy test home      # what that route can do, right now
 crewflow network proxy use home       # the active profile
 crewflow network mode proxy           # and go through it
@@ -841,6 +844,38 @@ network` — says *whether* the credentials are configured and never reads the v
 read in one place only: where a connection through the profile is really made. Removing a
 profile from the file and removing its credentials from the keychain are two different
 operations on purpose.
+
+### The mode `fallback`: straight out, and one attempt through the profile
+
+```sh
+crewflow network mode fallback          # straight out first, one attempt through "home"
+```
+
+The third mode sends every request **straight out**, exactly as `direct` does, and makes
+**one** more attempt through the active profile — and only then, when the first attempt was
+refused by a *proven repeatable* failure of the network: `dns-failed`,
+`connection-refused`, `connection-timeout`, `tls-failed`, `proxy-authentication-required`.
+There is no second retry, and crewflow does not go on by itself afterwards.
+
+The fallback happens **for one operation**: a GitHub API call that could not reach the
+network is made once more through the profile, and the calls after it — the `git` of a run,
+the executor, `doctor` — go out straight as they always did. A permanent change of the
+route is a command of yours: `network proxy use`, `network mode proxy`. The second attempt
+works under the same account and the same token as the first one: another road is not
+another right.
+
+It does **not** fire on a host that answered and refused: `401`, `403`, a wrong request, a
+mistake in the settings or in the task, and anything crewflow cannot read are answers of
+the host or of the task, and asking again through another route would only hide them behind
+a longer wait.
+
+When **neither** route reaches the host, the run ends as `blocked` with the reason
+`network-route-unavailable`, the queue of attention says that the straight route and the
+profile `<name>` are both unavailable with their own proven reason, and the work of the task
+stays where the run left it — the worktree, the branch and the session, with the command
+that goes on from them. The events of the route — `NETWORK_ROUTE_SELECTED`,
+`NETWORK_ROUTE_FAILED`, `NETWORK_FALLBACK_STARTED`, `NETWORK_FALLBACK_SUCCEEDED`,
+`NETWORK_FALLBACK_FAILED` — go into the journal of the run and never carry a credential.
 
 See §7d of the design.
 

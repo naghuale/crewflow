@@ -30,7 +30,7 @@ command = ["agent", "run", "{prompt}"]
 %s
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"
 
@@ -100,9 +100,9 @@ func TestCFNET002AProxyReachesTheEnvironmentOfAChildProcess(t *testing.T) {
 		t.Fatalf("the route of a request: %v", err)
 	}
 	want := []string{
-		"HTTP_PROXY=http://192.168.0.4:1082",
-		"HTTPS_PROXY=http://192.168.0.4:1082",
-		"ALL_PROXY=http://192.168.0.4:1082",
+		"HTTP_PROXY=http://192.0.2.10:1082",
+		"HTTPS_PROXY=http://192.0.2.10:1082",
+		"ALL_PROXY=http://192.0.2.10:1082",
 	}
 	for _, name := range want {
 		if !slices.Contains(environment, name) {
@@ -156,10 +156,10 @@ func TestCFNET011NoProxyIsCheckedBeforeTheRouteIsPicked(t *testing.T) {
 		{"a suffix that is only a part of a name", []string{"hub.com"}, "api.github.com", false},
 		{"a name that ends in the suffix as a part of it", []string{"github.com"}, "notgithub.com", false},
 		{"a star domain", []string{"*.github.com"}, "api.github.com", true},
-		{"an address", []string{"192.168.0.9"}, "192.168.0.9", true},
-		{"another address", []string{"192.168.0.9"}, "192.168.0.4", false},
-		{"a network", []string{"192.168.0.0/16"}, "192.168.0.4", true},
-		{"a network it is not in", []string{"10.0.0.0/8"}, "192.168.0.4", false},
+		{"an address", []string{"192.0.2.9"}, "192.0.2.9", true},
+		{"another address", []string{"192.0.2.9"}, "192.0.2.10", false},
+		{"a network", []string{"192.0.2.0/24"}, "192.0.2.10", true},
+		{"a network it is not in", []string{"10.0.0.0/8"}, "192.0.2.10", false},
 		{"everything", []string{"*"}, "api.github.com", true},
 		{"a port that is the one asked for", []string{"github.com:443"}, "github.com:443", true},
 		{"a port that is not the one asked for", []string{"github.com:443"}, "github.com", false},
@@ -278,7 +278,7 @@ func TestARuleIsReadOneWayOrNotAtAll(t *testing.T) {
 		{"GitHub.com", "api.github.com", true},
 		{".GITHUB.COM", "api.GitHub.com", true},
 		{"github.com", "github.com.", true},
-		{"192.168.0.4", "192.168.0.4", true},
+		{"192.0.2.10", "192.0.2.10", true},
 		{"10.0.0.0/8", "git.internal", false},
 	}
 	for _, tc := range cases {

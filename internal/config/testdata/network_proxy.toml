@@ -16,6 +16,6 @@ test_valid_for = "30m"
 
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"

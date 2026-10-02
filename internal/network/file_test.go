@@ -92,7 +92,7 @@ func TestNET003APortThatIsNotAPortIsNotWritten(t *testing.T) {
 // point of a named profile is that it is not (docs/DESIGN.md §7d).
 func TestNET004AnAddressWithASchemeOrALoginIsRefused(t *testing.T) {
 	cases := []struct{ host, mention string }{
-		{"http://192.168.0.4", "scheme"},
+		{"http://192.0.2.10", "scheme"},
 		{"proxy.example.org/path", "path"},
 		{"ann@proxy.example.org", "login"},
 	}
@@ -167,7 +167,7 @@ func TestNET006AProtocolCrewflowCannotSpeakIsRefused(t *testing.T) {
 func TestNET007TheActiveProfileIsEditedAtomically(t *testing.T) {
 	path, _ := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`))
 
-	err := Edit(path, "home", config.Proxy{Type: "https", Host: "192.168.0.4", Port: 3128, Credentials: "none"})
+	err := Edit(path, "home", config.Proxy{Type: "https", Host: "192.0.2.10", Port: 3128, Credentials: "none"})
 
 	if err != nil {
 		t.Fatalf("edit the active profile: %v", err)
@@ -179,7 +179,7 @@ func TestNET007TheActiveProfileIsEditedAtomically(t *testing.T) {
 	if cfg.Network.Proxies["home"].Port != 3128 || cfg.Network.Proxies["home"].Type != "https" {
 		t.Errorf("the profile home came out as %+v, want the keys that were changed", cfg.Network.Proxies["home"])
 	}
-	if cfg.Network.Proxies["home"].Host != "192.168.0.4" {
+	if cfg.Network.Proxies["home"].Host != "192.0.2.10" {
 		t.Errorf("the host of the profile home came out as %q, want the key that was not named left as it was",
 			cfg.Network.Proxies["home"].Host)
 	}
@@ -199,7 +199,7 @@ func TestNET007AChangeThatDoesNotLoadIsNotSavedAtAll(t *testing.T) {
 	path, _ := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`))
 	before := read(t, path)
 
-	err := Edit(path, "home", config.Proxy{Type: "http", Host: "192.168.0.4", Port: 0, Credentials: "none"})
+	err := Edit(path, "home", config.Proxy{Type: "http", Host: "192.0.2.10", Port: 0, Credentials: "none"})
 
 	if err == nil {
 		t.Fatal("a port of 0 was written into the active profile, want a refusal")
@@ -329,29 +329,32 @@ func TestTheCommandsChangeTheFileAndTheLoaderAgrees(t *testing.T) {
 	}
 }
 
-// TestTheModeCrewflowDoesNotDoIsRefusedByTheCommandAndByTheFile: the mode `fallback` is
-// described and not written yet (#145). A command that promised a route and then refused
-// the file would leave a person with the error of a load instead of the one of the
-// command.
-func TestTheModeCrewflowDoesNotDoIsRefusedByTheCommandAndByTheFile(t *testing.T) {
+// TestTheModeFallbackIsWrittenByTheCommandAndReadByTheFile: the third mode is written by
+// the command and read by the loader of the file of every other command. A file that could
+// not be loaded with `mode = "fallback"` was a route nobody could switch to by hand either,
+// and a command that wrote it would have left a person with the error of a load instead of
+// the one of the command (docs/DESIGN.md §7d).
+func TestTheModeFallbackIsWrittenByTheCommandAndReadByTheFile(t *testing.T) {
 	path, _ := withFile(t, keysOf("mode", `"direct"`))
-	before := read(t, path)
 
-	if err := Mode(path, "fallback"); err == nil {
-		t.Fatal("the mode fallback was written, want a refusal that names the modes crewflow does")
+	if err := Mode(path, "fallback"); err != nil {
+		t.Fatalf("Mode(path, fallback) returned an error: %v", err)
 	}
-	if read(t, path) != before {
+	if !strings.Contains(read(t, path), `mode = "fallback"`) {
+		t.Errorf("the mode of the project is not fallback:\n%s", read(t, path))
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load of a project in the mode fallback returned an error: %v", err)
+	}
+	if cfg.Network.Mode != "fallback" {
+		t.Errorf("the file says the mode is %q, want %q", cfg.Network.Mode, "fallback")
+	}
+	if err := Mode(path, "sideways"); err == nil {
+		t.Error("a mode crewflow does not do was written, want a refusal that names the modes it does")
+	}
+	if !strings.Contains(read(t, path), `mode = "fallback"`) {
 		t.Errorf("the file of the project changed although the change was refused:\n%s", read(t, path))
-	}
-	file := strings.Replace(read(t, path), `mode = "direct"`, `mode = "fallback"`, 1)
-	edited := filepath.Join(t.TempDir(), "crewflow.toml")
-	if err := os.WriteFile(edited, []byte(file), 0o600); err != nil {
-		t.Fatalf("write the file of the project: %v", err)
-	}
-	if _, err := config.Load(edited); err == nil {
-		t.Error("a file with the mode fallback loads, want the refusal of the registry")
-	} else if !strings.Contains(err.Error(), "crewflow#145") {
-		t.Errorf("the refusal %q does not name the task that writes the mode", err)
 	}
 }
 

@@ -23,7 +23,7 @@ func TestCFNET002TheRouteOfTheProjectReachesTheExecutorAndTheGitOfTheRun(t *test
 		ActiveProxy: "home",
 		NoProxy:     []string{".internal.example"},
 		Proxies: map[string]config.Proxy{
-			"home": {Type: "http", Host: "192.168.0.4", Port: 1082, Credentials: "none"},
+			"home": {Type: "http", Host: "192.0.2.10", Port: 1082, Credentials: "none"},
 		},
 	}
 
@@ -32,9 +32,9 @@ func TestCFNET002TheRouteOfTheProjectReachesTheExecutorAndTheGitOfTheRun(t *test
 	}
 
 	for _, want := range []string{
-		"HTTP_PROXY=http://192.168.0.4:1082",
-		"HTTPS_PROXY=http://192.168.0.4:1082",
-		"ALL_PROXY=http://192.168.0.4:1082",
+		"HTTP_PROXY=http://192.0.2.10:1082",
+		"HTTPS_PROXY=http://192.0.2.10:1082",
+		"ALL_PROXY=http://192.0.2.10:1082",
 		"NO_PROXY=.internal.example",
 	} {
 		if !contains(m.envOf(), want) {
@@ -44,7 +44,7 @@ func TestCFNET002TheRouteOfTheProjectReachesTheExecutorAndTheGitOfTheRun(t *test
 	// The git of the run goes out the same way: a run that fetches through the profile of
 	// the project and starts its executor beside it is a run whose code came from a
 	// different machine than the one it writes on.
-	for _, want := range []string{"HTTP_PROXY=http://192.168.0.4:1082"} {
+	for _, want := range []string{"HTTP_PROXY=http://192.0.2.10:1082"} {
 		if !contains(m.givenToPrograms(), want) {
 			t.Errorf("the programs of the run were started without %q: %q", want, m.givenToPrograms())
 		}
@@ -63,7 +63,7 @@ func TestCFNET001AStraightRouteAddsNothingToTheExecutor(t *testing.T) {
 	cfg.Network = config.Network{
 		Mode: "direct",
 		Proxies: map[string]config.Proxy{
-			"home": {Type: "http", Host: "192.168.0.4", Port: 1082, Credentials: "none"},
+			"home": {Type: "http", Host: "192.0.2.10", Port: 1082, Credentials: "none"},
 		},
 	}
 

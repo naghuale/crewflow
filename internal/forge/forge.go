@@ -658,6 +658,18 @@ type Env struct {
 	// command that has roles to read refuses with it before it asks the host anything:
 	// a host that answered through somebody else's proxy is a host that answered.
 	RouteError error
+	// Events is where the events of the route of the project are said: the terminal of the
+	// person who started the command and — as soon as a run has a journal of its own — that
+	// journal, which is the same notices the store of the machine of §7i is waited through.
+	// The mode `fallback` makes one operation of a program twice and a person learns that
+	// from the journal of the run, not from a report of a program that did not fail
+	// (docs/DESIGN.md §6a, §7a, §7d, §7i).
+	//
+	// It is nil where a caller has nowhere to say it, and then the route is made without a
+	// word about it: a role of a project is built by commands that only look as well as by
+	// commands that ask, and asking a machine of macOS about where to write is a question
+	// nobody asked (§7i).
+	Events *secret.Notices
 }
 
 // Set is what a project has for the three roles: the implementations its

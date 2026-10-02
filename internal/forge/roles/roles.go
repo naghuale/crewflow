@@ -200,35 +200,67 @@ func withoutSecrets(env forge.Env) forge.Env {
 	return env
 }
 
-// throughRoute is the machine of the roles of a project with the environment of the route
-// added to every program it starts, and the credentials of the profile read once here —
-// the one place in the adapter of a host where a secret of a route is read at all, and it
-// goes into the environment of a child process and nowhere else (docs/DESIGN.md §7d, §7e).
+// throughRoute is the machine of the roles of a project with the route of the project
+// around every program it starts: the environment of that route is added to each of them,
+// and in the mode `fallback` the one operation that could not reach the network is made
+// once more through the active profile of the project (docs/DESIGN.md §7d).
+//
+// The credentials of a profile are read where a connection through it is really made and
+// nowhere else: for the route the project goes out by it is read here, before the first
+// program is started, because a profile whose credentials are missing is a refusal a
+// person has to be told about before a task starts; for the profile of the second attempt
+// it is read when that attempt is being made, because until then nobody has asked whether
+// there is a second attempt at all (docs/DESIGN.md §7d, §7e).
 //
 // A route that cannot be worked out is not a route the roles can be built on: gh would
 // then go out the way the shell of the machine happened to leave it, and a report would
 // say the project cannot be read while the answer would be a proxy of somebody else.
 func throughRoute(cfg config.Config, env forge.Env) forge.Env {
-	route, err := network.Choose(cfg, "")
+	route, err := firstRoute(cfg, env)
 	if err != nil {
 		env.RouteError = err
 		return env
 	}
-	credentials, err := network.Credentials(env.Secrets, route)
-	if err != nil {
-		env.RouteError = err
-		return env
-	}
-	environment, err := route.Environment(cfg.Network.NoProxy, credentials)
-	if err != nil {
-		env.RouteError = err
-		return env
+	machine := network.Fallback{
+		Config:  cfg,
+		Route:   route,
+		Secrets: env.Secrets,
+		Now:     env.Now,
+		Events:  env.Events,
 	}
 	run := env.Run
 	env.Run = func(ctx context.Context, name string, args []string, dir string, extra []string) ([]byte, []byte, int, error) {
-		return run(ctx, name, args, dir, slices.Concat(extra, environment))
+		// The route is put behind what the adapter of the host asked for and never into it:
+		// the token of the App of the project is the account the second attempt works under
+		// as well, because another road is not another right (SEC-NET-009, §7i).
+		answer := machine.Once(ctx, func(_ network.Route, ofRoute []string) (string, string, int, error) {
+			stdout, stderr, code, err := run(ctx, name, args, dir, slices.Concat(extra, ofRoute))
+			return string(stdout), string(stderr), code, err
+		})
+		return []byte(answer.Stdout), []byte(answer.Stderr), answer.Code, answer.Err
 	}
 	return env
+}
+
+// firstRoute is the route the programs of the roles go out by, and every refusal of a route
+// nobody can work out: no profile named, a profile that is in no table of the project, and
+// credentials of a profile that are not in the store of the machine or are not a login and a
+// password in it. It is worked out before the first program of the roles is started, because a
+// refusal a person has to act on belongs before a task starts and not in the middle of one
+// (docs/DESIGN.md §7d, §7e).
+func firstRoute(cfg config.Config, env forge.Env) (network.Route, error) {
+	route, err := network.Choose(cfg, "")
+	if err != nil {
+		return network.Route{}, err
+	}
+	credentials, err := network.Credentials(env.Secrets, route)
+	if err != nil {
+		return network.Route{}, err
+	}
+	if _, err := route.Environment(cfg.Network.NoProxy, credentials); err != nil {
+		return network.Route{}, err
+	}
+	return route, nil
 }
 
 // orchestratorOf is the App of the orchestrator of the project, and nothing where the

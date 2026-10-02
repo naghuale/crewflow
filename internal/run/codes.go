@@ -47,6 +47,7 @@ var reasons = []string{
 	ReasonChecksRunning,
 	ReasonConflictWithMain,
 	ReasonHumanAuthorization,
+	ReasonRouteUnavailable,
 	ReasonNoChecks,
 	ReasonNoProgress,
 	ReasonOutOfScope,

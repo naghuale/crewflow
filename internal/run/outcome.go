@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/naghuale/crewflow/internal/network"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -153,6 +154,15 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 	change, found, err := r.set.Forge.FindChangeRequest(ctx, r.branch)
 	switch {
 	case err != nil:
+		// Neither route of the project reached the host: the mode `fallback` has spent its
+		// one second attempt and the run has nothing left to ask the host with. The work of
+		// the task is where the run left it — the worktree, the branch and the session — and
+		// a person goes on from there, so this is a wait for a resource of the machine and not
+		// a failure of the task (F-119, docs/DESIGN.md §6a, §7d).
+		if closed, both := network.RouteUnavailable(err); both {
+			result.Reason = fmt.Sprintf("%s: %s", ReasonRouteUnavailable, closed.Error())
+			return result.spent(Blocked), nil
+		}
 		return result, err
 	case found:
 		result.ChangeRequest = &change

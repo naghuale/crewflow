@@ -94,11 +94,11 @@ func TestTheRouteOfAProjectIsChangedWithCommands(t *testing.T) {
 	project := writeConfig(t, plainProject)
 
 	stdout, stderr, code := say(t, "network", "proxy", "add", "home",
-		"--type", "http", "--host", "192.168.0.4", "--port", "1082", "-config", project)
+		"--type", "http", "--host", "192.0.2.10", "--port", "1082", "-config", project)
 	if code != exitOK {
 		t.Fatalf("add a profile = %d, want %d (stderr: %q)", code, exitOK, stderr)
 	}
-	if !strings.Contains(stdout, "192.168.0.4") {
+	if !strings.Contains(stdout, "192.0.2.10") {
 		t.Errorf("the answer of the command is %q, want the address of the profile in it", stdout)
 	}
 	// The event of the route is written where a program and a person read it, and it
@@ -144,7 +144,7 @@ active_proxy = "home"
 
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"
 
@@ -432,7 +432,7 @@ func TestTheCredentialsOfAProfileThatTakesNoneAreRefused(t *testing.T) {
 	project := writeConfig(t, plainProject+`
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"
 `)
@@ -471,7 +471,7 @@ active_proxy = "home"
 
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"
 `)
@@ -494,15 +494,16 @@ credentials = "none"
 	}
 }
 
-// TestTheModeOfTheRouteIsChangedByACommandAndTheOneCrewflowDoesNotDoIsRefused: the mode
-// `fallback` is described and not written yet, and the refusal names the two that are
-// (docs/DESIGN.md §7d, #145).
+// TestTheModeOfTheRouteIsChangedByACommandAndTheOneCrewflowDoesNotDoIsRefused: all three
+// modes of the file of a project are written by this command, and the refusal names the
+// three that are — a project cannot be left in a mode no program can work with
+// (docs/DESIGN.md §7d).
 func TestTheModeOfTheRouteIsChangedByACommandAndTheOneCrewflowDoesNotDoIsRefused(t *testing.T) {
 	useNetworkOfTheTest(t, &storeOfTheRoute{}, nil)
 	project := writeConfig(t, plainProject+`
 [network.proxies.home]
 type = "http"
-host = "192.168.0.4"
+host = "192.0.2.10"
 port = 1082
 credentials = "none"
 `)
@@ -513,15 +514,24 @@ credentials = "none"
 	if _, stderr, code := say(t, "network", "mode", "proxy", "-config", project); code != exitOK {
 		t.Fatalf("switch the mode = %d, want %d (stderr: %q)", code, exitOK, stderr)
 	}
-	if _, stderr, code := say(t, "network", "mode", "fallback", "-config", project); code != exitFailure {
-		t.Fatalf("the mode fallback = %d, want %d", code, exitFailure)
-	} else if !strings.Contains(stderr, "direct or proxy") {
+	if _, stderr, code := say(t, "network", "mode", "fallback", "-config", project); code != exitOK {
+		t.Fatalf("the mode fallback = %d, want %d (stderr: %q)", code, exitOK, stderr)
+	}
+	stdout, _, _ := say(t, "network", "mode", "fallback", "-config", project)
+	for _, want := range []string{"the route of the project is fallback", `through the profile "home"`} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("the answer of the command is %q, want %q in it", stdout, want)
+		}
+	}
+	if _, stderr, code := say(t, "network", "mode", "sideways", "-config", project); code != exitFailure {
+		t.Fatalf("a mode crewflow does not do = %d, want %d", code, exitFailure)
+	} else if !strings.Contains(stderr, "direct, proxy or fallback") {
 		t.Errorf("the refusal %q does not name the modes crewflow does", stderr)
 	}
 	if _, stderr, code := say(t, "network", "mode", "direct", "-config", project); code != exitOK {
 		t.Fatalf("switch the mode back = %d, want %d (stderr: %q)", code, exitOK, stderr)
 	}
-	stdout, _, _ := say(t, "network", "mode", "direct", "-config", project)
+	stdout, _, _ = say(t, "network", "mode", "direct", "-config", project)
 	if !strings.Contains(stdout, "the route of the project is direct") {
 		t.Errorf("the answer of the command is %q, want it to say what the route is now", stdout)
 	}
