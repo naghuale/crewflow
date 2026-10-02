@@ -182,7 +182,7 @@ func (p Project) put(content []byte) error {
 	// A rename has taken the file away already, and nothing else is to be done about it;
 	// a write that failed has to take its own file back with it, or the next build would
 	// find a file of the journal that is not a journal.
-	defer os.Remove(beside.Name())
+	defer func() { _ = os.Remove(beside.Name()) }()
 	if _, err := beside.Write(content); err != nil {
 		return p.failedToWrite(beside, err)
 	}
