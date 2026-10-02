@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,13 +76,13 @@ func TestGitAsksCrewflowForTheCredentialsOfThisRepository(t *testing.T) {
 				"\n[forge]\nkind = \"github\"\nhost = \""+host+"\"\n")
 			said := filepath.Join(t.TempDir(), "said.txt")
 			on := gitOfTheTest{
-				repo:    repo,
-				home:    t.TempDir(),
-				address: "https://" + host + "/" + tc.path,
+				repo: repo,
+				home: t.TempDir(),
 				// Every setting of the worktree and not one of them written out here: a
 				// helper or a setting a test builds for itself is one of nobody (F-082,
 				// F-085, §7i).
-				settings: gitConfigOfAWorktree(t, store, api, project),
+				environment: gitConfig(gitConfigOfAWorktree(t, store, api, project)),
+				address:     "https://" + host + "/" + tc.path,
 				machine: map[string]string{
 					helperStoreVar:  writeTheKeyOfTheTest(t, store),
 					helperServerVar: writeTheCertificateOfTheTest(t, api),
@@ -130,6 +132,128 @@ func TestGitAsksCrewflowForTheCredentialsOfThisRepository(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTheCredentialsOfAPushOfTheRunNeverReachTheHelpersOfTheMachine is F-116 (#141): git
+// asks the helpers of the system and of the user before the helper of crewflow, and
+// `osxkeychain` of the system file of macOS is one of them — it has the token of the login
+// of a person, it answers first, and after a push went through it is handed the token of the
+// App of the run, which it writes down in the keychain of the owner (R6).
+//
+// A real git, the settings of git as crewflow hands them to a command, and a helper of the
+// machine of the test that writes down everything it is asked: while those settings stand,
+// git asks it nothing at all — not for the question of the push, not for the `store` of the
+// credentials the push went through with, not for the `erase` of a rejection.
+//
+// The second case is the same git with the same machine and no settings of crewflow, and it
+// is what makes the first one worth something: a helper that is asked nothing is also a
+// helper git would never have asked, and this case says that this chain does reach it.
+// (docs/DESIGN.md §7i)
+func TestTheCredentialsOfAPushOfTheRunNeverReachTheHelpersOfTheMachine(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skipf("git is not installed: %v", err)
+	}
+	cases := []struct {
+		name string
+		// settings is whether the push is given the settings of git of crewflow. Without
+		// them the chain of the helpers of the machine is the chain of the push.
+		settings bool
+		// answer is the password git is given for the repository of the project: the token
+		// of the App of the run where the helper of crewflow is the only helper, and the
+		// password of the machine where nothing of crewflow is in the chain.
+		answer string
+		// asked is whether git asks the helper of the machine at all.
+		asked bool
+	}{
+		{name: "the settings of crewflow", settings: true, answer: "password=ghs_token_of_the_run"},
+		{name: "the helpers of the machine alone", answer: "password=password_of_the_machine", asked: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &storeOfTheTest{key: keyOfTheTest(t)}
+			api := useMachineOfTheTest(t, store, nil)
+			api.demandsPassword = true
+			host := hostOfTest(api)
+			repo := t.TempDir()
+			project := writeTheFileOfTheProject(t, repo, projectConfig+botConfig+
+				"\n[forge]\nkind = \"github\"\nhost = \""+host+"\"\n")
+			asked := filepath.Join(t.TempDir(), "asked.txt")
+			on := gitOfTheTest{
+				repo: repo,
+				home: t.TempDir(),
+				// The helper of the machine of the test stands in the file of the user
+				// where `osxkeychain` of macOS stands in the file of the system: the order
+				// of the helpers is the same, and the keychain of the machine is not a
+				// thing a test may touch (§7i).
+				global:  writeTheHelperOfTheMachine(t, asked),
+				address: "https://" + host + "/naghuale/crewflow.git",
+				machine: map[string]string{
+					helperStoreVar:  writeTheKeyOfTheTest(t, store),
+					helperServerVar: writeTheCertificateOfTheTest(t, api),
+					helperSaidVar:   filepath.Join(t.TempDir(), "said.txt"),
+				},
+			}
+			if tc.settings {
+				on.environment = gitConfig(gitConfigOfAWorktree(t, store, api, project))
+			}
+			git(t, on, "init", "--quiet")
+
+			filled := git(t, on, "credential", "fill")
+			if !strings.Contains(filled, tc.answer) {
+				t.Errorf("git credential fill wrote %q, want %q", filled, tc.answer)
+			}
+			// The other two commands of the credentials: what a push went through with is
+			// handed to the helpers to keep (`store`) and to forget (`erase`) — that is
+			// the way the token of an hour of the App reached the keychain of the owner.
+			// Whether git hands it over at all is git's own business; what this test holds
+			// is that the settings of crewflow leave the helper of the machine nothing to
+			// hand it to.
+			git(t, on, "credential", "approve")
+			git(t, on, "credential", "reject")
+
+			if said := readTheFileIfItIsThere(t, asked); (said != "") != tc.asked {
+				t.Errorf("the helper of the machine was asked %q, want it asked: %t", said, tc.asked)
+			}
+		})
+	}
+}
+
+// writeTheHelperOfTheMachine writes a helper of the machine of the test and the file of the
+// settings of that machine that names it, and answers with the file: git asks the helpers of
+// the settings of the system and of the user before the helper of the worktree, and a test of
+// this needs one of them it can watch (§7i, #141).
+func writeTheHelperOfTheMachine(t *testing.T, record string) string {
+	t.Helper()
+	folder := t.TempDir()
+	helper := filepath.Join(folder, "helper-of-the-machine.sh")
+	script := "#!/bin/sh\n" +
+		"asked=$(cat)\n" +
+		"{ echo \"operation: $*\"; echo \"asked: $asked\"; } >> '" + record + "'\n" +
+		"echo 'username=x-access-token'\n" +
+		"echo 'password=password_of_the_machine'\n"
+	if err := os.WriteFile(helper, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the helper of the machine: %v", err)
+	}
+	settings := filepath.Join(folder, "gitconfig")
+	if err := os.WriteFile(settings, []byte("[credential]\n\thelper = "+helper+"\n"), 0o600); err != nil {
+		t.Fatalf("write the settings of the machine: %v", err)
+	}
+	return settings
+}
+
+// readTheFileIfItIsThere is what a file of the test holds, or an empty string where there is
+// no file at all: git asks a helper by running it, so a file that was never written is the
+// whole of what the helper was asked (§7i).
+func readTheFileIfItIsThere(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
 }
 
 // TestTheHelperOfThisBuildSaysWhyItCannotSignWithoutAKey is the same helper on a machine
@@ -259,33 +383,44 @@ func gitConfigOfAWorktree(t *testing.T, store secret.Store, api *apiOfTheTest, c
 
 // gitOfTheTest is the machine a git of a test runs in: the folder of the repository, a
 // home of its own, the address of the repository of the project on the host of the test,
-// the settings of the worktree and what the helper of the test is to work against.
+// the settings of git as the environment of the command carries them, the file of the
+// settings of the machine and what the helper of the test is to work against.
 type gitOfTheTest struct {
-	repo     string
-	home     string
-	address  string
-	settings map[string]string
-	machine  map[string]string
+	repo    string
+	home    string
+	address string
+	global  string
+	machine map[string]string
+	// environment is the settings of git as crewflow hands them to a command of it: the
+	// pairs `GIT_CONFIG_COUNT` and `GIT_CONFIG_KEY_n` with `GIT_CONFIG_VALUE_n`, which
+	// hold for that one command and for nothing else (§7a, §7i).
+	environment []string
 }
 
 // git is the real git with the settings of the worktree and nothing else: the helpers of
 // the machine are reset before crewflow's own, the way the push of a merge resets them,
-// and the answer below is the one of crewflow's helper.
+// and the answer of a question is the one of crewflow's helper.
 //
 // It answers what git wrote and what it failed on, and it does not stop the test at the
 // first failure: a git that could not get the credentials is the failure these tests are
 // about, and the test has to be able to read it (docs/DESIGN.md §7i).
 func git(t *testing.T, on gitOfTheTest, args ...string) string {
 	t.Helper()
-	command := exec.Command("git", append(flagsOfTheTest(on), args...)...)
+	command := exec.Command("git", args...)
 	command.Dir = on.repo
 	command.Stdin = strings.NewReader("url=" + on.address + "\n\n")
 	command.Env = append(withoutGitOfTheMachine(),
 		"HOME="+on.home, "XDG_CONFIG_HOME="+on.home,
-		"GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null",
+		// The settings of the system of the machine are not a file of a test, and the
+		// helper they name on macOS — `osxkeychain` — is one question away from the
+		// keychain of the person who runs the test. A helper of a test is asked instead,
+		// and it is named in the file of the settings the test wrote (§7i).
+		"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL="+globalOfTheTest(on),
 		// The certificate of the server of the test is not one git is asked to trust:
 		// what has to trust it is the helper of the credentials, and it does.
 		"GIT_SSL_NO_VERIFY=true")
+	command.Env = append(command.Env, on.environment...)
 	for name, value := range on.machine {
 		command.Env = append(command.Env, name+"="+value)
 	}
@@ -296,19 +431,32 @@ func git(t *testing.T, on gitOfTheTest, args ...string) string {
 	return string(out[0])
 }
 
-// flagsOfTheTest are the settings of the worktree as the command line of git takes them:
-// every one of them, in the order of their names, and nothing of the machine (F-082, §7i).
-func flagsOfTheTest(on gitOfTheTest) []string {
-	names := make([]string, 0, len(on.settings))
-	for name := range on.settings {
-		names = append(names, name)
+// globalOfTheTest is the file of the settings of the user of a test: the one it wrote, and
+// no settings at all where the test wrote none, which git reads as an empty file.
+func globalOfTheTest(on gitOfTheTest) string {
+	if on.global == "" {
+		return "/dev/null"
 	}
-	slices.Sort(names)
-	flags := make([]string, 0, 2*len(names))
-	for _, name := range names {
-		flags = append(flags, "-c", name+"="+on.settings[name])
+	return on.global
+}
+
+// settingsOf are the settings of the machine of a test as the environment of a command of
+// git carries them: `GIT_CONFIG_COUNT` and a pair for every setting, which is how §7a has
+// git read the settings of a project — and how a test gives its own git the name of its
+// committer instead of writing them into a file of the machine.
+func settingsOf(settings map[string]string) []string {
+	keys := make([]string, 0, len(settings))
+	for key := range settings {
+		keys = append(keys, key)
 	}
-	return flags
+	slices.Sort(keys)
+	environment := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(keys))}
+	for i, key := range keys {
+		environment = append(environment,
+			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, key),
+			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, settings[key]))
+	}
+	return environment
 }
 
 // withoutGitOfTheMachine is the environment of a test with the settings of the repository

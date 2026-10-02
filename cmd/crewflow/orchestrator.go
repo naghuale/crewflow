@@ -12,11 +12,19 @@ import (
 	"github.com/naghuale/crewflow/internal/merge"
 )
 
-// helperKey is the setting of git that names where it takes the credentials of a push
-// from, and the only one the environment of a command of git has to reset before its own:
-// every helper named before it may answer with the token of the login of a person
-// (docs/DESIGN.md §7i).
-const helperKey = "credential.helper"
+// resets are the settings of git whose value the environment of the commands of git takes to
+// nothing before the settings the adapter of the host named: an empty `credential.helper` takes
+// the list of helpers out of the files of the system and of the user, and the helper of the
+// machine is the one that answers first — `osxkeychain` of the file of the system of macOS has
+// the token of the login of a person, and a push of a merge signed with it would be that login
+// all over again (F-116, R6, #141). `credential.useHttpPath` is reset by the same rule and not
+// out of need: one rule for every setting crewflow writes into the environment of a push is a
+// rule nobody has to remember setting by setting.
+//
+// Nothing outside that environment is reset: the settings of the machine and the ones of
+// the repository are the settings of the person, and crewflow writes neither of them
+// (docs/DESIGN.md §7a, §7i).
+var resets = []string{"credential.helper", "credential.useHttpPath"}
 
 // The machine a review and a merge are made of: the roles of the project as its
 // orchestrator, and the way git is started. They are variables so that a test of a
@@ -143,38 +151,42 @@ func gitEnvironment(ctx context.Context, set forge.Set) []string {
 // reads as if they were given with `-c` and which therefore hold for that one command
 // and for nothing else (docs/DESIGN.md §7a).
 //
-// A list of helpers is reset before crewflow's own: the settings of the repository or of
-// the machine may name a helper that answers with the token of the login of a person, and
+// A list is reset before crewflow's own: the settings of the repository or of the
+// machine may name a helper that answers with the token of the login of a person, and
 // a push of a merge that was signed with it would be the login of the person all over
-// again — which is the very thing the mode of §7i is for (§7i).
+// again — which is the very thing the mode of §7i is for (§7i, F-116).
 func gitConfig(settings map[string]string) []string {
 	if len(settings) == 0 {
 		return nil
 	}
 	keys := make([]string, 0, len(settings))
+	count := 0
 	for key := range settings {
 		keys = append(keys, key)
+		count += len(valuesOf(key, settings[key]))
 	}
 	slices.Sort(keys)
-	count := len(keys)
-	if slices.Contains(keys, helperKey) {
-		count++
-	}
 	environment := []string{fmt.Sprintf("GIT_CONFIG_COUNT=%d", count)}
 	n := 0
-	if slices.Contains(keys, helperKey) {
-		environment = append(environment,
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, helperKey),
-			fmt.Sprintf("GIT_CONFIG_VALUE_%d=", n))
-		n++
-	}
 	for _, key := range keys {
-		environment = append(environment,
-			fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, key),
-			fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, settings[key]))
-		n++
+		for _, value := range valuesOf(key, settings[key]) {
+			environment = append(environment,
+				fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", n, key),
+				fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", n, value))
+			n++
+		}
 	}
 	return environment
+}
+
+// valuesOf are the values one setting of a push is given, in the order git reads them: the
+// empty value first for a setting of [resets], and the value the adapter of the host named
+// after it.
+func valuesOf(key, value string) []string {
+	if !slices.Contains(resets, key) {
+		return []string{value}
+	}
+	return []string{"", value}
 }
 
 // saidOrchestrator is the line of the mode of the orchestrator as a person reads it

@@ -210,12 +210,12 @@ func repositoryOf(t *testing.T, copyOf string) gitOfTheTest {
 	on := gitOfTheTest{
 		repo: copyOf,
 		home: t.TempDir(),
-		settings: map[string]string{
+		environment: settingsOf(map[string]string{
 			"user.name":          "crewflow test",
 			"user.email":         "test@crewflow.invalid",
 			"commit.gpgsign":     "false",
 			"init.defaultBranch": "main",
-		},
+		}),
 	}
 	git(t, on, "init", "-q", ".")
 	git(t, on, "add", "-A")

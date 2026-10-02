@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -51,7 +52,9 @@ func (r *runner) identityOf(ctx context.Context) (forge.Identity, error) {
 // run of an agent is longer than the life of a token and git asks for a password every
 // time it pushes; and the folder of hooks of this task, because an executor that is
 // talked into pushing into the default branch is refused by the machine as well and not
-// only by the words of the task.
+// only by the words of the task. Every one of those settings of git is written as an empty
+// value and then as its own: the list of the helpers of the machine is taken out of it by
+// the empty value, and what is left is the helper of crewflow and nobody else ([resets]).
 func (r *runner) bot(ctx context.Context) error {
 	if r.identity.Mode != forge.ModeBot {
 		return nil
@@ -64,9 +67,25 @@ func (r *runner) bot(ctx context.Context) error {
 	if err := r.git(ctx, r.repoDir(), "config", "extensions.worktreeConfig", "true"); err != nil {
 		return err
 	}
-	for key, value := range r.identity.GitConfig {
-		if err := r.git(ctx, r.worktree, "config", "--worktree", key, value); err != nil {
-			return fmt.Errorf("the settings of git in the worktree: %w", err)
+	keys := make([]string, 0, len(r.identity.GitConfig))
+	for key := range r.identity.GitConfig {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	for _, key := range keys {
+		for i, value := range valuesOf(key, r.identity.GitConfig[key]) {
+			// The first value of a setting is put in place of what the worktree holds and
+			// the rest are added to it: a worktree that is run a second time must not keep
+			// the settings of the build before it, and git refuses to write one value over
+			// several with a single one.
+			args := []string{"config", "--worktree", "--replace-all"}
+			if i > 0 {
+				args = []string{"config", "--worktree", "--add"}
+			}
+			args = append(args, key, value)
+			if err := r.git(ctx, r.worktree, args...); err != nil {
+				return fmt.Errorf("the settings of git in the worktree: %w", err)
+			}
 		}
 	}
 	// The path of the hooks is the last thing written, so that a worktree is never left
@@ -80,6 +99,33 @@ func (r *runner) bot(ctx context.Context) error {
 	}
 	return nil
 }
+
+// valuesOf are the values one setting of a worktree of a run holds, in the order git reads
+// them: the empty value first for a setting of [resets], and the value the adapter of the host
+// gave after it.
+func valuesOf(key, value string) []string {
+	if !slices.Contains(resets, key) {
+		return []string{value}
+	}
+	return []string{"", value}
+}
+
+// resets are the settings of git whose value a worktree of a run takes to nothing before the
+// settings the adapter of the host gave it.
+//
+// An empty `credential.helper` is what takes the list of helpers out of the files of the
+// system and of the user before crewflow's own helper is added to it, and the helper of the
+// machine is the one that answers first: `osxkeychain` of the file of the system of macOS has
+// the token of the login of a person, and after a push went through it is handed the token of
+// the App of the run — a secret of a run in the keychain of the owner, without their knowing
+// (F-116, R6, #141). `credential.useHttpPath` is reset by the same rule and not out of need:
+// one rule for every setting a run writes into a worktree of its own is a rule nobody has to
+// remember setting by setting, and the value of the worktree is the one git reads either way.
+//
+// Only the settings of a worktree a run manages are reset: the file of the system, the file of
+// the person and the settings of the repository of the project are left as they are, and
+// crewflow writes none of them (docs/DESIGN.md §7a, §7i).
+var resets = []string{"credential.helper", "credential.useHttpPath"}
 
 // hooks writes the pre-push hook of the task into a folder of crewflow of its own and
 // answers with that folder, which the worktree of the task is then pointed at.

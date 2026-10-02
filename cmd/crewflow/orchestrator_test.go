@@ -351,21 +351,25 @@ func TestTheSharedModeSaysWhatItCosts(t *testing.T) {
 
 // TestGitIsStartedWithTheSettingsOfTheAccountAndOfNothingElse: the environment of the
 // commands of git is what the adapter of the host named, in the words git reads them
-// (`GIT_CONFIG_COUNT` and a pair for every setting), and the list of helpers is reset
+// (`GIT_CONFIG_COUNT` and a pair for every value), and every setting of a list is reset
 // before crewflow's own: the machine may have a helper that answers with the token of the
-// login of a person, and a push signed with it would be that login all over again (§7a, §7i).
+// login of a person, and a push signed with it would be that login all over again (§7a, §7i,
+// F-116).
 func TestGitIsStartedWithTheSettingsOfTheAccountAndOfNothingElse(t *testing.T) {
 	environment := gitConfig(map[string]string{
-		"credential.helper": "crewflow auth git-credential -as orchestrator",
-		"core.editor":       "true",
+		"credential.helper":      "crewflow auth git-credential -as orchestrator",
+		"credential.useHttpPath": "true",
+		"core.editor":            "true",
 	})
 
 	want := []string{
-		"GIT_CONFIG_COUNT=3",
-		"GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=",
-		"GIT_CONFIG_KEY_1=core.editor", "GIT_CONFIG_VALUE_1=true",
+		"GIT_CONFIG_COUNT=5",
+		"GIT_CONFIG_KEY_0=core.editor", "GIT_CONFIG_VALUE_0=true",
+		"GIT_CONFIG_KEY_1=credential.helper", "GIT_CONFIG_VALUE_1=",
 		"GIT_CONFIG_KEY_2=credential.helper",
 		"GIT_CONFIG_VALUE_2=crewflow auth git-credential -as orchestrator",
+		"GIT_CONFIG_KEY_3=credential.useHttpPath", "GIT_CONFIG_VALUE_3=",
+		"GIT_CONFIG_KEY_4=credential.useHttpPath", "GIT_CONFIG_VALUE_4=true",
 	}
 	if strings.Join(environment, " ") != strings.Join(want, " ") {
 		t.Errorf("the environment of the commands of git is %v, want %v", environment, want)

@@ -738,11 +738,19 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 // without the settings of the machine: a test of a run must hold on a machine where
 // nothing is configured either.
 func runGit(dir string, args ...string) (string, error) {
+	out, err := rawGit(dir, args...)
+	return strings.TrimSpace(out), err
+}
+
+// rawGit is the same git with nothing taken off what it wrote: the empty value of a reset
+// in the settings of a worktree is a whole line of the answer of git and nothing else, and
+// a test that reads that list has to be able to see it (§7i).
+func rawGit(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	return string(out), err
 }
 
 // split are the paths of the answer of git, one per line.
@@ -806,6 +814,23 @@ func TestRunInTheModeOfTheBotGuardsTheWorktreeOfTheTask(t *testing.T) {
 	// with the login of the person, and the one of a run pushes with a token of the app.
 	if got := gitOut(t, result.Worktree, "config", "--get", "credential.helper"); got != "crewflow auth git-credential" {
 		t.Errorf("the worktree of the run has the helper %q, want the one of crewflow", got)
+	}
+	// The list of the helpers of the worktree is reset before the helper of crewflow is
+	// added to it: an empty value and then the helper, and nothing else. The helper of the
+	// machine — `osxkeychain` of the system file of macOS — is the one git asks first, it
+	// has the token of the login of the person, and after a push of a run went through it
+	// is handed the token of the App of that run (F-116, R6, #141). A real git is asked
+	// about the whole list here, because the value git would use is the last one and the
+	// one before it is the reset: `git config --get` alone shows a worktree that is right
+	// and a worktree that is not (§7i).
+	raw, err := rawGit(result.Worktree, "config", "--worktree", "--get-all", "credential.helper")
+	if err != nil {
+		t.Fatalf("git config --worktree --get-all credential.helper: %v\n%s", err, raw)
+	}
+	if helpers := strings.Split(strings.TrimRight(raw, "\n"), "\n"); len(helpers) != 2 ||
+		helpers[0] != "" || helpers[1] != "crewflow auth git-credential" {
+		t.Errorf("the worktree of the run holds the helpers %q, want an empty value and then the helper of crewflow",
+			helpers)
 	}
 	hooks := gitOut(t, result.Worktree, "config", "--get", "core.hooksPath")
 	if !strings.Contains(hooks, filepath.Join("hooks", "naghuale-crewflow", "43")) {

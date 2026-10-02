@@ -497,6 +497,19 @@ crewflow auth app check                          # key, installation, rights —
 The private key stays in the macOS keychain and never reaches the executor, a journal or a
 terminal. See §7i of the design.
 
+### Traces of earlier App tokens in the keychain
+
+A push of a run is signed by the helper of git of crewflow and by nothing else: the worktree of
+a run — and the environment of the push of a merge — reset the list of helpers of git with an
+empty value before crewflow's own helper is added to it, so `osxkeychain` of the system file of
+macOS is not asked at all and no token of the App reaches it.
+
+Before that reset git did ask it, and after a push went through it was handed the token of the
+App: entries of `github.com` with the account `x-access-token` in the keychain, out of date an
+hour later. Removing them is the owner's work, by hand and one entry at a time:
+[docs/help/old-app-tokens.md](docs/help/old-app-tokens.md) says which entries are of crewflow
+and what not to do. crewflow reads no keychain, writes none and deletes none.
+
 ## Whose name the orchestrator works under
 
 A review of a change and the push of a merge are the orchestrator's work, and the record of an

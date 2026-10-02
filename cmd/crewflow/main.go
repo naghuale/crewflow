@@ -126,5 +126,11 @@ Subcommands:
   crewflow auth app import <file.pem> [-config path] [-as executor|orchestrator]
   crewflow auth app check [-config path] [-as executor|orchestrator] [-json]
   crewflow auth git-credential [get] [-config path] [-as executor|orchestrator]
+
+Pages of the project, where the words of a refusal and the rest are written:
+  docs/DESIGN.md §7i           how a run works as a GitHub App and what signs its push
+  docs/help/old-app-tokens.md  tokens of an app left in the keychain of macOS by the builds
+                               before the list of helpers of git is reset, and how the owner
+                               removes them by hand
 `)
 }

@@ -33,8 +33,11 @@ func theBot() forge.Identity {
 			"GIT_COMMITTER_NAME=crewflow-executor[bot]",
 			"GIT_COMMITTER_EMAIL=1987+crewflow-executor[bot]@users.noreply.github.com",
 		},
-		GitConfig: map[string]string{"credential.helper": "crewflow auth git-credential"},
-		Secrets:   []string{theToken},
+		GitConfig: map[string]string{
+			"credential.helper":      "crewflow auth git-credential",
+			"credential.useHttpPath": "true",
+		},
+		Secrets: []string{theToken},
 	}
 }
 
@@ -98,6 +101,47 @@ func TestRunInTheModeOfTheBotHandsTheExecutorTheTokenOfTheApp(t *testing.T) {
 	// helper of a run (§7i).
 	if !m.ranConfig("--worktree") {
 		t.Errorf("git was asked %v, want the helper of the credentials in the worktree alone", m.lines())
+	}
+}
+
+// TestTheWorktreeOfARunResetsTheHelpersOfTheMachineBeforeTheHelperOfCrewflow: the
+// settings of git of a worktree are a list, and a run writes the empty value of each of
+// them before the value of the adapter of the host. An empty `credential.helper` takes
+// the list of helpers out of the files of the system and of the user, and the helper of
+// the machine is the one that answers first: `osxkeychain` of the file of the system of
+// macOS has the token of the login of a person, and after the push of a run went through
+// it is handed the token of the App of that run — a secret in the keychain of the owner
+// without their knowing, and an hour later a stale token in front of the helper of
+// crewflow (F-116, R6, #141).
+//
+// The order is the whole of it: a value written after the reset is the only one git is
+// left with, and `--replace-all` in front of it is what keeps a worktree that is run a
+// second time from holding the settings of the build before it (§7i).
+func TestTheWorktreeOfARunResetsTheHelpersOfTheMachineBeforeTheHelperOfCrewflow(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	m.answers["git config"] = answer{}
+	host := &host{task: taskOf(43), opened: true, identity: theBot()}
+	cfg := projectOf(t, m.worktrees, "")
+
+	if _, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+
+	want := [][]string{
+		{"config", "--worktree", "--replace-all", "credential.helper", ""},
+		{"config", "--worktree", "--add", "credential.helper", "crewflow auth git-credential"},
+		{"config", "--worktree", "--replace-all", "credential.useHttpPath", ""},
+		{"config", "--worktree", "--add", "credential.useHttpPath", "true"},
+	}
+	written := m.credentialsOfTheWorktree()
+	if len(written) != len(want) {
+		t.Fatalf("git was asked %v, want the settings of the credentials in the order %v", written, want)
+	}
+	for i, args := range want {
+		if !slices.Equal(written[i], args) {
+			t.Errorf("git was asked %v, want %v", written[i], args)
+		}
 	}
 }
 
@@ -289,6 +333,25 @@ func (m *machine) ranConfig(argument string) bool {
 		}
 	}
 	return false
+}
+
+// credentialsOfTheWorktree are the commands git was asked to write the settings of the
+// credentials of a worktree of a run with, in the order it was asked them, which is the
+// order git reads the values in (§7i, #141).
+func (m *machine) credentialsOfTheWorktree() [][]string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var written [][]string
+	for _, command := range m.ran {
+		if command.program != "git" || !slices.Contains(command.args, "--worktree") {
+			continue
+		}
+		if slices.Contains(command.args, "credential.helper") ||
+			slices.Contains(command.args, "credential.useHttpPath") {
+			written = append(written, slices.Clone(command.args))
+		}
+	}
+	return written
 }
 
 // askedFor is whether a program was run with the given name, which is how a test sees

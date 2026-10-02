@@ -72,12 +72,12 @@ func repositoryIn(t *testing.T) *repository {
 		gitOfTheTest: gitOfTheTest{
 			repo: t.TempDir(),
 			home: t.TempDir(),
-			settings: map[string]string{
+			environment: settingsOf(map[string]string{
 				"user.name":          "crewflow test",
 				"user.email":         "test@crewflow.invalid",
 				"commit.gpgsign":     "false",
 				"init.defaultBranch": "main",
-			},
+			}),
 		},
 		t:    t,
 		date: "2026-10-02T09:00:00Z",
