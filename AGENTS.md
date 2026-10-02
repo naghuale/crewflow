@@ -13,6 +13,14 @@ example of the rules; where it and the template disagree, the template is the co
 disagreement is reported rather than resolved by choosing a line
 ([MODEL, IV-043](docs/MODEL.md#позиции-практики)).
 
+## The map of measures
+
+Where a measure is defined, who decides about it, how it is applied, what checks it, what a violation
+writes into the log and what it still lacks — [docs/REGULATION.md](docs/REGULATION.md). A field that has
+no value there is written `missing`, not left empty: "there is no mechanism" and "the mechanism is
+silent" are different facts, and a task that implements a measure fills its row
+([MODEL, IV-043](docs/MODEL.md#позиции-практики)).
+
 ## Your run
 
 1. You are already in a dedicated `git worktree` on a dedicated branch created for this task.
