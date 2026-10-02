@@ -328,6 +328,69 @@ func TestChangelogCheckAsJSON(t *testing.T) {
 	}
 }
 
+// TestChangelogCheckAsksTheJournalOfTheDefaultBranch: a change brings its own fragment and
+// may leave the line of it out of the journal — a task writes only its fragment, and the
+// journal of the default branch is built after the merge — so the check of a branch is green
+// both before and after a build in it, and the check of the default branch after the merge
+// names the journal that was not rebuilt (CL-007, CL-003).
+func TestChangelogCheckAsksTheJournalOfTheDefaultBranch(t *testing.T) {
+	repo := repositoryIn(t)
+	theHostIs(t, theHost(128, 124, 77))
+	var stdout, stderr bytes.Buffer
+	run(changelogOf(repo, "changelog", "build"), &stdout, &stderr)
+	repo.commit("chore(changelog): the journal of the two tasks")
+	repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+
+	repo.git("checkout", "-q", "-b", "crewflow/128")
+	repo.fragment(128, "строка 128")
+	repo.commit("feat: 128")
+	stdout.Reset()
+	stderr.Reset()
+
+	if code := run(changelogOf(repo, "changelog", "check"), &stdout, &stderr); code != exitOK {
+		t.Fatalf("changelog check on the branch = %d, want 0 (stdout: %q, stderr: %q)", code, stdout.String(), stderr.String())
+	}
+	want := "changelog: 3 fragments, 3 tasks asked about, CHANGELOG.md is a build of the fragments at origin/main or of this checkout\n"
+	if stdout.String() != want {
+		t.Errorf("changelog check wrote %q, want %q", stdout.String(), want)
+	}
+	if journal := repo.read(changelog.File); strings.Contains(journal, "строка 128") {
+		t.Errorf("the branch wrote the line of its own fragment into the journal:\n%s", journal)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	run(changelogOf(repo, "changelog", "build"), &stdout, &stderr)
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(changelogOf(repo, "changelog", "check"), &stdout, &stderr); code != exitOK {
+		t.Fatalf("changelog check after the build in the branch = %d, want 0 (stdout: %q, stderr: %q)", code, stdout.String(), stderr.String())
+	}
+	repo.commit("chore(changelog): the line of 128")
+
+	repo.git("checkout", "-q", "main")
+	repo.git("merge", "-q", "--ff-only", "crewflow/128")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(changelogOf(repo, "changelog", "check"), &stdout, &stderr); code != exitOK {
+		t.Fatalf("changelog check after the merge = %d, want 0: the journal the branch built is the build of the tip (stdout: %q, stderr: %q)", code, stdout.String(), stderr.String())
+	}
+
+	repo.write(changelog.File, strings.Replace(repo.read(changelog.File), "строка 128", "строка 128, дописанная руками", 1))
+	repo.commit("fix(changelog): a line written by hand")
+	repo.git("update-ref", "refs/remotes/origin/main", "HEAD")
+	stdout.Reset()
+	stderr.Reset()
+	if code := run(changelogOf(repo, "changelog", "check"), &stdout, &stderr); code != exitFailure {
+		t.Fatalf("changelog check after a line written by hand = %d, want 1 (stdout: %q, stderr: %q)", code, stdout.String(), stderr.String())
+	}
+	for _, hold := range []string{"CHANGELOG.md", "the fragments at origin/main build", "built on it, after the merge"} {
+		if !strings.Contains(stdout.String(), hold) {
+			t.Errorf("changelog check wrote %q, want it to hold %q", stdout.String(), hold)
+		}
+	}
+}
+
 // TestChangelogRelease: the unreleased part becomes the section of the version with the day
 // of the release, an empty unreleased part stands above it, and the fragments are gone.
 func TestChangelogRelease(t *testing.T) {

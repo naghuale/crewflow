@@ -44,6 +44,10 @@ func runChangelog(args []string, stdout, stderr io.Writer) int {
 // whether it wrote it. A journal that is already what the fragments build is left as it
 // stands — a build that rewrote the same bytes would touch a file of the project for
 // nothing, and the next change would see a difference that is not one (CL-005).
+//
+// Её зовёт тот, кто сливает, на основной ветке после слияния: журнал не пишет ни одна
+// задача, а ворота `check` на слитом коммите требуют, чтобы он был пересобран (CL-003,
+// CL-007, docs/DESIGN.md §6 «Журнал изменений»).
 func runChangelogBuild(args []string, stdout, stderr io.Writer) int {
 	flags := changelogFlags("build", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
@@ -102,7 +106,9 @@ func runChangelogCheck(args []string, stdout, stderr io.Writer) int {
 	project := changelog.Project{
 		Root:     checkoutOf(*repoDir),
 		Language: changelog.LanguageOf(cfg.Project.Language),
-		Order:    changelog.Merged(changelog.Run(gitOfTheJournal), checkoutOf(*repoDir)),
+		Order:    changelog.Merged(gitOfTheJournal, checkoutOf(*repoDir)),
+		Git:      gitOfTheJournal,
+		Tip:      tipOf(cfg),
 	}
 	// The host is asked about the task of every fragment only where there is a host to ask:
 	// a project that is not hosted anywhere has no task to confirm, and its journal is
@@ -124,7 +130,7 @@ func runChangelogCheck(args []string, stdout, stderr io.Writer) int {
 		if err := printJSON(stdout, changelog.Answer{Problems: problems}); err != nil {
 			return changelogFailed(stderr, err)
 		}
-	} else if err := printChangelogProblems(stdout, problems, project, asked); err != nil {
+	} else if err := printChangelogProblems(ctx, stdout, problems, project, asked); err != nil {
 		return changelogFailed(stderr, err)
 	}
 	if len(problems) > 0 {
@@ -198,8 +204,21 @@ func journalOf(stderr io.Writer, configPath, repoDir string) (changelog.Project,
 	return changelog.Project{
 		Root:     root,
 		Language: changelog.LanguageOf(cfg.Project.Language),
-		Order:    changelog.Merged(changelog.Run(gitOfTheJournal), root),
+		Order:    changelog.Merged(gitOfTheJournal, root),
+		Git:      gitOfTheJournal,
+		Tip:      tipOf(cfg),
 	}, nil
+}
+
+// tipOf is the revision of the default branch the journal is checked at: the branch of
+// the host as the last fetch or the last push left it, which is where the default branch
+// is for everyone who works on the project (§6). A project that names no default branch
+// has no such revision, and its journal is then the build of every fragment that stands.
+func tipOf(cfg config.Config) string {
+	if cfg.Project.DefaultBranch == "" {
+		return ""
+	}
+	return "origin/" + cfg.Project.DefaultBranch
 }
 
 // gitOfTheJournal is the git a journal is read with: the git of the machine with nothing
@@ -213,14 +232,24 @@ func gitOfTheJournal(ctx context.Context, name string, args []string, dir string
 // printChangelogProblems is what a check found, for a person: one line for one problem,
 // and a line saying that there is none when there is none — a gate that says nothing about
 // a whole journal has told the person nothing about it.
-func printChangelogProblems(out io.Writer, problems []changelog.Problem, project changelog.Project, asked int) error {
+//
+// A line without problems says what the journal was compared with, because the answer of
+// a check is the rule it applied: a build of the fragments of the tip of the default
+// branch, or a build of the fragments of the checkout, and where the checkout has no such
+// tip — a build of every fragment that stands.
+func printChangelogProblems(ctx context.Context, out io.Writer, problems []changelog.Problem, project changelog.Project, asked int) error {
 	if len(problems) == 0 {
 		count, err := project.Count()
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(out, "changelog: %d fragments, %d tasks asked about, %s is what they build\n",
-			count, asked, changelog.File)
+		ref, inTip := project.Merged(ctx)
+		built := "what they build"
+		if inTip {
+			built = "a build of the fragments at " + ref + " or of this checkout"
+		}
+		fmt.Fprintf(out, "changelog: %d fragments, %d tasks asked about, %s is %s\n",
+			count, asked, changelog.File, built)
 		return nil
 	}
 	for _, problem := range problems {

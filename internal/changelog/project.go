@@ -37,6 +37,17 @@ type Project struct {
 	// reads them as they stand on the disk, which is what a journal outside a checkout
 	// of git is read by.
 	Order Merger
+	// Git is the git of the checkout: the order comes out of it, and so do the fragments
+	// of the tip of the default branch. Nil is a journal outside a checkout of git,
+	// which is read as it stands on the disk.
+	Git Run
+	// Tip is the revision of the default branch the journal is read at: the fragments that
+	// stand in it are the ones the journal has to be the build of. The fragment a change
+	// brings itself is not in it yet — a task writes only its own fragment and never the
+	// journal, and the journal is built on the default branch after the merge (docs/DESIGN.md
+	// §6, правило 3 PROJECT_RULES.md). Empty is a project that names no default branch,
+	// and then the journal has to be the build of every fragment that stands.
+	Tip string
 }
 
 // The reasons a check of a journal finds something wrong, and what a caller tells apart
@@ -71,14 +82,15 @@ func (p Project) body(ctx context.Context) ([]Fragment, error) {
 	if err != nil {
 		return nil, err
 	}
-	return p.order(ctx, fragments)
+	return orderBy(p.Order, ctx, fragments)
 }
 
-// order is the fragments in the order the journal reads them. A merger that answered
-// something other than every fragment exactly once is refused: a journal that read half
-// of the fragments, or read one twice, cannot be followed back to a task.
-func (p Project) order(ctx context.Context, fragments []Fragment) ([]Fragment, error) {
-	if p.Order == nil || len(fragments) == 0 {
+// orderBy is the fragments in the order the journal reads them, as the merger says. A
+// merger that answered something other than every fragment exactly once is refused: a
+// journal that read half of the fragments, or read one twice, cannot be followed back to
+// a task.
+func orderBy(order Merger, ctx context.Context, fragments []Fragment) ([]Fragment, error) {
+	if order == nil || len(fragments) == 0 {
 		return fragments, nil
 	}
 	tasks := make([]int, 0, len(fragments))
@@ -87,19 +99,19 @@ func (p Project) order(ctx context.Context, fragments []Fragment) ([]Fragment, e
 		tasks = append(tasks, fragment.Task)
 		byTask[fragment.Task] = fragment
 	}
-	order, err := p.Order(ctx, tasks)
+	merged, err := order(ctx, tasks)
 	if err != nil {
 		return nil, err
 	}
-	read := append([]int(nil), order...)
+	read := append([]int(nil), merged...)
 	slices.Sort(read)
 	wanted := append([]int(nil), tasks...)
 	slices.Sort(wanted)
 	if !slices.Equal(read, wanted) {
-		return nil, fmt.Errorf("the order of the fragments is not the order of the fragments: %v, not %v", order, wanted)
+		return nil, fmt.Errorf("the order of the fragments is not the order of the fragments: %v, not %v", merged, wanted)
 	}
 	ordered := make([]Fragment, 0, len(fragments))
-	for _, task := range order {
+	for _, task := range merged {
 		ordered = append(ordered, byTask[task])
 	}
 	return ordered, nil
@@ -221,9 +233,10 @@ func reasonOf(err error) string {
 // line of the journal a reader cannot follow to anything.
 //
 // What is checked: the format of every fragment, the existence of every task, the absence
-// of two fragments that say one thing, and the journal on the disk being what the
-// fragments build. The last one is left out when a fragment is not a fragment — there is
-// no journal to compare with — and the reason for it is named in the problem itself.
+// of two fragments that say one thing, and the journal on the disk being the build of the
+// fragments — of the tip of the default branch, or of those with the fragments the change
+// brings added to them. The last one is left out when a fragment is not a fragment — there
+// is no journal to compare with — and the reason for it is named in the problem itself.
 func (p Project) Check(ctx context.Context, tasks Tasks) ([]Problem, error) {
 	problems, err := p.readings(ctx, tasks)
 	if err != nil {
@@ -232,7 +245,7 @@ func (p Project) Check(ctx context.Context, tasks Tasks) ([]Problem, error) {
 	if len(problems) > 0 {
 		return problems, nil
 	}
-	built, err := p.Build(ctx)
+	journals, brought, err := p.expected(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -240,14 +253,163 @@ func (p Project) Check(ctx context.Context, tasks Tasks) ([]Problem, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", File, err)
 	}
-	if string(current) != string(built) {
-		problems = append(problems, Problem{
-			Path: File,
-			What: "the journal is not what the fragments build — run `crewflow changelog build`",
-			Err:  ErrOutOfSync,
-		})
+	for _, journal := range journals {
+		if string(current) == string(journal) {
+			return nil, nil
+		}
 	}
-	return problems, nil
+	return []Problem{{Path: File, What: p.outOfSync(ctx, brought), Err: ErrOutOfSync}}, nil
+}
+
+// expected is what the journal on the disk may be, as the two builds of the fragments that
+// are its source: the build of the fragments of the tip of the default branch, which is the
+// journal of the default branch itself, and the build of the fragments that stand in the
+// checkout, which is the journal a change builds in its own branch. Both are written by
+// `changelog build`; a journal that is neither of them was written by hand or lost a line of
+// a change that was merged (CL-007).
+//
+// It also says whether the checkout brings a fragment the tip does not hold: the checkout of
+// the default branch does not, and the journal there has to be one build and not the other.
+//
+// Where the checkout has no tip to read, the one build is the build of every fragment that
+// stands — the strictest reading of the rule, and the one a journal outside a checkout of the
+// project on git gets.
+func (p Project) expected(ctx context.Context) (journals [][]byte, brought bool, err error) {
+	mine, err := p.Read()
+	if err != nil {
+		return nil, false, err
+	}
+	if _, inTip := p.Merged(ctx); !inTip {
+		built, err := p.of(ctx, mine)
+		if err != nil {
+			return nil, false, err
+		}
+		return [][]byte{built}, false, nil
+	}
+	tip, err := p.atTip(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	journal, err := p.assemble(Body(tip, p.Language))
+	if err != nil {
+		return nil, false, err
+	}
+	built, err := p.of(ctx, mine)
+	if err != nil {
+		return nil, false, err
+	}
+	inTip := make(map[int]bool, len(tip))
+	for _, fragment := range tip {
+		inTip[fragment.Task] = true
+	}
+	for _, fragment := range mine {
+		if !inTip[fragment.Task] {
+			return [][]byte{journal, built}, true, nil
+		}
+	}
+	return [][]byte{journal, built}, false, nil
+}
+
+// of is the journal these fragments build in this checkout: the same build as
+// [Project.Build] over fragments that were read already.
+func (p Project) of(ctx context.Context, fragments []Fragment) ([]byte, error) {
+	ordered, err := orderBy(p.Order, ctx, fragments)
+	if err != nil {
+		return nil, err
+	}
+	return p.assemble(Body(ordered, p.Language))
+}
+
+// Merged is the revision of the default branch the journal is read at, and whether the
+// checkout has it at all: a project that names no default branch, and a checkout that never
+// fetched the one it names, have no tip to read the fragments of — and their journal is the
+// build of every fragment that stands.
+//
+// A git that answers neither way is a journal outside a checkout of git: it is read as the
+// fragments stand on the disk, and the check itself refuses on that git a moment later, where
+// the order of the fragments comes from.
+func (p Project) Merged(ctx context.Context) (string, bool) {
+	if p.Tip == "" || p.Git == nil {
+		return "", false
+	}
+	_, stderr, code, err := p.Git(ctx, "git", []string{"rev-parse", "--verify", "--quiet", p.Tip}, p.Root)
+	switch {
+	case err != nil, code > 1:
+		return "", false
+	case code == 1:
+		// The revision is not there, which is not a refusal: the checkout of a project
+		// that has never fetched its default branch simply has no tip to read.
+		return "", false
+	case strings.TrimSpace(string(stderr)) != "":
+		return "", false
+	}
+	return p.Tip, true
+}
+
+// atTip is the fragments as they stand at the tip of the default branch, in the order
+// their changes were merged in it. They are read out of git and not off the disk of the
+// checkout: a task that rewrote its own fragment after the merge has a fragment here that
+// is not the one the journal was built from, and the journal of the default branch is
+// not waiting for it yet (CL-007).
+func (p Project) atTip(ctx context.Context) ([]Fragment, error) {
+	names, err := p.namesAtTip(ctx)
+	if err != nil {
+		return nil, err
+	}
+	fragments := make([]Fragment, 0, len(names))
+	for _, name := range names {
+		content, _, code, err := p.Git(ctx, "git", []string{"show", p.Tip + ":" + name}, p.Root)
+		if err != nil {
+			return nil, fmt.Errorf("git show %s:%s: %w", p.Tip, name, err)
+		}
+		if code != 0 {
+			return nil, fmt.Errorf("git show %s:%s: exited with %d", p.Tip, name, code)
+		}
+		fragment, err := Parse(path.Base(name), content, p.Language)
+		if err != nil {
+			return nil, err
+		}
+		fragments = append(fragments, fragment)
+	}
+	return orderBy(MergedAt(p.Git, p.Root, p.Tip), ctx, fragments)
+}
+
+// namesAtTip is the path of every fragment the tip of the default branch holds, as
+// `git ls-tree` names them: what the journal of that tip was built out of.
+func (p Project) namesAtTip(ctx context.Context) ([]string, error) {
+	stdout, stderr, code, err := p.Git(ctx, "git",
+		[]string{"ls-tree", "-r", "--name-only", p.Tip, "--", Dir}, p.Root)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("git ls-tree %s %s: %w", p.Tip, Dir, err)
+	case code != 0:
+		return nil, fmt.Errorf("git ls-tree %s %s: exited with %d: %s", p.Tip, Dir, code, firstLine(stderr))
+	}
+	var names []string
+	for line := range strings.Lines(string(stdout)) {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
+// outOfSync is what the check says about a journal that is not a build of the fragments:
+// which branch the journal of a project is written on and what to run there. The two are
+// different lines, because a build in a branch of a task is a file two branches with their
+// own fragments would conflict over (CL-003, CL-007).
+func (p Project) outOfSync(ctx context.Context, brought bool) string {
+	ref, inTip := p.Merged(ctx)
+	switch {
+	case !inTip:
+		return "the journal is not what the fragments build — run `crewflow changelog build`"
+	case !brought:
+		return fmt.Sprintf("the journal is not what the fragments at %s build — "+
+			"the journal of the default branch is built on it, after the merge", ref)
+	default:
+		return fmt.Sprintf("the journal is neither the build of the fragments at %s nor the build of "+
+			"the fragments of this checkout — run `crewflow changelog build`", ref)
+	}
 }
 
 // readings is everything a check knows without the journal: the format of every
