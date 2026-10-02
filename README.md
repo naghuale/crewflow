@@ -76,8 +76,10 @@ Works today:
   counts the records of the owner apart from the records of the orchestrator
 - ✅ the merge gate in code: `crewflow review` says whether a change may be merged, and which
   one of the reasons of §7h says why it may not
-- ✅ the owner's acceptance: a task marked `owner-check` is not merged until the owner writes
-  `ACCEPTED <sha of the head>` under its PR
+- ✅ the owner's acceptance: a task marked `owner-check` is not merged until `ACCEPTED <sha of the
+  head>` stands under its PR — the owner answers one word on the card the orchestrator shows
+  (`принимаю` / `не принимаю`), and the orchestrator writes the record: the sha in the first line
+  for the gate, the verbatim answer with its time and `recorded_by: orchestrator` beside it
 - ✅ the merge itself: `crewflow merge` fast-forwards the branch to exactly the approved
   commit and proves it with `git ls-remote`; `crewflow verify` checks the branch, the
   issue and the CI of it afterwards
@@ -371,16 +373,24 @@ about it.
   among the owners;
 - the record of a review is a comment whose first line is `REVIEW: APPROVED <full sha>` or
   `REVIEW: CHANGES REQUESTED`; `-approve` and `-request-changes <file>` write it for you;
-- a task marked `owner-check` (the name is `[acceptance] label`) is not merged until one of
-  `[merge] owners` — the owner of the repository by default — writes `ACCEPTED <full sha>` of
-  that exact head under the change; the report says on its own line that the result is
-  waiting for him. A commit after the acceptance is a commit nobody has looked at, so the
-  acceptance has to be written again;
+- a task marked `owner-check` (the name is `[acceptance] label`) is not merged until
+  `ACCEPTED <full sha>` of that exact head stands under the change; the owner answers one word on
+  the card the orchestrator shows (`принимаю` / `не принимаю`) and the orchestrator writes the
+  record, so the report says on its own line which commit the record is about and who wrote it. A
+  commit after the acceptance is a commit nobody has looked at, so the acceptance has to be written
+  again;
+- the gate sees the author of that record and not the authenticity of the word in it: while the
+  `gh` of the orchestrator works under the login of the owner (F-133), the two are one record to
+  the host, so the protection of the decision is procedural and `recorded_by: orchestrator` names
+  who wrote it — the mechanism that tells them apart is [#154](https://github.com/naghuale/crewflow/issues/154)
+  (`later`), and the whole order is in §7f of the design;
 - the required checks are the ones the rules of the branch demand, taken from GitHub Actions
   rather than from anybody's mark through the API of statuses;
 - anything the host did not answer is `forge-unavailable`, never a pass.
 
-See §7h of the design for the whole rule.
+See §7h of the design for the whole rule, and §7f
+([«Решение владельца одним словом»](docs/DESIGN.md#решение-владельца-одним-словом)) for the order in
+which the owner is asked and the record of the decision is written.
 
 ## The merge
 
