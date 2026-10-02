@@ -244,8 +244,18 @@ At run time the record is applied fail-closed:
 | decision `owner-exception` (`-owner-exception "why"`) | it goes, and the journal of the run and the report say so — an experiment of the owner is not a safe pair |
 
 Two runs going and a third starting is refused as well: a record of one pair admits no third task.
-A run that goes on alone is not asked anything about pairs. The words above are a closed list, so
-a program reads one refusal for one reason.
+A run that goes on alone is not asked anything about pairs, and neither is a continuation of it —
+`task run N -continue` and `task resume N` are held to exactly what a first run is held to, because
+all three times the rule did not hold the action it was a continuation of a task (F-151). The words
+above are a closed list, so a program reads one refusal for one reason.
+
+A refusal spends nothing: it comes before the worktree, before the point of the task and before any
+attempt, so no attempt, no journal and none of the automatic retries are spent on it.
+
+An automatic continuation **inside** one run — the known habit, a stand that crewflow ends by itself,
+a model provider that refused and may be asked again — starts a new *attempt* of that same run: the
+same task, the same worktree, the same session, one `crewflow` process. It is not a second run of the
+project, so there is no second pair and the record is not read a second time.
 
 ## A run that stands
 

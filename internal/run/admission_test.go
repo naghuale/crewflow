@@ -672,3 +672,279 @@ func refusedBy(t *testing.T, err error, number int) *ErrAdmission {
 	}
 	return refusal
 }
+
+// TestAnExplicitContinuationIsCheckedAsTheFirstRunIs (PAR-RUN-016, owner 03.10) walks the
+// three violations of that day, and every one of them was a continuation: `task run N
+// -continue` and `task resume N` beside a going run of another task of the project, with no
+// record of the pair. The check is the same one a first run is held to, it happens before
+// the checkpoint and the worktree, and a refusal of it spends nothing: no attempt, no
+// journal, no executor (F-151, docs/DESIGN.md §7c).
+func TestAnExplicitContinuationIsCheckedAsTheFirstRunIs(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	m.answers["git ls-files -s"] = answer{stdout: theIndex}
+	host := &host{task: taskWithGlobs(43, "docs/**"), opened: true, tasks: map[int]forge.Task{
+		41: taskWithGlobs(41, "internal/run/**"),
+	}}
+	cfg := projectOf(t, m.worktrees, "")
+	if _, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err != nil {
+		t.Fatalf("the first run of the task returned an error: %v", err)
+	}
+	m.has(worktreeOf(m, 41))
+	going(t, m, 41, worktreeOf(m, 41))
+	attempts := len(stateOf(t, m, 43).Attempts)
+
+	cases := []struct {
+		name string
+		// goOn is the call a person or an orchestrator makes: a continuation with a message
+		// or a continuation from the point of the task.
+		goOn func() (Result, error)
+	}{
+		{
+			name: "a continuation with the message of the orchestrator",
+			goOn: func() (Result, error) {
+				return Run(t.Context(), m.env(), cfg, host.set(),
+					Request{Number: 43, RepoDir: m.repo, Continue: "the review asked for a test"})
+			},
+		},
+		{
+			name: "a continuation from the point of the task",
+			goOn: func() (Result, error) {
+				return Resume(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.goOn()
+
+			refusal := refusedBy(t, err, 43)
+			if refusal.Word != AdmissionRequired {
+				t.Errorf("the refusal is %q, want %q", refusal.Word, AdmissionRequired)
+			}
+			if !strings.Contains(refusal.Detail, "crewflow task admit 41 43") {
+				t.Errorf("the refusal says %q, want the command that writes the record", refusal.Detail)
+			}
+			// A refusal spends no retry of its own: the task stands where it was, with the
+			// attempts it had and without one more (PAR-RUN-020).
+			if got := len(stateOf(t, m, 43).Attempts); got != attempts {
+				t.Errorf("the state of the task holds %d attempts, want the %d it had: a refusal is not a try",
+					got, attempts)
+			}
+			if len(m.commandsOf("opencode")) != 1 {
+				t.Errorf("the executor was run %d times, want the one of the first run",
+					len(m.commandsOf("opencode")))
+			}
+		})
+	}
+}
+
+// TestAnExplicitContinuationGoesBesideARunOnARecord is the other half of the same measure:
+// the check refuses nothing that a written record admits, and a continuation of a task is
+// held to exactly what a first run of it is held to (PAR-RUN-016).
+func TestAnExplicitContinuationGoesBesideARunOnARecord(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	m.answers["git ls-files -s"] = answer{stdout: theIndex}
+	host := &host{task: taskWithGlobs(43, "docs/**"), opened: true, tasks: map[int]forge.Task{
+		41: taskWithGlobs(41, "internal/run/**"),
+	}}
+	cfg := projectOf(t, m.worktrees, "")
+	if _, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err != nil {
+		t.Fatalf("the first run of the task returned an error: %v", err)
+	}
+	m.has(worktreeOf(m, 41))
+	going(t, m, 41, worktreeOf(m, 41))
+	if _, err := Admit(t.Context(), m.env(), cfg, host.set(), AdmissionRequest{
+		First: 41, Second: 43, RepoDir: m.repo, Entered: enteredAllPass(),
+	}); err != nil {
+		t.Fatalf("Admit returned an error: %v", err)
+	}
+
+	result, err := Run(t.Context(), m.env(), cfg, host.set(),
+		Request{Number: 43, RepoDir: m.repo, Continue: "the review asked for a test"})
+
+	if err != nil {
+		t.Fatalf("the continuation returned an error: %v", err)
+	}
+	if !result.Continued || result.Attempt != 2 {
+		t.Errorf("the run is the attempt %d (continued %t), want the second and a continuation",
+			result.Attempt, result.Continued)
+	}
+	if result.Admission == nil || result.Admission.Tasks != task.NewPair(41, 43) {
+		t.Errorf("the result holds the admission %+v, want the record of the pair it went beside", result.Admission)
+	}
+}
+
+// TestAContinuationOfATaskAloneNeedsNoRecord (PAR-RUN-017) is the other side of the
+// measure: a continuation is a run like any other, and where nothing of the project is
+// going beside it there is no pair and nothing to admit. The check lets it through to the
+// next one — the worktree of the continuation, the point задачи — and says nothing about an
+// admission (docs/DESIGN.md §7c).
+func TestAContinuationOfATaskAloneNeedsNoRecord(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	m.answers["git ls-files -s"] = answer{stdout: theIndex}
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+	// One run of the task on its own, and then a continuation of it: nothing of the project
+	// is going beside either of them, and neither is asked about a pair.
+	if _, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err != nil {
+		t.Fatalf("the first run of the task returned an error: %v", err)
+	}
+
+	result, err := Run(t.Context(), m.env(), cfg, host.set(),
+		Request{Number: 43, RepoDir: m.repo, Continue: "the review asked for a test of the timeout"})
+
+	if err != nil {
+		t.Fatalf("the continuation returned an error: %v", err)
+	}
+	if result.Admission != nil {
+		t.Errorf("the result holds the admission %+v, want none: the project was free", result.Admission)
+	}
+	// A continuation from the point of a task nobody ran here stops at the point and not at
+	// the admission: the gate of §7c did not fire, and what it says instead is about the
+	// point.
+	if _, err := Resume(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo}); err == nil {
+		t.Error("the continuation from the point of a task with no point returned no error, want one")
+	} else {
+		var refusal *ErrAdmission
+		if errors.As(err, &refusal) {
+			t.Errorf("the continuation from the point was refused for the admission %v, want the refusal of the point",
+				err)
+		}
+		if !strings.Contains(err.Error(), "point") {
+			t.Errorf("the continuation from the point says %q, want the refusal of the point", err)
+		}
+	}
+}
+
+// TestAnAutomaticContinuationIsNotRefusedForWantOfAnAdmission is the question of the three
+// habits crewflow answers by itself (F-119, F-143, F-144, §7a): an automatic continuation
+// inside one run starts a new *attempt* of that run — the same task, the same worktree, the
+// same session, one process of crewflow — and not a second run of the project, so there is
+// no second pair and nothing to admit. The check is made once, before the first attempt.
+//
+// The test is written so that it fails if the check were made again: while the first
+// attempt is going, the world moves under the record (a file both of the tasks may change
+// holds something else), and a check before the automatic continuation would refuse it as
+// out of date (PAR-RUN-016, PAR-RUN-020, docs/DESIGN.md §7c).
+func TestAnAutomaticContinuationIsNotRefusedForWantOfAnAdmission(t *testing.T) {
+	cases := []struct {
+		name string
+		// first is what the executor of the first attempt does, and end is what the test
+		// does to let that attempt end once the world has moved.
+		first func(wrote chan struct{}, release chan struct{}) answer
+		end   func(t *testing.T, m *machine, release chan struct{})
+		want  string
+	}{
+		{
+			// The habit crewflow knows by heart: the agent wrote into the temporary folder
+			// of the machine and is told where its scratch is (docs.DESIGN.md §7a).
+			name: "the known habit",
+			first: func(wrote, release chan struct{}) answer {
+				return answer{stdout: theRun, stderr: theRefusalToTmp, wrote: wrote, wait: release}
+			},
+			end:  func(_ *testing.T, _ *machine, release chan struct{}) { close(release) },
+			want: string(reasonTmp),
+		},
+		{
+			// The run that stood with nothing to wait for: crewflow stops it and goes on
+			// once, in the same worktree and the same session (F-143, F-144, §7a).
+			name: "the stall",
+			first: func(wrote, _ chan struct{}) answer {
+				return answer{stdout: theRun, hangs: true, wrote: wrote}
+			},
+			end: func(t *testing.T, m *machine, _ chan struct{}) {
+				// The sign of life of a run that is working is the last line its executor
+				// wrote, and the clock of the machine has to be after it for the silence to
+				// be a silence at all (docs.DESIGN.md §6, §7a).
+				m.begins(writtenAt(t, newJournals(m.home, "naghuale-crewflow").JournalPath(43, 1)))
+				m.quiet(11 * time.Minute)
+				m.look()
+			},
+			want: string(reasonStanding),
+		},
+		{
+			// The model provider refused the run and said the refusal may be repeated: one
+			// more try in the same session (F-119, §7a.2).
+			name: "the model provider",
+			first: func(wrote, release chan struct{}) answer {
+				return answer{stdout: theProviderRefused(true), code: 1, wrote: wrote, wait: release}
+			},
+			end:  func(_ *testing.T, _ *machine, release chan struct{}) { close(release) },
+			want: ReasonProviderUnavailable,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMachine(t)
+			m.answers["git ls-files -s"] = answer{stdout: theIndex}
+			wrote, release := make(chan struct{}), make(chan struct{})
+			m.says("opencode", tc.first(wrote, release), answer{stdout: theRun})
+			m.has(worktreeOf(m, 41))
+			going(t, m, 41, worktreeOf(m, 41))
+			host := &host{task: taskWithGlobs(43, "docs/**"), opened: true, tasks: map[int]forge.Task{
+				41: taskWithGlobs(41, "internal/run/**"),
+			}}
+			cfg := projectOf(t, m.worktrees, "")
+			record, err := Admit(t.Context(), m.env(), cfg, host.set(), AdmissionRequest{
+				First: 41, Second: 43, RepoDir: m.repo, Entered: enteredAllPass(),
+			})
+			if err != nil {
+				t.Fatalf("Admit returned an error: %v", err)
+			}
+
+			type answerOfRun struct {
+				result Result
+				err    error
+			}
+			over := make(chan answerOfRun, 1)
+			go func() {
+				result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+				over <- answerOfRun{result, err}
+			}()
+			<-wrote
+			// The world moves while the first attempt is going: the owner edits the
+			// specification of the task that is running beside, and the record of the pair
+			// is out of date from this moment on (F-146, §7c). Every check here says the
+			// failure instead of stopping the test, so that the run is always let go and the
+			// test never leaves it standing in a goroutine of its own.
+			edited := taskWithGlobs(41, "internal/run/**")
+			edited.Body += "\nOne more line the owner wrote while the run was going.\n"
+			host.tasks[41] = edited
+			mine, err := host.set().Tracker.Task(t.Context(), 41)
+			if err != nil {
+				t.Errorf("read task 41: %v", err)
+			}
+			moved, err := snapshotOf(t.Context(), m.env(), cfg, newJournals(m.home, "naghuale-crewflow"), m.repo,
+				m.env().Alive, mine, taskWithGlobs(43, "docs/**"))
+			if err != nil {
+				t.Errorf("the world after it moved: %v", err)
+			} else if len(task.Stale(record.ValidWhile, moved)) == 0 {
+				t.Error("the record of the pair is not out of date after the world moved, and the test proves nothing")
+			}
+			tc.end(t, m, release)
+			got := <-over
+
+			if got.err != nil {
+				t.Fatalf("the run returned an error: %v", got.err)
+			}
+			if got.result.Outcome != ChangeRequestOpened || got.result.Attempt != 2 {
+				t.Errorf("the run came out as %q of the attempt %d, want %q of the second attempt: "+
+					"crewflow went on by itself", got.result.Outcome, got.result.Attempt, ChangeRequestOpened)
+			}
+			if got.result.AutoResumed != tc.want {
+				t.Errorf("the run went on by itself for %q, want %q", got.result.AutoResumed, tc.want)
+			}
+			if got.result.Admission == nil || got.result.Admission.SnapshotID != record.SnapshotID {
+				t.Errorf("the result holds the admission %+v, want the record of the pair the run went beside",
+					got.result.Admission)
+			}
+			if len(m.commandsOf("opencode")) != 2 {
+				t.Errorf("the executor was run %d times, want the attempt and its automatic continuation",
+					len(m.commandsOf("opencode")))
+			}
+		})
+	}
+}
