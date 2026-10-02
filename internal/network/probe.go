@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/config"
@@ -62,11 +64,20 @@ const (
 	StateStale = "stale"
 )
 
-// The closed reasons of a capability that could not reach its target. They are closed on
-// purpose: a check that cannot tell which of them it is says `unknown` and its own
-// reason, and never one of these — a route named by a guess is a route nobody chose
-// (docs/DESIGN.md §7d).
+// The closed list of reasons. A reason is a **proven** explanation of a state and not the
+// most likely one: the ladder of a check is a structured sign first (a status code, an
+// exit code), then a typed error, then the class of the failure — and where nothing is
+// proven the state is `unknown` with `check-unclassified`. A check never names a reason
+// more specific than the evidence in its hands (docs/DESIGN.md §7d, MODEL: UNKNOWN не
+// успех).
 const (
+	// ReasonRequestSucceeded is the one reason of an `available`: the check was made and
+	// the target answered.
+	ReasonRequestSucceeded = "request-succeeded"
+
+	// The five reasons of a proven failure of the network. They are the only ones a check
+	// may call `unavailable` for, and `fallback` on them is a decision of #145.
+
 	// ReasonDNS is a host whose name did not resolve.
 	ReasonDNS = "dns-failed"
 	// ReasonConnectionRefused is a host that answered that it is not listening.
@@ -77,20 +88,134 @@ const (
 	// the TLS of a check for a proxy, so this reason is sent to the owner of the machine
 	// and not to the proxy (§7e, §8).
 	ReasonTLS = "tls-failed"
-	// ReasonProxyAuth is a proxy that wants a login and did not get one.
+	// ReasonProxyAuth is a proxy that wants a login and did not get one. Only the status
+	// 407 and the words that name it prove it: Go writes `proxyconnect` on every failure
+	// of dialling a proxy, so that word names nothing on its own (§7d, F-119).
 	ReasonProxyAuth = "proxy-authentication-required"
+
+	// The reasons of a host that answered and did not let the check in. Nothing is proven
+	// about the network on them: it got there, and the account it went as did not — which
+	// is why they are not a reason for `fallback` either.
+
+	// ReasonAuthenticationFailed is an account the host did not take.
+	ReasonAuthenticationFailed = "authentication-failed"
+	// ReasonPermissionDenied is an account that is there and may not.
+	ReasonPermissionDenied = "permission-denied"
+	// ReasonEndpointNotFound is an address of the host that is not there.
+	ReasonEndpointNotFound = "endpoint-not-found"
+	// ReasonReferenceNotFound is a repository that has no such ref or branch.
+	ReasonReferenceNotFound = "reference-not-found"
+
+	// ReasonCheckUnclassified is everything else: nothing proven, so nothing named beyond
+	// the fact that the check could not read its answer.
+	ReasonCheckUnclassified = "check-unclassified"
+	// ReasonUsageNotProven is the provider of the model of a run. Nothing was asked of it
+	// and nothing could be: crewflow does not know where the model is served from, so a
+	// successful run is what proves this route (§7d, §7j).
+	ReasonUsageNotProven = "proxy-usage-not-proven"
 )
 
-// The reasons of a check that learned nothing, one per what was asked.
-const (
-	// ReasonGitUnclassified is everything git said that is not one of the reasons above:
-	// credentials git was refused, a repository or a ref that is not there, a code crewflow
-	// does not know, and an answer that is not the answer git writes.
-	ReasonGitUnclassified = "git-check-unclassified"
-	// ReasonAPIUnclassified is the same for the API of the host: an answer crewflow does
-	// not read as reachability.
-	ReasonAPIUnclassified = "api-check-unclassified"
-)
+// The five reasons of a proven failure of the network, and the words that name them.
+//
+// The order is the order in which they are read: the specific ones first, so that a
+// sentence about a refused connection that also says `proxyconnect` is a refusal and not a
+// proxy that wants a login, and a handshake that ran out of time is a certificate and not a
+// slow one. Go writes that prefix on **every** failure of dialling a proxy — refused,
+// unresolved, certificate that does not verify — so it names nothing on its own, and proxy
+// authentication is only the status 407 and the words that name it
+// (docs/DESIGN.md §7d, F-119, ревью #156).
+//
+// The TLS words are narrow for the same reason: a bare `tls` is in text that is not a
+// failure of a certificate, and TLS is read before the timeout because a handshake that ran
+// out of time says `tls handshake timeout` — a certificate question and not a slow one.
+var reasonsOfTheNetwork = []struct {
+	reason string
+	words  []string
+}{
+	{ReasonConnectionRefused, []string{
+		"connection refused", "failed to connect", "no route to host", "network is unreachable",
+	}},
+	{ReasonDNS, []string{
+		"could not resolve host", "no such host", "name or service not known",
+		"temporary failure in name resolution", "nodename nor servname",
+	}},
+	{ReasonTLS, []string{
+		"x509", "certificate", "tls handshake", "ssl",
+	}},
+	{ReasonConnectionTimeout, []string{
+		"timed out", "i/o timeout", "timeout", "deadline exceeded",
+	}},
+	{ReasonProxyAuth, []string{
+		"proxy authentication required", "407",
+	}},
+}
+
+// The reasons a host answers with, in the words git and an adapter write them. Neither of
+// them is a failure of the network and neither of them is proof that the network works.
+var refusalsOfTheHost = []struct {
+	reason string
+	words  []string
+}{
+	{ReasonAuthenticationFailed, []string{
+		"authentication failed", "invalid username or password", "could not read username",
+		"could not read password", "http basic: access denied", "401",
+	}},
+	{ReasonPermissionDenied, []string{
+		"permission denied", "403",
+	}},
+}
+
+// networkReason is the reason of the failure of the network in what a program wrote, and
+// an empty string where none of the closed words is in it. An empty string proves nothing:
+// the class of the failure is not known, so the check ends as `unknown` (§7d).
+func networkReason(said string) string {
+	said = strings.ToLower(said)
+	for _, named := range reasonsOfTheNetwork {
+		for _, word := range named.words {
+			if strings.Contains(said, word) {
+				return named.reason
+			}
+		}
+	}
+	return ""
+}
+
+// refusalReason is the reason a host answered with, in the words it wrote: `unknown` and a
+// reason of its own, because the network is not what failed.
+func refusalReason(said string) string {
+	said = strings.ToLower(said)
+	for _, named := range refusalsOfTheHost {
+		for _, word := range named.words {
+			if strings.Contains(said, word) {
+				return named.reason
+			}
+		}
+	}
+	return ""
+}
+
+// networkReasonOf is the reason of a failure of the network in a typed error, by the second
+// rung of the ladder: what Go itself says it is, not what a sentence about it contains. An
+// error that is none of these falls back to its words, and an error that is none of those
+// either proves nothing.
+func networkReasonOf(err error) string {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return ReasonDNS
+	}
+	var certificate *tls.CertificateVerificationError
+	if errors.As(err, &certificate) {
+		return ReasonTLS
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return ReasonConnectionRefused
+	}
+	var timed net.Error
+	if errors.As(err, &timed) && timed.Timeout() {
+		return ReasonConnectionTimeout
+	}
+	return networkReason(err.Error())
+}
 
 // State is what one check of one capability ended as, with the moment it was made and
 // how long it took. It is what a report and `-json` print, and it carries no credential
@@ -266,37 +391,31 @@ func (m Machine) check(ctx context.Context, capability string, route Route, envi
 	case CapabilityModelProvider:
 		return State{
 			Result: StateUnknown,
-			Reason: ReasonAPIUnclassified,
+			Reason: ReasonUsageNotProven,
 			Detail: "crewflow does not know where the model of a run is served from: " +
 				"a run that went through this route is what proves it",
 		}
 	default:
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified,
-			Detail: "no check of a capability named " + capability}
+		return unclassified("no check of a capability named " + capability)
 	}
 }
 
-// api asks the API of the host of the project through the route. The TLS of it is the
-// TLS of the machine and it is not weakened for a proxy: a route that crewflow cannot
-// verify the certificate through is not a route, it is a way to read somebody else's
-// traffic (docs/DESIGN.md §7e, §8).
-//
-// The answer of the host is read by the closed rule of §7d: 2xx and 3xx are the route
-// working; a 407 is the proxy wanting a login, which is a route that does not work as it
-// is; 401, 403 and 404 say that the host answered and did not let this request in, which
-// proves nothing about the route and is therefore `unknown`; 5xx is the host failing.
+// api asks the API of the host of the project through the route, by the closed table of
+// §7d: a status code first, a typed failure of the network second, and nothing named beyond
+// the evidence in either. The TLS is the TLS of the machine and it is not weakened for a
+// proxy: a route crewflow cannot verify a certificate through is not a route, it is a way
+// to read somebody else's traffic (docs/DESIGN.md §7e, §8).
 func (m Machine) api(ctx context.Context, route Route, credentials string) State {
 	if m.APIURL == "" {
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified,
-			Detail: "the file of the project names no host to ask"}
+		return unclassified("the file of the project names no host to ask")
 	}
 	address, err := route.Address(credentials)
 	if err != nil {
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified, Detail: err.Error()}
+		return unclassified(err.Error())
 	}
 	proxied, err := ProxyOf(route, address)
 	if err != nil {
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified, Detail: err.Error()}
+		return unclassified(err.Error())
 	}
 	transport := transportOf(proxied)
 	client := &http.Client{Timeout: m.Timeout, Transport: transport}
@@ -304,54 +423,52 @@ func (m Machine) api(ctx context.Context, route Route, credentials string) State
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.APIURL, nil)
 	if err != nil {
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified, Detail: err.Error()}
+		return unclassified(err.Error())
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		if ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if stopped(ctx) {
 			return interrupted(err)
 		}
-		if reason := networkReason(err.Error()); reason != "" {
+		if reason := networkReasonOf(err); reason != "" {
 			return State{Result: StateUnavailable, Reason: reason, Detail: oneLine(err.Error())}
 		}
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified, Detail: oneLine(err.Error())}
+		return unclassified(oneLine(err.Error()))
 	}
 	defer func() { _ = response.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<10))
 	switch code := response.StatusCode; {
-	case code < 400:
-		return State{Result: StateAvailable,
+	case code < 300:
+		return State{Result: StateAvailable, Reason: ReasonRequestSucceeded,
 			Detail: fmt.Sprintf("%s answered %d through the route", m.APIURL, code)}
 	case code == http.StatusProxyAuthRequired:
+		// The status itself is the proof: Go writes `proxyconnect` on every failure of
+		// dialling a proxy, so nothing but the status says that this one wanted a login.
 		return State{Result: StateUnavailable, Reason: ReasonProxyAuth,
-			Detail: fmt.Sprintf("the proxy wants a login and password: %s answered 407", m.APIURL)}
-	case code == http.StatusUnauthorized, code == http.StatusForbidden, code == http.StatusNotFound:
-		// The host answered and did not let this request in: that says nothing about the
-		// route, and a report that called it a working one would be counting what it did
-		// not learn.
-		return State{Result: StateUnknown, Reason: ReasonAPIUnclassified,
-			Detail: fmt.Sprintf("%s answered %d (%s): the host answered and let nobody in",
-				m.APIURL, code, http.StatusText(code))}
+			Detail: fmt.Sprintf("the proxy answered 407 through %s: it wants a login and password", m.APIURL)}
+	case code == http.StatusUnauthorized:
+		return State{Result: StateUnknown, Reason: ReasonAuthenticationFailed,
+			Detail: fmt.Sprintf("%s answered 401: the network is there, the account is not", m.APIURL)}
+	case code == http.StatusForbidden:
+		return State{Result: StateUnknown, Reason: ReasonPermissionDenied,
+			Detail: fmt.Sprintf("%s answered 403: the network is there, the rights are not", m.APIURL)}
+	case code == http.StatusNotFound:
+		return State{Result: StateUnknown, Reason: ReasonEndpointNotFound,
+			Detail: fmt.Sprintf("%s answered 404: the network is there, the endpoint is not", m.APIURL)}
 	default:
-		return State{Result: StateUnavailable, Reason: ReasonAPIUnclassified,
-			Detail: fmt.Sprintf("%s answered %d through the route", m.APIURL, code)}
+		return unclassified(fmt.Sprintf("%s answered %d", m.APIURL, code))
 	}
 }
 
-// git asks the git of the machine for one ref of the repository of the project through
-// the route, and reads what came of it by the closed rule: an exit of zero and an answer
-// that is what git writes for `ls-remote` is the route working; a failure of the network
-// that crewflow can name is the route not working, with that name; everything else is
-// `unknown` — including credentials git was refused and a repository or ref that is not
-// there, which say nothing about the route (docs/DESIGN.md §7d, MODEL: UNKNOWN не успех).
-//
-// A non-zero exit never becomes `available` on its own. That was the first version of this
-// check and it called every refusal of credentials a working route, including the answer
-// of a git that never got anywhere (F-119, ревью #156).
+// git asks the git of the machine for one ref of the repository of the project through the
+// route, by the closed table of §7d: what git wrote is the only evidence there is, and a
+// sentence it did not prove anything of names nothing. A non-zero exit never becomes
+// `available` on its own — that was the first version of this check, and it called every
+// refusal of credentials a working route, including the answer of a git that never got
+// anywhere (F-119, ревью #156).
 func (m Machine) git(ctx context.Context, route Route, environment []string) State {
 	if m.Git == nil || m.GitURL == "" {
-		return State{Result: StateUnknown, Reason: ReasonGitUnclassified,
-			Detail: "the file of the project names no repository to ask"}
+		return unclassified("the file of the project names no repository to ask")
 	}
 	ref := m.GitRef
 	if ref == "" {
@@ -359,49 +476,58 @@ func (m Machine) git(ctx context.Context, route Route, environment []string) Sta
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.Timeout)
 	defer cancel()
-	// The ref of the branch the project merges into: a ref every repository of it has,
-	// and an answer of git that is either a list of commits or nothing a reader can use.
+	// The ref of the branch the project merges into: a ref every repository of it has, and
+	// an answer of git that is either a list of commits or nothing a reader can use.
 	answer, said, code, err := m.Git(ctx, []string{"ls-remote", m.GitURL, ref}, environment)
 	switch {
-	case ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded):
+	case stopped(ctx):
 		return interrupted(err)
 	case err != nil:
-		if reason := networkReason(err.Error()); reason != "" {
+		if reason := networkReasonOf(err); reason != "" {
 			return State{Result: StateUnavailable, Reason: reason, Detail: oneLine(err.Error())}
 		}
-		return unclassifiedGit(fmt.Sprintf("git could not be started: %s", oneLine(err.Error())))
+		return unclassified(fmt.Sprintf("git could not be started: %s", oneLine(err.Error())))
 	case networkReason(said) != "":
 		return State{Result: StateUnavailable, Reason: networkReason(said),
 			Detail: fmt.Sprintf("%s could not be reached through the route: %s", m.GitURL, oneLine(said))}
-	case code != 0:
-		return unclassifiedGit(fmt.Sprintf("git exited with %d and said %q", code, oneLine(said)))
-	case refsAre(answer):
-		return State{Result: StateAvailable,
+	case code == 0 && refsAre(answer):
+		return State{Result: StateAvailable, Reason: ReasonRequestSucceeded,
 			Detail: fmt.Sprintf("git read %s of %s through the route: %s", ref, m.GitURL, refsOf(answer))}
+	case code == 0 && strings.TrimSpace(answer+said) == "":
+		// git reached the host, listed nothing and complained of nothing: the repository is
+		// there and the ref is not in it.
+		return State{Result: StateUnknown, Reason: ReasonReferenceNotFound,
+			Detail: fmt.Sprintf("%s has no %s in it", m.GitURL, ref)}
+	case code == noRefsToList:
+		// The code `ls-remote --exit-code` exits with when the host answered and the ref is
+		// not in it. The check does not ask for that flag — an answer is read, not a code —
+		// and a git that answers with it anyway says the same thing (docs/DESIGN.md §7d).
+		return State{Result: StateUnknown, Reason: ReasonReferenceNotFound,
+			Detail: fmt.Sprintf("%s has no %s in it: git exited with %d", m.GitURL, ref, code)}
+	case refusalReason(said) != "":
+		return State{Result: StateUnknown, Reason: refusalReason(said),
+			Detail: fmt.Sprintf("%s answered and did not let git in: %s", m.GitURL, oneLine(said))}
 	default:
-		// An exit of zero and nothing crewflow can read: no such ref, no such repository,
-		// or a git of another vintage that lists something else. None of it is a route
-		// that works.
-		return unclassifiedGit(fmt.Sprintf("git listed nothing crewflow can read of %s, and said %q",
-			m.GitURL, oneLine(answer+said)))
+		return unclassified(fmt.Sprintf("git exited with %d and said %q", code, oneLine(answer+said)))
 	}
 }
 
-// unclassifiedGit is everything the git of the machine said that is not one of the closed
-// reasons: `unknown` with its own reason, the code and what was said, so that a person can
-// read the failure and a program can tell it from a route that does not work.
-//
-// In it are the cases the closed list deliberately does not name, and a check that used to
-// read some of them as a working route (F-119, ревью #156): a refusal of the credentials
-// git went as ("Authentication failed", "Permission denied"), a repository or a ref that is
-// not there, the code of `ls-remote --exit-code` for a ref that is not in the repository, a
-// code crewflow has no word for, a sentence crewflow has no word for, nothing said at all,
-// and an exit of zero with an answer that is not a list of refs. None of them is a failure
-// of the network and none of them is proof that it works: the host answered and let nobody
-// in, which says nothing about the route — and a refusal of credentials is not a reason to
-// change it either (§7d, MODEL: UNKNOWN не успех).
-func unclassifiedGit(detail string) State {
-	return State{Result: StateUnknown, Reason: ReasonGitUnclassified, Detail: detail}
+// noRefsToList is the code `git ls-remote --exit-code` exits with when the host answered
+// and there is no ref of the pattern in it. It is git's own code, and it names a repository
+// that has no such ref — not a route that does not work.
+const noRefsToList = 2
+
+// stopped is whether a check was stopped before it could answer: a person pressed Ctrl+C
+// or the machine went away. A timeout is not that — it is the time the project gave the
+// check, and it is the one of the five proven failures of the network.
+func stopped(ctx context.Context) bool {
+	return ctx.Err() != nil && !errors.Is(ctx.Err(), context.DeadlineExceeded)
+}
+
+// unclassified is a check that could not read its answer: `unknown` and the reason that
+// says so. Nothing is named beyond the fact that nothing was proven.
+func unclassified(detail string) State {
+	return State{Result: StateUnknown, Reason: ReasonCheckUnclassified, Detail: detail}
 }
 
 // interrupted is a check that was stopped before it could answer. It says nothing about
@@ -454,47 +580,6 @@ func refsOf(answer string) string {
 func oneLine(said string) string {
 	first, _, _ := strings.Cut(strings.TrimSpace(said), "\n")
 	return first
-}
-
-// The closed reasons of the network, and the words that name them. The order is the order
-// in which they are read: a proxy that wants a login says so in a sentence that also
-// mentions connecting, and a certificate that could not be verified is said with a
-// timeout in the same sentence.
-var reasonsOfTheNetwork = []struct {
-	reason string
-	words  []string
-}{
-	{ReasonProxyAuth, []string{
-		"407", "proxy authentication required", "proxyconnect", "proxy connect",
-	}},
-	{ReasonTLS, []string{
-		"x509", "certificate", "tls", "ssl",
-	}},
-	{ReasonDNS, []string{
-		"could not resolve host", "no such host", "name or service not known",
-		"temporary failure in name resolution", "nodename nor servname",
-	}},
-	{ReasonConnectionRefused, []string{
-		"connection refused", "failed to connect", "no route to host", "network is unreachable",
-	}},
-	{ReasonConnectionTimeout, []string{
-		"timed out", "i/o timeout", "timeout", "deadline exceeded",
-	}},
-}
-
-// networkReason is the reason of the failure of the network in what a program wrote, and
-// an empty string where none of the closed words is in it. An empty string is not a
-// failure of the route: it is a check that cannot tell, and it ends as `unknown`.
-func networkReason(said string) string {
-	said = strings.ToLower(said)
-	for _, named := range reasonsOfTheNetwork {
-		for _, word := range named.words {
-			if strings.Contains(said, word) {
-				return named.reason
-			}
-		}
-	}
-	return ""
 }
 
 // transportOf is the transport of the HTTP of a check: the proxy of the route and the

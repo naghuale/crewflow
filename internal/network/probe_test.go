@@ -224,25 +224,25 @@ func TestACheckThatCouldNotBeMadeIsUnknownAndNotAFailure(t *testing.T) {
 	}
 }
 
-// TestGITNET014TheAnswerOfTheHostIsReadByTheClosedRule: an answer of the API of the host
-// says about the route what it says and nothing more. 2xx and 3xx are the route working;
-// a 407 is the proxy wanting a login, which is a route that does not work as it is; 401,
-// 403 and 404 say that the host answered and did not let this request in, which proves
-// nothing about the route and is therefore `unknown`; 5xx is the host failing
-// (docs/DESIGN.md §7d).
-func TestGITNET014TheAnswerOfTheHostIsReadByTheClosedRule(t *testing.T) {
+// TestGITNET014TheAnswerOfTheHostIsReadByTheClosedTable: an answer of the API of the host
+// says about the route what it says and nothing more. A 2xx is the route working; a 407 is
+// the proxy wanting a login; 401, 403 and 404 are the host answering and letting nobody in,
+// which says nothing about the network and is therefore `unknown` with the reason of its
+// own; anything else proves nothing and is `check-unclassified` (docs/DESIGN.md §7d).
+func TestGITNET014TheAnswerOfTheHostIsReadByTheClosedTable(t *testing.T) {
 	for _, tc := range []struct {
 		code   string
 		want   string
 		reason string
 	}{
-		{"code 200", StateAvailable, ""},
-		{"code 301", StateAvailable, ""},
-		{"code 401", StateUnknown, ReasonAPIUnclassified},
-		{"code 403", StateUnknown, ReasonAPIUnclassified},
-		{"code 404", StateUnknown, ReasonAPIUnclassified},
+		{"code 200", StateAvailable, ReasonRequestSucceeded},
+		{"code 204", StateAvailable, ReasonRequestSucceeded},
+		{"code 301", StateUnknown, ReasonCheckUnclassified},
+		{"code 401", StateUnknown, ReasonAuthenticationFailed},
+		{"code 403", StateUnknown, ReasonPermissionDenied},
+		{"code 404", StateUnknown, ReasonEndpointNotFound},
 		{"code 407", StateUnavailable, ReasonProxyAuth},
-		{"code 502", StateUnavailable, ReasonAPIUnclassified},
+		{"code 502", StateUnknown, ReasonCheckUnclassified},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
 			fake := &machineOfTheTest{answered: tc.code, gitListed: aHeadOfMain}

@@ -2,8 +2,12 @@ package network
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
+	"net"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -90,19 +94,21 @@ func TestTheGitOfACheckIsReadByTheClosedRule(t *testing.T) {
 		want   string
 		reason string
 	}{
-		{"GIT-NET-001", "a ref of the repository", gitListedMain, StateAvailable, ""},
+		{"GIT-NET-001", "a ref of the repository", gitListedMain, StateAvailable, ReasonRequestSucceeded},
 		{"GIT-NET-002", "a host that does not resolve", gitNoSuchHost, StateUnavailable, ReasonDNS},
 		{"GIT-NET-003", "a host that refuses the connection", gitConnectionRefused, StateUnavailable, ReasonConnectionRefused},
 		{"GIT-NET-004", "a host that does not answer", gitConnectionTimeout, StateUnavailable, ReasonConnectionTimeout},
 		{"GIT-NET-005", "a certificate that does not verify", gitTLSFailed, StateUnavailable, ReasonTLS},
 		{"GIT-NET-006", "a proxy that wants a login", gitProxyWantsLogin, StateUnavailable, ReasonProxyAuth},
-		{"GIT-NET-007", "an account the host refused", gitAuthenticationFailed, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-007", "rights the account has not", gitPermissionDenied, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-008", "a repository that is not there", gitRepositoryNotFound, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-008", "a ref that is not there", gitListedNothing, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-009", "a failure crewflow has no word for", gitSaidSomethingElse, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-009", "a code crewflow has no word for, and nothing said", gitSilentWithACode, StateUnknown, ReasonGitUnclassified},
-		{"GIT-NET-011", "an exit of zero and something that is not a ref", gitListedSomethingElse, StateUnknown, ReasonGitUnclassified},
+		{"GIT-NET-007", "an account the host refused", gitAuthenticationFailed, StateUnknown, ReasonAuthenticationFailed},
+		{"GIT-NET-007", "rights the account has not", gitPermissionDenied, StateUnknown, ReasonPermissionDenied},
+		{"GIT-NET-008", "a repository that is not there", gitRepositoryNotFound, StateUnknown, ReasonCheckUnclassified},
+		{"GIT-NET-008", "a ref that is not there", gitListedNothing, StateUnknown, ReasonReferenceNotFound},
+		{"GIT-NET-008", "the code of --exit-code for a ref that is not there",
+			recordedGit{code: 2}, StateUnknown, ReasonReferenceNotFound},
+		{"GIT-NET-009", "a failure crewflow has no word for", gitSaidSomethingElse, StateUnknown, ReasonCheckUnclassified},
+		{"GIT-NET-009", "a code crewflow has no word for, and nothing said", gitSilentWithACode, StateUnknown, ReasonCheckUnclassified},
+		{"GIT-NET-011", "an exit of zero and something that is not a ref", gitListedSomethingElse, StateUnknown, ReasonCheckUnclassified},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id+" "+tc.name, func(t *testing.T) {
@@ -120,11 +126,169 @@ func TestTheGitOfACheckIsReadByTheClosedRule(t *testing.T) {
 			if tc.want != StateAvailable && strings.Contains(state.Detail, "the route works") {
 				t.Errorf("the detail %q calls the route working, want a check that learned nothing", state.Detail)
 			}
-			if tc.reason == ReasonGitUnclassified && !strings.Contains(state.Detail, "git exited with") &&
-				!strings.Contains(state.Detail, "nothing crewflow can read") {
+			if tc.reason == ReasonCheckUnclassified && !strings.Contains(state.Detail, "git exited with") &&
+				!strings.Contains(state.Detail, "nothing crewflow can read") &&
+				!strings.Contains(state.Detail, "could not be started") {
 				t.Errorf("the detail %q of an unclassified failure wants the code and what was said in it", state.Detail)
 			}
 		})
+	}
+}
+
+// TestTheReasonOfAFailureIsReadFromTheWordsThatNameIt: Go writes the prefix `proxyconnect`
+// on every failure of dialling a proxy, so a reason that took it for the reason of a proxy
+// that wants a login would call a dead proxy something it is not. The live run of c4a8fcf
+// said exactly that: a route through `127.0.0.1:9` came out as
+// `proxy-authentication-required` for `proxyconnect tcp: dial tcp 127.0.0.1:9: connect:
+// connection refused` (F-119, ревью #156). Proxy authentication is the status 407 and the
+// words that name it, TLS is said by `x509` / `certificate` / `tls handshake` / `ssl`, and
+// a sentence with no word of any of them is not a failure of the network at all.
+func TestTheReasonOfAFailureIsReadFromTheWordsThatNameIt(t *testing.T) {
+	cases := []struct {
+		name   string
+		said   string
+		want   string
+		reason string
+	}{
+		{
+			"the error Go writes for a proxy nobody listens on",
+			`Get "https://api.github.com/rate_limit": proxyconnect tcp: dial tcp 127.0.0.1:9: ` +
+				`connect: connection refused`,
+			StateUnavailable, ReasonConnectionRefused,
+		},
+		{
+			"a proxy that answers 407",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"Received HTTP code 407 from proxy after CONNECT",
+			StateUnavailable, ReasonProxyAuth,
+		},
+		{
+			"the words that name a proxy that wants a login",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"Proxy Authentication Required",
+			StateUnavailable, ReasonProxyAuth,
+		},
+		{
+			"the prefix of Go and nothing else",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"proxyconnect tcp: a sentence nobody has seen before",
+			StateUnknown, ReasonCheckUnclassified,
+		},
+		{
+			"a certificate through the same proxy",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"proxyconnect tcp: tls: failed to verify certificate: x509: certificate signed " +
+				"by unknown authority",
+			StateUnavailable, ReasonTLS,
+		},
+		{
+			"a handshake that ran out of time",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"proxyconnect tcp: tls handshake timeout",
+			StateUnavailable, ReasonTLS,
+		},
+		{
+			"a name the proxy could not resolve",
+			"proxyconnect tcp: dial tcp: lookup github.com on 192.168.0.4:53: " +
+				"no such host",
+			StateUnavailable, ReasonDNS,
+		},
+		{
+			"text with a bare tls in it and no failure of a certificate",
+			"fatal: unable to access 'https://github.com/naghuale/crewflow.git/': " +
+				"the tls cache of this machine is locked by another process",
+			StateUnknown, ReasonCheckUnclassified,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &machineOfTheTest{gitAnswers: []recordedGit{{said: tc.said, code: 128}}}
+			checked, closeServer := machine(t, fake)
+			defer closeServer()
+			state := gitOfTheTest(t, checked)
+
+			if state.Result != tc.want || state.Reason != tc.reason {
+				t.Errorf("git came out as %q/%q (%s), want %q/%q",
+					state.Result, state.Reason, state.Detail, tc.want, tc.reason)
+			}
+		})
+	}
+}
+
+// TestTheReasonOfTheProviderOfTheModelIsItsOwn: nothing was asked about it and nothing
+// could be, so it is `unknown` with the reason of that and not with the reason of a
+// failure of the host of the code — a check that learned nothing is not a check that went
+// wrong (docs/DESIGN.md §7d, §7j).
+func TestTheReasonOfTheProviderOfTheModelIsItsOwn(t *testing.T) {
+	fake := &machineOfTheTest{gitListed: aHeadOfMain}
+	checked, closeServer := machine(t, fake)
+	defer closeServer()
+	_, cfg := withFile(t, keysOf("mode", `"direct"`))
+	route, err := Choose(cfg, "api.github.com")
+	if err != nil {
+		t.Fatalf("the route of a request: %v", err)
+	}
+
+	states, err := Check(t.Context(), checked, route, cfg.Network.NoProxy)
+
+	if err != nil {
+		t.Fatalf("the check of the route: %v", err)
+	}
+	provider := states[2]
+	if provider.Capability != CapabilityModelProvider {
+		t.Fatalf("the third capability came out as %q, want %q", provider.Capability, CapabilityModelProvider)
+	}
+	if provider.Result != StateUnknown {
+		t.Errorf("the provider of the model came out as %q (%s), want %q", provider.Result, provider.Detail, StateUnknown)
+	}
+	if provider.Reason != ReasonUsageNotProven {
+		t.Errorf("the provider of the model came out with the reason %q, want %q: nothing was checked",
+			provider.Reason, ReasonUsageNotProven)
+	}
+	// And the reason of the other two is the reason of their own checks.
+	for _, state := range states[:2] {
+		if state.Reason == ReasonUsageNotProven {
+			t.Errorf("the capability %q carries the reason of the provider of the model", state.Capability)
+		}
+	}
+}
+
+// TestTheDeadProxyOfTheLiveRunIsARefusedConnection: the live run of c4a8fcf with the route
+// through `127.0.0.1:9` — a port nothing listens on — called it
+// `proxy-authentication-required` for `proxyconnect tcp: dial tcp 127.0.0.1:9: connect:
+// connection refused`, and the same sentence came out of the check of the API of the host.
+// Go writes `proxyconnect` on every failure of dialling a proxy, so the word names nothing
+// and the reason is the one the rest of the sentence proves (F-119, ревью #156).
+func TestTheDeadProxyOfTheLiveRunIsARefusedConnection(t *testing.T) {
+	const dead = `Get "https://api.github.com/rate_limit": proxyconnect tcp: dial tcp 127.0.0.1:9: ` +
+		`connect: connection refused`
+
+	if got := networkReason(dead); got != ReasonConnectionRefused {
+		t.Errorf("the reason of %q came out as %q, want %q", dead, got, ReasonConnectionRefused)
+	}
+	fake := &machineOfTheTest{gitAnswers: []recordedGit{{said: dead, code: 128}}}
+	checked, closeServer := machine(t, fake)
+	defer closeServer()
+
+	state := gitOfTheTest(t, checked)
+
+	if state.Result != StateUnavailable || state.Reason != ReasonConnectionRefused {
+		t.Errorf("git came out as %q/%q (%s), want %q/%q",
+			state.Result, state.Reason, state.Detail, StateUnavailable, ReasonConnectionRefused)
+	}
+	// And the same reason out of the typed ladder of the HTTP client — `*net.OpError` with
+	// the error of the system inside it, which is what Go hands the check when the dial
+	// itself was refused. No dial happens here: this is the ladder, not the network.
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	if got := networkReasonOf(refused); got != ReasonConnectionRefused {
+		t.Errorf("the reason of a typed refused dial came out as %q, want %q", got, ReasonConnectionRefused)
+	}
+	if got := networkReasonOf(&net.DNSError{Err: "no such host", Name: "github.com"}); got != ReasonDNS {
+		t.Errorf("the reason of a typed failure of DNS came out as %q, want %q", got, ReasonDNS)
+	}
+	certificate := &tls.CertificateVerificationError{Err: errors.New("x509: certificate signed by unknown authority")}
+	if got := networkReasonOf(certificate); got != ReasonTLS {
+		t.Errorf("the reason of a typed certificate came out as %q, want %q", got, ReasonTLS)
 	}
 }
 
@@ -252,8 +416,9 @@ func TestGITNET012TheResultsOfTwoRoutesAreTwoResults(t *testing.T) {
 		t.Errorf("the route through home came out as %q/%q (%s), want %q/%q",
 			through[1].Result, through[1].Reason, through[1].Detail, StateUnavailable, ReasonConnectionRefused)
 	}
-	if direct[1].Reason != "" {
-		t.Errorf("the straight route carries the reason %q, want none: it worked", direct[1].Reason)
+	if direct[1].Reason != ReasonRequestSucceeded {
+		t.Errorf("the straight route carries the reason %q, want %q: it worked",
+			direct[1].Reason, ReasonRequestSucceeded)
 	}
 	// And the git of each route was started with the environment of that route alone.
 	if len(fake.gitWasGiven) != 2 {
@@ -277,9 +442,9 @@ func TestAGitThatCouldNotBeStartedIsNotARouteThatDoesNotWork(t *testing.T) {
 
 	state := gitOfTheTest(t, checked)
 
-	if state.Result != StateUnknown || state.Reason != ReasonGitUnclassified {
+	if state.Result != StateUnknown || state.Reason != ReasonCheckUnclassified {
 		t.Errorf("a git that could not be started came out as %q/%q (%s), want %q/%q: "+
 			"nothing was learned about the route",
-			state.Result, state.Reason, state.Detail, StateUnknown, ReasonGitUnclassified)
+			state.Result, state.Reason, state.Detail, StateUnknown, ReasonCheckUnclassified)
 	}
 }

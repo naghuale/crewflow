@@ -684,22 +684,24 @@ rule that could be read two ways is refused rather than guessed at.
 
 **A profile that is there is not a profile that works.** `network proxy test` and
 `crewflow doctor network` check three capabilities separately — `github-api`,
-`git-https`, `model-provider` — each with its own word (`available`, `unavailable`,
-`unknown`, `interrupted`, `stale`), its own closed reason (`dns-failed`,
-`connection-refused`, `connection-timeout`, `tls-failed`, `proxy-authentication-required`,
-`git-check-unclassified`) and the time the check took. Both routes are checked and reported
-apart: what the straight route answered says nothing about the profile, and what the profile
-answered says nothing about the straight route.
+`git-https`, `model-provider` — each with its own state (`available`, `unavailable`,
+`unknown`, `interrupted`, `stale`), its own reason and the time the check took. Both routes
+are checked and reported apart: what the straight route answered says nothing about the
+profile, and what the profile answered says nothing about the straight route.
 
-The list of reasons is closed, and that is the point: a non-zero exit of git never counts as
-a working route by itself. Credentials refused (`Authentication failed`, `Permission
-denied`), a repository or a ref that is not there, a code crewflow has no word for, nothing
-said at all — all of it is `unknown`, which is a check that learned nothing and is not a
-reason to change the route. A refusal of credentials is not a failure of the network: the
-network got there. The success of GitHub says nothing about the model provider either, and
-"the executor goes through the proxy" stays `unknown` until a run has really proved it.
-Editing a profile never activates it and never checks it: a profile can be prepared before
-it answers.
+A reason is a *proven* explanation, never the most likely guess, and the list is closed:
+`request-succeeded`, `proxy-authentication-required`, `dns-failed`, `connection-refused`,
+`connection-timeout`, `tls-failed`, `authentication-failed`, `permission-denied`,
+`endpoint-not-found`, `reference-not-found`, `proxy-usage-not-proven`, `check-unclassified`.
+Nothing more specific than the evidence: a status code or an exit code first, a typed
+error second, the class of the failure third, and `unknown` where none of them proves
+anything. So a non-zero exit of git never counts as a working route on its own, and
+credentials refused (`authentication-failed`, `permission-denied`) are `unknown` — the
+network got there, the account did not, and that is not a reason to change the route.
+
+The success of GitHub says nothing about the model provider: without a run that really went
+through the route, that capability stays `unknown proxy-usage-not-proven`. Editing a profile
+never activates it and never checks it: a profile can be prepared before it answers.
 
 Credentials of a profile live in the keychain of the machine under
 `network-proxy/<name>`, never in the file of the project — an address with a login in it
