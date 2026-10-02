@@ -319,18 +319,20 @@ func (r *runner) before(state State) (Attempt, bool) {
 // A refusal of a place of secrets never reaches this: such a run is `blocked-secret`
 // from the start and goes on by itself nothing (§7a.1, §7d, §8).
 //
-// The habits are told apart in the order of what is most about the run and the least
-// about the machine: a folder beside the worktree of the task is the wrong `cd` of a run
-// wherever the worktrees of a project live — on a machine whose worktrees live in the
-// temporary folder, every one of them is under `/tmp`, and a habit that is read as "it
-// wrote to /tmp" is a habit crewflow answers with the wrong words. A path named only in
-// the text of a command is the same case for the same reason. A probe of a copy in a
-// shell is a habit of the worktree whatever the folder is, and the answer to it is the
-// same wherever the worktrees live. The temporary folder is what is left of the machine
-// alone, and the two that follow it are about paths a run wrote out by hand or took
-// from the service of the project — the last of the three before `other` is the one
-// that asks the machine about a file, and it asks it about the worktree and nothing
-// else (docs/DESIGN.md §7a.1).
+// The habits are told apart in the order of how much each of them says about the refusal:
+// the most specific one wins, and the one that is about the machine alone is what is left.
+// A folder beside the worktree of the task is the wrong `cd` of a run wherever the worktrees
+// of a project live, a path named only in the text of a command is a refusal of a command and
+// not of a file, and a probe of a copy in a shell is a habit of the worktree whatever the
+// folder of it is. A path that was written out by hand comes next — before the temporary
+// folder, and that is the one order this list cannot be wrong about: on a machine whose
+// worktrees live in the temporary folder — every machine of Linux, where it holds every
+// worktree of every project — the path of such a refusal is a path of `/tmp` as well, and a
+// habit that is read as "it wrote to /tmp" is a habit crewflow answers with the wrong words
+// (docs/DESIGN.md §7a.1, §7d). The temporary folder is what is left of the machine alone, and
+// a path of the service of the project is the last of them: the habit of a path that was
+// written out by hand is the one that asks the machine about a file, and it asks it about the
+// worktree and nothing else (docs/DESIGN.md §7a.1).
 func (r *runner) habitOf(refusal string, calls []profile.Call) (reason, string) {
 	path := refusedPath(refusal)
 	switch {
@@ -342,11 +344,12 @@ func (r *runner) habitOf(refusal string, calls []profile.Call) (reason, string) 
 		return reasonMention, ""
 	case probed(path, calls, r.worktree):
 		return reasonProbe, ""
-	case temporary(path):
-		return reasonTmp, ""
 	}
 	if place := r.placeOf(path); place != "" {
 		return reasonWorktree, place
+	}
+	if temporary(path) {
+		return reasonTmp, ""
 	}
 	if service(path, r.worktree, r.env.UserHome) {
 		return reasonService, ""

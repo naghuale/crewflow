@@ -1400,3 +1400,87 @@ func TestTheHabitsAreTextCrewflowCanGive(t *testing.T) {
 		}
 	}
 }
+
+// TestTheMostSpecificHabitOfARefusalWins: a refusal of a path of the temporary folder of
+// the machine is `tmp` only where nothing more specific says what the run meant. On a
+// machine whose worktrees live in the temporary folder — every machine of Linux, where it
+// holds every worktree of every project — the path of a copy the run wrote out by hand is
+// a path of `/tmp` as well, and the run was not writing to `/tmp`: it was after a file of
+// its own worktree, and the text of `tmp` would have sent it to `.scratch/tmp` with the
+// file of the project still unwritten (docs/DESIGN.md §7a.1, §7d).
+//
+// The refused paths here are written under `/tmp` on every machine, and the worktree of the
+// task stands where the machine keeps the temporary folders of a test — under `/tmp` on a
+// machine of Linux and under `/var/folders` on a machine of macOS. That is the whole of the
+// case CI found, and a test of it needs nothing of the folder of `/tmp` but its name: the
+// classifier is asked about the file at the end of the path inside the worktree, and never
+// about the path itself.
+func TestTheMostSpecificHabitOfARefusalWins(t *testing.T) {
+	worktree := t.TempDir()
+	write(t, filepath.Join(worktree, "internal", "run", "resume.go"), "package run\n")
+	cases := []struct {
+		name string
+		// worktree is the worktree of the task of the case, and only the cases that care
+		// where it stands name one: a path a case only writes down is not a folder, and
+		// the habit of a neighbour is told apart without asking the machine anything.
+		worktree string
+		refusal  string
+		want     reason
+		place    string
+	}{
+		{
+			name:    "a file of the worktree under a copy of the project in the temporary folder",
+			refusal: "external_directory /tmp/crewflow-habit/owner-repz/2/internal/run/resume.go",
+			want:    reasonWorktree,
+			place:   "internal/run/resume.go",
+		},
+		{
+			name:    "a file of the temporary folder that is nowhere in the worktree",
+			refusal: "external_directory /tmp/crewflow-habit/plan_test.go",
+			want:    reasonTmp,
+		},
+		{
+			// The temporary folder behind its other name on a machine of macOS is the same
+			// folder, and the order of the classes is the same for both spellings.
+			name:    "the same folder behind the other name of the machine",
+			refusal: "external_directory /private/tmp/crewflow-habit/owner-repz/2/internal/run/resume.go",
+			want:    reasonWorktree,
+			place:   "internal/run/resume.go",
+		},
+		{
+			// The wrong `cd` is a habit of a worktree of another task wherever the worktrees
+			// of a project live, and it is looked for before the temporary folder: the
+			// answer to it is about the work of the task and not about where the machine
+			// keeps its temporary files.
+			name:     "a worktree of another task where the worktrees live in the temporary folder",
+			worktree: "/tmp/crewflow-habit/owner-repo/43",
+			refusal:  "external_directory /tmp/crewflow-habit/owner-repo/44",
+			want:     reasonOutside,
+		},
+		{
+			// A folder of the project is a file of the worktree like any other: the run
+			// asked for `internal/run` and wrote the path of a copy of it down, and the
+			// answer names the folder from the root of the worktree.
+			name:    "a folder of the project under a copy of the project in the temporary folder",
+			refusal: "external_directory /tmp/crewflow-habit/owner-repz/2/internal/run",
+			want:    reasonWorktree,
+			place:   "internal/run",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tc.worktree
+			if root == "" {
+				root = worktree
+			}
+			r := &runner{worktree: root}
+			got, place := r.habitOf(tc.refusal, nil)
+			if got != tc.want {
+				t.Errorf("the habit of %q = %q, want %q", tc.refusal, got, tc.want)
+			}
+			if place != tc.place {
+				t.Errorf("the file of the worktree the refusal %q is about = %q, want %q", tc.refusal, place, tc.place)
+			}
+		})
+	}
+}
