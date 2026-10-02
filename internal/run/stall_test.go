@@ -313,6 +313,10 @@ func TestARunIsWrittenDownBeforeTheExecutorStarts(t *testing.T) {
 // opens to see what a run is doing, and a run that stands has to be in it — once for the
 // silence and once for its end, and not once a minute for as long as it stands
 // (docs/DESIGN.md §6, §7a).
+// This is the project that says `[executor] resume_stands = false`: a run of it that stands
+// is marked and goes on, which is what crewflow did with every standing run until a run that
+// hung cost a person a night (F-143). A project whose executor is quiet on purpose gets
+// exactly this, and the two tests below walk what the default does instead.
 func TestTheRunThatIsGoingSaysWhenItStands(t *testing.T) {
 	m := newMachine(t)
 	more := make(chan string)
@@ -321,6 +325,7 @@ func TestTheRunThatIsGoingSaysWhenItStands(t *testing.T) {
 	host := &host{task: taskOf(43), opened: true}
 	cfg := projectOf(t, m.worktrees, "")
 	cfg.Executor.StallAfter = "1m"
+	cfg.Executor.ResumeStands = false
 
 	over := make(chan outcome, 1)
 	go func() {
@@ -386,9 +391,220 @@ func TestTheRunThatIsGoingSaysWhenItStands(t *testing.T) {
 		t.Errorf("the way out of the run says %d times that the run is working again, want 1", got)
 	}
 	// A mark of a run changes nothing of the run: the attempt ends the way it would have
-	// ended, and the state of the task holds the outcome and not the mark (§6, §7h).
-	if got := stateOf(t, m, 43).Attempts[0].Outcome; got != ChangeRequestOpened {
+	// ended, the state of the task holds the outcome and not the mark, and there is no
+	// second attempt — the project said crewflow does not go on by itself after a hang
+	// (§6, §7a, §7h).
+	state := stateOf(t, m, 43)
+	if len(state.Attempts) != 1 {
+		t.Fatalf("the state holds %d attempts, want the one that was going", len(state.Attempts))
+	}
+	if got := state.Attempts[0].Outcome; got != ChangeRequestOpened {
 		t.Errorf("the state of the task holds %q, want %q", got, ChangeRequestOpened)
+	}
+	if said := read(t, journals.errorJournalPath(43, 1)); strings.Contains(said, "stopped the run here") {
+		t.Errorf("the way out of the run holds %q, want no stopping of it: the project asked for none", said)
+	}
+}
+
+// TestF143ARunThatHungIsContinuedOnceInTheSameSession is F-143 and what it cost: three runs
+// hung for more than ten minutes in a day, the provider was answering all the time, and each
+// time a person interrupted the run and went on with it by hand (journal #37). Now crewflow
+// stops such a run once and goes on in the same session and the same worktree — the work of
+// the task stays where the run left it, and both facts are in the journal of the attempt
+// (docs/DESIGN.md §7a, §7i).
+func TestF143ARunThatHungIsContinuedOnceInTheSameSession(t *testing.T) {
+	m := newMachine(t)
+	more, wrote := make(chan string), make(chan struct{})
+	m.says("opencode",
+		answer{stdout: theRun, wrote: wrote, more: more},
+		answer{stdout: theRun},
+		answer{stdout: theRun})
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+	cfg.Executor.StallAfter = "1m"
+
+	over := make(chan outcome, 1)
+	go func() {
+		result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+		over <- outcome{result: result, err: err}
+	}()
+	<-wrote
+	journals := newJournals(m.home, "naghuale-crewflow")
+	m.begins(writtenAt(t, journals.JournalPath(43, 1)))
+
+	// The run has shown nothing for longer than the project agreed to, and the provider is
+	// answering: crewflow stops the run here and goes on.
+	m.quiet(11 * time.Minute)
+	m.look()
+
+	finished := <-over
+	if finished.err != nil {
+		t.Fatalf("Run returned an error: %v", finished.err)
+	}
+	if finished.result.Outcome != ChangeRequestOpened {
+		t.Errorf("the run came out as %q, want %q: the continuation did its work",
+			finished.result.Outcome, ChangeRequestOpened)
+	}
+	if finished.result.Attempt != 2 {
+		t.Errorf("the run is attempt %d, want 2", finished.result.Attempt)
+	}
+	state := stateOf(t, m, 43)
+	if len(state.Attempts) != 2 {
+		t.Fatalf("the state holds %d attempts, want the hang and the continuation", len(state.Attempts))
+	}
+	if state.Attempts[0].Outcome != Stalled {
+		t.Errorf("the hung attempt came out as %q, want %q: it hung and crewflow stopped it there",
+			state.Attempts[0].Outcome, Stalled)
+	}
+	if state.Attempts[1].AutoResumed != reasonStanding {
+		t.Errorf("the continuation went on for %q, want %q", state.Attempts[1].AutoResumed, reasonStanding)
+	}
+	// The continuation is in the session and the worktree of the run before it.
+	runs := m.commandsOf("opencode")
+	if len(runs) != 2 {
+		t.Fatalf("the executor was started %d times, want 2", len(runs))
+	}
+	if got := strings.Join(runs[1].args, " "); !strings.Contains(got, "--session "+theSession) {
+		t.Errorf("the continuation was started with %q, want the session of the run before it", got)
+	}
+	if told := strings.Join(runs[1].args, " "); !strings.Contains(told, "the work of the task is in this worktree") ||
+		!strings.Contains(told, "The run was stopped because it had shown nothing for") {
+		t.Errorf("the continuation was told %q, want it to know where the work of the task is and why it goes on",
+			told)
+	}
+	// And the attempt that hung says all of it: the mark and the stopping of it on the way
+	// out, the line of the run that goes on in its journal.
+	silence := read(t, journals.errorJournalPath(43, 1))
+	for _, want := range []string{"crewflow: stalled", "stopped the run here"} {
+		if !strings.Contains(silence, want) {
+			t.Errorf("the way out of the hung attempt holds\n%s\nwant it to hold %q", silence, want)
+		}
+	}
+	if journal := read(t, journals.JournalPath(43, 1)); !strings.Contains(journal, "crewflow: resumed once") {
+		t.Errorf("the journal of the hung attempt holds\n%s\nwant the line of the run that goes on", journal)
+	}
+	if said := read(t, journals.JournalPath(43, 2)); !strings.Contains(said, EventRunResumed) ||
+		!strings.Contains(said, "habit="+reasonStanding) {
+		t.Errorf("the journal of the continuation holds\n%s\nwant the event of a run that crewflow went on with",
+			said)
+	}
+}
+
+// TestF143ARunThatHungTwiceWaitsForAPerson: one continuation is the whole of the promise.
+// The second hang is not stopped and not repeated — the run stands in the queue of attention
+// where a person sees it, and crewflow cuts nothing (F-143, docs.DESIGN.md §6a, §7a, §7j).
+func TestF143ARunThatHungTwiceWaitsForAPerson(t *testing.T) {
+	m := newMachine(t)
+	firstMore, secondMore := make(chan string), make(chan string)
+	firstWrote, secondWrote := make(chan struct{}), make(chan struct{})
+	m.says("opencode",
+		answer{stdout: theRun, wrote: firstWrote, more: firstMore},
+		answer{stdout: theRun, wrote: secondWrote, more: secondMore},
+		answer{stdout: theRun})
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+	cfg.Executor.StallAfter = "1m"
+
+	over := make(chan outcome, 1)
+	go func() {
+		result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+		over <- outcome{result: result, err: err}
+	}()
+	journals := newJournals(m.home, "naghuale-crewflow")
+	<-firstWrote
+	m.begins(writtenAt(t, journals.JournalPath(43, 1)))
+	m.quiet(11 * time.Minute)
+	m.look()
+	<-secondWrote
+
+	// The continuation hangs as well, and nothing stops it: the run is the one thing a
+	// person has to look at now.
+	stateWhileItHangs(t, m)
+	m.quiet(11 * time.Minute)
+	m.look()
+	silence := read(t, journals.errorJournalPath(43, 2))
+	if !strings.Contains(silence, "crewflow: stalled") {
+		t.Errorf("the way out of the continuation holds %q, want it to say that the run stands", silence)
+	}
+	if strings.Contains(silence, "stopped the run here") {
+		t.Errorf("the way out of the continuation holds %q, want no second stopping of the run: "+
+			"a run that hung twice hangs for a person", silence)
+	}
+	entry := attentionOnly(t, m.home, "naghuale-crewflow", attentionEnvOf(m.at(), 4242))
+	if entry.State != AttentionStands || entry.Reason != ReasonNoProgress {
+		t.Errorf("the queue says %q with the reason %q, want %q with %q: a run that stands twice is "+
+			"a thing to look into", entry.State, entry.Reason, AttentionStands, ReasonNoProgress)
+	}
+	if entry.Actable != ActNow {
+		t.Errorf("the queue says %q is actable, want %q: the run stands and nobody has answered it",
+			entry.Actable, ActNow)
+	}
+
+	// And the run goes on to whatever it was doing: crewflow neither stops it nor cuts it short.
+	close(secondMore)
+	finished := <-over
+	if finished.err != nil {
+		t.Fatalf("Run returned an error: %v", finished.err)
+	}
+	if finished.result.Outcome != ChangeRequestOpened {
+		t.Errorf("the run came out as %q, want %q", finished.result.Outcome, ChangeRequestOpened)
+	}
+	if runs := m.commandsOf("opencode"); len(runs) != 2 {
+		t.Errorf("the executor was started %d times, want 2: a third start is a blind restart", len(runs))
+	}
+}
+
+// TestF143ARunThatWaitsForAPersonIsNotHung: a run that stands in front of the window of the
+// keychain is a run that is waited for, and crewflow does not stop it and go on by itself —
+// the person is at the machine, not crewflow, and a run cut short there would be a run whose
+// work is in two places at once (docs.DESIGN.md §6a, §7a, §7i).
+func TestF143ARunThatWaitsForAPersonIsNotHung(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	window := make(chan struct{})
+	notices := secret.NewNotices(nil)
+	env := m.env()
+	env.Notices = notices
+	env.Secrets = secret.Waited(&waiting{on: window}, notices, time.Minute)
+	host := &host{task: taskOf(43), opened: true, identity: theBot(), store: env.Secrets}
+	m.answers["git config"] = answer{}
+	cfg := inTheModeOfTheBot(projectOf(t, m.worktrees, ""))
+	cfg.Executor.StallAfter = "1m"
+
+	over := make(chan outcome, 1)
+	go func() {
+		result, err := Run(t.Context(), env, cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+		over <- outcome{result: result, err: err}
+	}()
+	journals := newJournals(m.home, "naghuale-crewflow")
+	stateWhileItWaits(t, m)
+	// The sign of life of a run is the moment of the last line of its journal, and that is
+	// a moment of a file the machine wrote for real: the clock of the machine is put there,
+	// so that the silence a test sets is the silence it says it is (§6).
+	m.begins(writtenAt(t, journals.JournalPath(43, 1)))
+
+	m.quiet(11 * time.Minute)
+	m.look()
+
+	said := read(t, journals.errorJournalPath(43, 1))
+	if !strings.Contains(said, reasonApproval) {
+		t.Errorf("the way out of the run holds %q, want it to name what the run stands at", said)
+	}
+	if strings.Contains(said, "stopped the run here") {
+		t.Errorf("the way out of the run holds %q, want no stopping of a run that waits for a person", said)
+	}
+	if got := stateOf(t, m, 43); len(got.Attempts) != 1 {
+		t.Errorf("the state holds %d attempts, want the one that waits at the window", len(got.Attempts))
+	}
+
+	// The owner answers the window and the run goes on to its work.
+	close(window)
+	finished := <-over
+	if finished.err != nil {
+		t.Fatalf("Run returned an error: %v", finished.err)
+	}
+	if finished.result.Outcome != ChangeRequestOpened {
+		t.Errorf("the run came out as %q, want %q", finished.result.Outcome, ChangeRequestOpened)
 	}
 }
 
@@ -621,6 +837,23 @@ func stateWhileItWaits(t *testing.T, m *machine) State {
 		t.Fatal("the state of the task holds no attempt while the run stands in front of the window of the keychain")
 	}
 	return state
+}
+
+// stateWhileItHangs is the state of the task of a run that is going and silent, read while it
+// is: the attempt of the continuation has to be in the state before the journal of it can be
+// looked at, because a run crewflow went on with writes into the file of that attempt
+// (docs/DESIGN.md §6, §7a).
+func stateWhileItHangs(t *testing.T, m *machine) {
+	t.Helper()
+	path := newJournals(m.home, "naghuale-crewflow").StatePath(43)
+	for range 1000 {
+		state, err := LoadState(path)
+		if err == nil && len(state.Attempts) > 1 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("the state of the task holds no continuation of the run that hung")
 }
 
 // waiting is the keychain of a machine whose owner is at the window of the system and has

@@ -29,16 +29,21 @@ const MaybeRunning Kind = "maybe-running"
 // The seven outcomes of a run, in the order crewflow works them out, which is the
 // order of what says the most: a run that ran out of time tells nothing about what
 // it was refused in its last second, and a run that was refused tells nothing about
-// what it would have opened. A run that stands is not among them: it has not ended.
+// what it would have opened.
 const (
 	// Stalled means a run that is going has shown nothing for longer than the silence
 	// the project agreed to put up with, and is standing: a window of the keychain
-	// nobody answered, an executor that hangs, a machine with no network. It is not an
-	// outcome of a run and it does not change one — the state of the task holds
-	// `running` all the same, the process goes on working and the attempt ends the way
-	// it would have ended. It is worked out every time a list of runs is read, because
-	// a flag in a file that says nothing about the time outlives the silence it was
-	// written for (docs/DESIGN.md §6, §7a, §7h).
+	// nobody answered, an executor that hangs, a machine with no network. It is a
+	// mark, and not an outcome of a run — the state of the task holds `running` all
+	// the same and the attempt ends the way it would have ended — worked out every time
+	// a list of runs is read, because a flag in a file that says nothing about the time
+	// outlives the silence it was written for (docs/DESIGN.md §6, §7a, §7h).
+	//
+	// It is the outcome of one attempt only: the one crewflow stopped itself because
+	// the run had stood and there was no reason of the wait to stand at, and that it is
+	// going on in the same session. A run that stands with a provider that has answered
+	// is a run whose agent has hung, and the three hangs of a day that cost a person a
+	// night each were ended by hand (F-143, docs/DESIGN.md §7a).
 	Stalled Kind = "stalled"
 	// Interrupted means a person stopped the run: crewflow was stopped with SIGINT
 	// or SIGTERM, and it stopped the executor with it rather than leaving it to work
@@ -108,6 +113,12 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 		return result.spent(BlockedSecret), nil
 	}
 	reason := r.profile.Blocked(stdout)
+	// What the model provider said about the failure it stopped the run for is read
+	// before anything the run said about itself: a provider that refused the run is a wait
+	// for a resource and not a defect of the task, however the task of the run ended, and
+	// an agent that writes BLOCKED: because its provider is down has not decided anything
+	// about its task (F-119, docs/DESIGN.md §6a, §7a).
+	provider, refused := refuseProvider(r.profile.ProviderFailure(stdout, stderr))
 	switch {
 	case ended == Interrupted:
 		// What the executor was refused and why it stopped are still facts about the
@@ -117,8 +128,21 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 		return result.spent(Interrupted), nil
 	case ended == TimedOut:
 		return result.spent(TimedOut), nil
+	case ended == Stalled:
+		// crewflow stopped the run itself because it had shown nothing for longer than
+		// the silence of the project, and it is going on by itself in the same session.
+		// The reason of the silence is in the journal of the attempt and in the state of
+		// the task; there is nothing else to judge the run by (F-143, §7a).
+		return result.spent(Stalled), nil
 	case len(secrets.marked) > 0:
 		return result.spent(BlockedPermission), nil
+	case refused:
+		// The words of the provider are in the reason of the run beside the name of the
+		// wait: the name is the code of §6a that a program reads, and the words are what
+		// a person reads when the queue says which resource of the machine the task
+		// waits for (§6a, §7i).
+		result.Reason = provider.reason + ": " + provider.said
+		return result.spent(Blocked), nil
 	case reason != "":
 		result.Reason = reason
 		return result.spent(Blocked), nil

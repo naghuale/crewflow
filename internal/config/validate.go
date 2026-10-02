@@ -77,6 +77,14 @@ func (c Config) Validate() error {
 	if err := validateDuration("executor.resume_within", c.Executor.ResumeWithin); err != nil {
 		return err
 	}
+	// How many times crewflow goes on by itself after the model provider refused the run
+	// is a promise a project makes to a person: zero is a project that wants to decide
+	// every refusal itself, and a number of one or more is a number of tries it agreed
+	// to. What crewflow will not take is a number of no sense — a negative number of
+	// tries is not a policy, it is a mistake in the file (F-119, §6a, §7a).
+	if c.Executor.ProviderRetries < 0 {
+		return fmt.Errorf("executor.provider_retries: must not be negative, got %d", c.Executor.ProviderRetries)
+	}
 	for i, fallback := range c.Executor.Fallback {
 		if err := validateExecutor(fmt.Sprintf("executor.fallback[%d]", i), fallback); err != nil {
 			return err

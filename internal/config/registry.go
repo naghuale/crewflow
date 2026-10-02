@@ -183,6 +183,13 @@ var settings = []Setting{
 	{Key: "executor.timeout", Status: Supported, Applies: "cfg.Executor.Timeout"},
 	{Key: "executor.stall_after", Status: Supported, Applies: "cfg.Executor.StallAfter"},
 	{Key: "executor.resume_within", Status: Supported, Applies: "cfg.Executor.ResumeWithin"},
+	// The two policies of a run that waits and of a run that stands: how many times
+	// crewflow goes on by itself after the model provider refused the run, and whether it
+	// goes on at all after a run that stands with a provider that has answered. Both are
+	// read in `internal/run` where the continuation of a run is worked out (F-119, F-143,
+	// §6a, §7a).
+	{Key: "executor.provider_retries", Status: Supported, Applies: "cfg.Executor.ProviderRetries"},
+	{Key: "executor.resume_stands", Status: Supported, Applies: "cfg.Executor.ResumeStands"},
 	{
 		Key: "executor.fallback", Status: Specified,
 		Unwritten: []Asked{{

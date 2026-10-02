@@ -196,6 +196,18 @@ const (
 	// ends the "nobody is waiting, we are watching" answer of the queue, because an
 	// expectation with no end is what F-110 was (D-049, §6a).
 	ReasonWaitedTooLong = "waited-too-long"
+	// ReasonProviderUnavailable is a run that the model provider refused and that the
+	// provider itself said may be repeated: a wait for a resource of the machine, where
+	// the work of the task is kept and crewflow goes on by itself once (F-119, §6a, §7a).
+	// It is not a failure of the task and not a hang of the run, and the queue says which
+	// of the two it is not by saying what it waits for.
+	ReasonProviderUnavailable = "provider-unavailable"
+	// ReasonProviderErrorUnknown is a failure of the model provider that carries no mark
+	// of repeatability: a refusal of the login, a lack of rights, a wrong request, a model
+	// that is not set up, money or a quota. Nothing of it is a temporary unavailability,
+	// crewflow repeats none of it, and what it needs is a decision of a person (F-119,
+	// §6a, §7e).
+	ReasonProviderErrorUnknown = "provider-error-unknown"
 
 	// The reasons of the fact crewflow remembers о прогоне, чья работа кончена. They
 	// are not reasons of a wait — nobody waits for a merged change — but the words of
@@ -246,6 +258,11 @@ const (
 	// the branch has to be moved onto the branch it is meant for, and until then nothing
 	// of the change may go in (§7h).
 	SubjectMerge = "the merge into"
+	// SubjectModelProvider is the model a run asks for: the one resource of a run that no
+	// command of a project controls and no key of a file names — it is wherever the agent
+	// of the project gets it from, and a run that cannot get it waits rather than fails
+	// (F-119, §6a, §7d).
+	SubjectModelProvider = "the model provider of the run"
 )
 
 // The actors the queue waits for: the orchestrator, the owner, either of them, and nobody
@@ -1183,7 +1200,50 @@ func (a *Attention) refused(last Attempt, silence Stall, point *Checkpoint) {
 	case named(last.Reason) == ReasonHumanAuthorization:
 		a.State, a.Reason = AttentionBlocked, ReasonHumanAuthorization
 		a.Subject, a.NextActor, a.Actable = "", ActorOwner, ActUnknown
+	case a.waitedOfProvider(last):
+		a.answerOf(point)
 	}
+}
+
+// waitedOfProvider is a run that stopped for the model provider, and the answer the queue
+// gives it. It is a wait and not a failure of the task in either of the two forms the
+// provider stopped a run in, and the four things a person needs are in the entry: which
+// resource of the machine the run waits for, whether the provider said the refusal may be
+// repeated, that the work of the task is kept where it is, and the command that goes on
+// from it (F-119, §6a, §7i).
+func (a *Attention) waitedOfProvider(last Attempt) bool {
+	reason := named(last.Reason)
+	switch reason {
+	case ReasonProviderUnavailable:
+		a.State, a.Reason, a.Priority = AttentionBlocked, ReasonProviderUnavailable, High
+		a.Subject, a.NextActor, a.Actable = SubjectModelProvider, ActorOrchestrator, ActNow
+		// The time of the entry is the wait for the resource and nothing else: the run
+		// did not work and did not stand, and it is counted from the moment the provider
+		// refused it, exactly as the wait for the minutes of CI is counted from the moment
+		// they started (§6a).
+		a.Since = endedAt(last)
+		repeatable := "the provider did not say the refusal may be repeated"
+		if last.Provider == ProviderRetryable {
+			repeatable = "the provider said the refusal may be repeated"
+		}
+		a.Hint = "the work of the task is kept in the worktree and the session of the run, and " +
+			repeatable + "; crewflow goes on by itself once and no more"
+		a.Next = resumeCommand(a.Task)
+		return true
+	case ReasonProviderErrorUnknown:
+		// Nothing of this failure is temporary, and repeating it would be repeating a task
+		// that cannot succeed: a refusal of the login, a lack of rights, a wrong request, a
+		// model that is not set up and money or a quota are decided by a person, and who
+		// decides is not always the same person (F-119, §6a, §7f).
+		a.State, a.Reason, a.Priority = AttentionBlocked, ReasonProviderErrorUnknown, High
+		a.Subject, a.NextActor, a.Actable = SubjectModelProvider, ActorEither, ActNow
+		a.Since = endedAt(last)
+		a.Hint = "the provider refused the run without saying the refusal may be repeated: the work is kept, " +
+			"and nothing of it is a temporary unavailability crewflow may repeat on its own"
+		a.Next = resumeCommand(a.Task)
+		return true
+	}
+	return false
 }
 
 // answerOf is what may be done about a run that was refused a decision of a person: the

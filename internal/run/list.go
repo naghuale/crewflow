@@ -522,13 +522,16 @@ func (e ListEnv) entryOf(state State, repo string) (Entry, bool) {
 		entry.EndedAt = &ended
 	}
 	switch {
+	case !last.EndedAt.IsZero():
+		// A run that is over lasted as long as it says it did, whatever else happened to
+		// it: an attempt crewflow stopped because it stood is over, and counting its
+		// silence as its length would be counting a hang as work (F-143, §7a).
+		entry.Duration = last.EndedAt.Sub(last.StartedAt)
 	case entry.Outcome == Running, entry.Outcome == Stalled:
 		// A run that is going is as long as it has been going so far, and its end is
 		// a moment that has not come yet — and a run that stands is a run that is
 		// going, whatever it is not doing.
 		entry.Duration = e.Now().Sub(last.StartedAt)
-	case !last.EndedAt.IsZero():
-		entry.Duration = last.EndedAt.Sub(last.StartedAt)
 	}
 	// Whether the run is standing is worked out here, at the moment the list is read:
 	// a run whose executor has written nothing for longer than the silence of the

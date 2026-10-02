@@ -24,6 +24,22 @@ import (
 // the reason of a run is what a person reads (docs/DESIGN.md §7i).
 const stepReadKey = "read-executor-key"
 
+// stepModelProvider is where a run of a task goes on from when the model provider refused
+// it: the executor is started, it asks the provider for the model, and the provider says
+// no. The work of the task is in the worktree and in the session of that run, and a
+// continuation goes on in both of them — which is the whole of what a point is for
+// (F-119, docs/DESIGN.md §7a, §7i).
+//
+// It is a name and not a sentence for the reason every step of a checkpoint is one: the
+// point is read by crewflow itself, and what it stands at is what a person reads.
+const stepModelProvider = "model-provider"
+
+// steps is every step of crewflow a continuation may go on from. A point written at a step
+// this build does not know is refused rather than guessed at: a continuation of a step
+// nobody knows is a new run with the words of a continuation, and a run that starts over
+// without saying so loses the work nobody is looking at (docs/DESIGN.md §7i).
+var steps = map[string]bool{stepReadKey: true, stepModelProvider: true}
+
 // resumeWithin is how long the point of the task stays a point to go on from, as the
 // file of the project says it: `[executor] resume_within`, and
 // [config.DefaultResumeWithin] — a day — when the project says nothing.
@@ -195,11 +211,11 @@ func (r *runner) checkpoint(ctx context.Context) error {
 	if point == nil {
 		return r.nothingToGoOnFrom(state)
 	}
-	if point.Step != stepReadKey {
+	if !steps[point.Step] {
 		return Refused{Name: RefusedUnknownStep, Said: fmt.Sprintf(
 			"the point of task %d stands at the step %q, and this build of crewflow goes on only "+
-				"from %q: run the task anew with `crewflow task run %d`",
-			r.task.Number, point.Step, stepReadKey, r.task.Number)}
+				"from %q and %q: run the task anew with `crewflow task run %d`",
+			r.task.Number, point.Step, stepReadKey, stepModelProvider, r.task.Number)}
 	}
 	switch point.Outcome {
 	case WaitCompleted:

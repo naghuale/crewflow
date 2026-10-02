@@ -196,6 +196,14 @@ type Attempt struct {
 	// been quiet for longer than the silence of the project, and it is a name and not a
 	// sentence, because that is what a report of it shows.
 	Reason string `json:"reason,omitempty"`
+	// Provider is what the model provider of this attempt said about the failure it
+	// stopped the run for: `retryable` where the provider itself marked the refusal
+	// repeatable, and `unknown` where it said nothing that makes the failure temporary.
+	// It is a fact of the run kept beside the reason of it, because the queue of
+	// attention has to name the repeatability of the wait without reading a journal, and
+	// it is empty for every attempt that did not stop for a provider (F-119,
+	// docs.DESIGN.md §6a, §7h).
+	Provider string `json:"provider,omitempty"`
 	// ReportedAt is when a record of the standing of this attempt was last left under
 	// the task on the host by `crewflow task check-stalled`. It is a fact of what has
 	// been said and not a verdict about the run: whether the run is standing is worked
@@ -348,6 +356,20 @@ func (s State) Reason(reason string) State {
 		return s
 	}
 	s.Attempts[len(s.Attempts)-1].Reason = reason
+	return s
+}
+
+// Provider is the state of a task with what the model provider of the attempt said about
+// the failure it stopped it for written into that attempt: `retryable` where the provider
+// itself says the refusal may be repeated and `unknown` where it said nothing that makes
+// the failure temporary. It is written into the attempt that has just ended, beside its
+// reason, and it is what the queue of attention names the repeatability of the wait by
+// (F-119, docs/DESIGN.md §6a).
+func (s State) Provider(marked string) State {
+	if len(s.Attempts) == 0 {
+		return s
+	}
+	s.Attempts[len(s.Attempts)-1].Provider = marked
 	return s
 }
 

@@ -293,6 +293,79 @@ func TestBlocked(t *testing.T) {
 	}
 }
 
+// TestProviderFailure is the whole of what a run knows of the model provider of a run:
+// an error of the provider is an error of the provider, and whether it may be repeated
+// is what the provider itself said in the mark `isRetryable` — never what the failure
+// looks like. A run that died for a reason of its own and mentioned a provider in
+// passing is not a run the provider refused, and a provider error that carries no mark
+// is not a temporary one: a refusal of the login, a lack of rights, a wrong request, a
+// model that is not set up and money or a quota are all a decision of a person, and
+// crewflow that reads them as a network blip repeats a task that cannot succeed
+// (F-119, docs.DESIGN.md §6a, §7a).
+func TestProviderFailure(t *testing.T) {
+	cases := []struct {
+		name  string
+		said  string
+		want  Failure
+		wants string
+	}{
+		{
+			name: "the provider refused it and says it may be repeated",
+			said: `{"type":"error","sessionID":"ses_7fKq2","part":{"type":"error","error":{"name":"AI_APICallError",` +
+				`"data":{"message":"Cannot connect to API (https://opencode.ai)","isRetryable":true}}}}` + "\n",
+			want:  Failure{Of: true, Retryable: true, Said: "Cannot connect to API (https://opencode.ai)"},
+			wants: "Cannot connect to API",
+		},
+		{
+			name: "the provider refused it and does not say it may be repeated",
+			said: `{"type":"error","sessionID":"ses_7fKq2","part":{"type":"error","error":{"name":"ProviderAuthError",` +
+				`"data":{"message":"Auth is not provided for this model","isRetryable":false}}}}` + "\n",
+			want: Failure{Of: true, Said: "Auth is not provided for this model"},
+		},
+		{
+			name: "an error of the provider with no mark at all",
+			said: `{"type":"error","sessionID":"ses_7fKq2","part":{"type":"error","error":{"name":"AI_APICallError",` +
+				`"data":{"message":"insufficient credits"}}}}` + "\n",
+			want: Failure{Of: true, Said: "insufficient credits"},
+		},
+		{
+			name: "the mark where the version of the agent put it",
+			said: `{"type":"error","sessionID":"ses_7fKq2","part":{"type":"error","error":{"name":"AI_APICallError",` +
+				`"isRetryable":true}}}` + "\n",
+			want: Failure{Of: true, Retryable: true, Said: "AI_APICallError"},
+		},
+		{
+			name: "a run that failed for a reason of its own",
+			said: `{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","text":"BLOCKED: needs libtdjson"}}` + "\n",
+			want: Failure{},
+		},
+		{
+			name: "a run that did all it had to do",
+			said: opencodeRun,
+			want: Failure{},
+		},
+		{
+			name: "the mark in a line that is not an error of the provider",
+			said: `{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","text":"isRetryable: true"}}` + "\n",
+			want: Failure{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := (opencode{}).ProviderFailure([]byte(tc.said), nil)
+			if got != tc.want {
+				t.Errorf("ProviderFailure = %+v, want %+v", got, tc.want)
+			}
+			if tc.wants != "" && !strings.Contains(got.Said, tc.wants) {
+				t.Errorf("ProviderFailure said %q, want it to hold %q", got.Said, tc.wants)
+			}
+			if other := (generic{}).ProviderFailure([]byte(tc.said), nil); other != (Failure{}) {
+				t.Errorf("ProviderFailure of an agent crewflow knows nothing about = %+v, want none", other)
+			}
+		})
+	}
+}
+
 // TestContinueArgs checks how a run goes on in the same session of OpenCode: the
 // id of the session is the argument that says it (docs/DESIGN.md §7a).
 func TestContinueArgs(t *testing.T) {

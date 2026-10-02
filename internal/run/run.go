@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,7 +232,15 @@ func (r Result) OK() bool {
 	return r.Outcome == ChangeRequestOpened
 }
 
-// Run takes the task from the tracker, checks that it is ready, makes the branch and
+// The two words of who told a run to go on, as the journal of the attempt holds them: the
+// run was answered by crewflow itself or by an orchestrator of the project, and a run that
+// was answered by itself is not a run two people had (docs/DESIGN.md §7a).
+const (
+	byCrewflow = "crewflow"
+	byPerson   = "an orchestrator"
+)
+
+// Read takes the task from the tracker, checks that it is ready, makes the branch and
 // the worktree of it, runs the executor there and works out what came of it.
 //
 // A run that stopped on a habit crewflow knows goes on by itself, once, in the same
@@ -244,7 +253,7 @@ func (r Result) OK() bool {
 // that is recorded: the state and the journal of it are what the next step of the
 // cycle and the next attempt of a person are read from (docs/DESIGN.md §7).
 func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Request) (Result, error) {
-	r := &runner{env: env, cfg: cfg, set: set, req: req}
+	r := &runner{env: env, cfg: cfg, set: set, req: req, hang: &hang{}, by: byPerson}
 	if err := r.readTask(ctx); err != nil {
 		return Result{}, err
 	}
@@ -255,6 +264,12 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 	if req.Resume {
 		if err := r.checkpoint(ctx); err != nil {
 			return Result{}, err
+		}
+		// What the continuation is told before the task depends on what the run stood at:
+		// a decision of a person came through, or the model provider answered again, and
+		// the two are not the same sentence (§7i).
+		if r.point != nil && r.point.Step == stepModelProvider {
+			req.Continue = providerResumedMessage
 		}
 	}
 	if err := r.prepare(ctx); err != nil {
@@ -271,6 +286,7 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 		// any other with the number of it one higher, and the outcome of the task is
 		// the one of the last attempt (docs/DESIGN.md §7a, §7h).
 		r.auto, r.req.Continue, r.session = string(r.resume.reason), r.resume.tells(), result.Session
+		r.by = byCrewflow
 		r.resume = resume{}
 	}
 }
@@ -301,6 +317,13 @@ func Resume(ctx context.Context, env Env, cfg config.Config, set forge.Set, req 
 const resumedMessage = "The decision of the person this run was stopped at came through, so the run goes on " +
 	"from that point. The work of the task is in this worktree as the run left it: do not start the task over " +
 	"and do not repeat what the run already did."
+
+// providerResumedMessage is what the executor of a continuation from the point of a model
+// provider is told before the task itself: the provider is asked again, and the work of the
+// task is where the run that was refused left it (F-119, docs/DESIGN.md §7a, §7i).
+const providerResumedMessage = "The model provider refused the run before, and this run goes on from that " +
+	"point: the provider is being asked again. The work of the task is in this worktree and in this session " +
+	"as the run left it: do not start the task over and do not repeat what the run already did."
 
 // runner is one run of one task, and what it has found out about it so far.
 type runner struct {
@@ -340,9 +363,13 @@ type runner struct {
 	problems []access.Problem
 	// auto is the habit of the attempt that is going on, when crewflow is the one
 	// that goes on with it: an attempt the orchestrator continued has none, and a
-	// habit crewflow knows is the one thing a run answers by itself (docs/DESIGN.md
+	// habit crewflow knows is the one thing a run answers by itself (docs.DESIGN.md
 	// §7a).
 	auto string
+	// by is who told the attempt that is going on to go on: crewflow by itself, or an
+	// orchestrator of the project. It is said in the journal of the attempt, because a
+	// run that was answered by itself is not a run two people had (docs.DESIGN.md §7a).
+	by string
 	// resume is what the attempt that has just ended is followed by, and is empty
 	// unless the run goes on by itself: it is worked out while the journal of the
 	// attempt is still open, so that the journal holds the line about it.
@@ -357,6 +384,10 @@ type runner struct {
 	// crewflow, and the watch of the run reads it while the executor works
 	// (docs/DESIGN.md §6, §7a).
 	alive *alive
+	// hang is what ends a run of the task that stood with nothing to wait for, once, and
+	// the silence it hung in. It belongs to the run and not to an attempt: the attempt
+	// crewflow goes on with is not stopped a second time (F-143, §7a).
+	hang *hang
 	// route is what the programs of this run are told about the network: the four names
 	// of the profile the owner chose, and nothing else. It is empty in the mode
 	// `direct`, because a run that hands its executor a proxy nobody chose is a run that
@@ -755,7 +786,8 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// The watch of the silence of the run is started here and not when the executor is:
 	// everything from here to the executor is crewflow waiting for something, and that is
 	// exactly what a run that nobody is watching is (§6, §7a).
-	stopWatch := r.watch(ctx, state.Attempts[len(state.Attempts)-1], files, stallAfter)
+	stopWatch := r.watch(ctx, state.Attempts[len(state.Attempts)-1], files, stallAfter,
+		r.mayGoOnAfterStanding(state.Attempts))
 	defer stopWatch()
 
 	// Whose name the executor of this run works under is worked out before the executor
@@ -793,8 +825,11 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// request the run was stopped at came through. The state of the task says so and
 	// the journal of the attempt holds the event of it, in the same place the run said
 	// what it waited for: a person who reads the journal of a continuation afterwards
-	// sees what was decided and when (§7i).
-	state = r.answered(state, files, WaitCompleted, EventAuthorizationCompleted)
+	// sees what was decided and when (§7i). A continuation from the point of a model
+	// provider has no request of a person to have come through and says nothing of one.
+	if r.point == nil || r.point.Step == stepReadKey {
+		state = r.answered(state, files, WaitCompleted, EventAuthorizationCompleted)
+	}
 	// The run is going to get the task ready for its executor, and that is the sign of
 	// life the state of the task holds from here on: whatever the run stood at before
 	// this — the window of the keychain, the time of the machine to answer — is behind it.
@@ -817,6 +852,17 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// run afterwards has to see whose name it went under without reading the state file
 	// as well (docs/DESIGN.md §7i).
 	fmt.Fprintf(files.Out, "crewflow: executor: %s\n", r.identity.Description)
+	// Every attempt that goes on in the session of the attempt before it says so in its own
+	// journal, with what it went on for and the session it goes on in: a person who opens
+	// the journal of the second attempt of a task has to see there whether crewflow went on
+	// by itself or an orchestrator asked for it (docs.DESIGN.md §7a).
+	if r.req.Continue != "" {
+		facts := []string{"by=" + r.by, "session=" + r.session, "worktree=" + r.worktree}
+		if r.auto != "" {
+			facts = append(facts, "habit="+r.auto)
+		}
+		sayEvent(files.Out, EventRunResumed, append(facts, saidAtEvent(r.env.Now()))...)
+	}
 	// What the executor may read outside its worktree is worked out before it is
 	// started and is said in the journal right after that: a run that was given the
 	// right to read a folder of the machine has to say which, and a person who reads
@@ -839,9 +885,13 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 
 	// The time limit of the run is on the context, and a program that is still
 	// going when it is out is asked to stop with it: the run has an end whatever the
-	// executor thinks of it.
+	// executor thinks of it. The same context ends the run when it has stood with a
+	// provider that has answered — once, and the watch of the run is what decides it
+	// (F-143, §7a).
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	r.hang.running(cancel)
+	defer r.hang.over()
 
 	// What the executor wrote is in the journal from its first line and is also kept
 	// in memory, because a run is judged out of what the agent said, and the file is
@@ -877,6 +927,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// (docs/DESIGN.md §7a.1, §7d, §8).
 	calls := r.profile.Calls(out.Bytes())
 	secrets := r.closed.found(r.profile.Rejections(out.Bytes(), errOut.Bytes()), calls, r.worktree)
+	provider := r.profile.ProviderFailure(out.Bytes(), errOut.Bytes())
 	result, judgeErr := r.outcome(runCtx, result, out.Bytes(), errOut.Bytes(), code, ended, secrets)
 	// What the run reached for a secret is said while the journal of the attempt is
 	// still open, next to the line of a run that goes on by itself, so that a watch of
@@ -885,13 +936,30 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if line := secrets.line(); line != "" {
 		fmt.Fprint(files.Out, line)
 	}
+	// What came of the model provider is said while the journal of the attempt is still
+	// open, and the run that stopped for it writes the point to go on from: the work of
+	// the task, the branch of it and the session of it are where the run left them, and a
+	// person who comes back in the morning continues it with `crewflow task resume` rather
+	// than starting the task over (F-119, §6a, §7i).
+	state = r.saysWhatCameOfProvider(state, files, result.Attempt, provider, len(out.Bytes()) > 0)
+	if refused, ok := refuseProvider(provider); ok && result.Outcome == Blocked {
+		state = r.pointedAtProvider(ctx, state, files, refused)
+	}
 	// What the run is going on with is worked out and said in the same place: the line
 	// belongs to the attempt that ended here, and a watch of it shows why the next one
-	// was given what it was (docs/DESIGN.md §7a).
+	// was given what it was (docs.DESIGN.md §7a).
 	next, withReason := r.goesOnByItself(&result, state, calls)
 	state = withReason
 	if next.reason != reasonNone {
 		fmt.Fprintf(files.Out, "%s\n", next.line())
+		// The retry of a refused provider is said as an event of its own, beside the line
+		// of the run that goes on: the two facts a person reads a journal for are what
+		// happened and what crewflow did about it (§6a, §7a).
+		if string(next.reason) == ReasonProviderUnavailable {
+			sayEvent(files.Out, EventProviderRetryScheduled,
+				"resource="+SubjectModelProvider, "attempt="+strconv.Itoa(result.Attempt+1),
+				saidAtEvent(r.env.Now()))
+		}
 		r.resume = next
 	}
 	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
@@ -984,12 +1052,19 @@ func listedPaths(paths []string) string {
 // the time limit of the project on it, which says that the run ran out of time. A
 // person who stopped a run is told so, and the run of a project that ran out of
 // time is told that (docs/DESIGN.md §7a).
+//
+// A third end is crewflow's own: a run that showed nothing for longer than the silence of
+// the project, with nothing standing in the way that it knows of, is stopped here and goes
+// on in the same session — and the mark of that silence is the outcome of the attempt it
+// ended, because the run did not fail at anything (F-143, §7a).
 func (r *runner) endOf(caller, run context.Context) Kind {
 	switch {
 	case errors.Is(caller.Err(), context.Canceled):
 		return Interrupted
 	case errors.Is(run.Err(), context.DeadlineExceeded):
 		return TimedOut
+	case r.hang.stoodHere():
+		return Stalled
 	default:
 		return ""
 	}

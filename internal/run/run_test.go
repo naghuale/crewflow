@@ -700,6 +700,12 @@ func projectOf(t *testing.T, worktrees, timeout string) config.Config {
 				StallAfter: "10m",
 			},
 			ResumeWithin: config.DefaultResumeWithin,
+			// A project of a test says nothing about the two policies of a run that waits
+			// and of a run that stands, and a test hands the run the defaults a load fills
+			// in: one try again after a refused model provider and one continuation of a
+			// run that stands (F-119, F-143, docs.DESIGN.md §6a, §7a).
+			ProviderRetries: 1,
+			ResumeStands:    true,
 		},
 		Tasks: config.Tasks{OwnerApproval: "risky"},
 	}

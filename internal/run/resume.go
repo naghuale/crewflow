@@ -1,6 +1,7 @@
 package run
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -213,11 +214,24 @@ func (n resume) tells() string {
 // yesterday may name a habit the catalog has dropped since, and a queue has no words for
 // a habit it cannot name (docs/DESIGN.md §7a.1, §6a).
 func told(habit string) string {
-	one, known := habits[reason(habit)]
-	if !known {
-		return ""
+	name := reason(habit)
+	if one, known := habits[name]; known {
+		return " — " + one.headline
 	}
-	return " — " + one.headline
+	if head, known := heads[name]; known {
+		return " — " + head
+	}
+	return ""
+}
+
+// heads are the one lines of the two shapes of a run that goes on by itself and are not a
+// refusal of a permission: a refusal of the model provider and a run that hung. They are
+// what the queue shows beside the mark of an attempt crewflow went on with, so that a
+// project can see what it is being answered for without reading a journal (F-119, F-143,
+// docs/DESIGN.md §6a, §7a).
+var heads = map[reason]string{
+	reason(ReasonProviderUnavailable): providerHeadline,
+	reasonStanding:                    standingHead,
 }
 
 // goesOnByItself is what crewflow goes on with after an attempt that stopped on a
@@ -242,6 +256,21 @@ func told(habit string) string {
 //     was told where its scratch is and wrote into /tmp again is not to be told a
 //     second time, and the orchestrator decides (docs/DESIGN.md §7a, §7j).
 func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Call) (resume, State) {
+	// A run that stopped for the model provider is a wait for a resource, and what crewflow
+	// makes of it is worked out before anything about permissions: the provider refused the
+	// run before a permission was ever asked, and the habit of a refusal is of no use to it
+	// (F-119, docs/DESIGN.md §6a, §7a). The reason of the wait and the word of the provider
+	// go into the attempt that has just ended, because that is where the queue of attention
+	// reads them from and it reads no journal (§6a, §7h).
+	if next, marked, ok := r.afterProvider(result, state); ok {
+		return next, state.Reason(result.Reason).Provider(marked)
+	}
+	// A run crewflow stopped because it stood with a provider that has answered is a run
+	// whose agent has hung, and it goes on in the same session once — the same habit of a
+	// known shape, and the same one line in the journal (F-143, docs.DESIGN.md §7a).
+	if result.Outcome == Stalled {
+		return r.afterStanding(state)
+	}
 	if result.Outcome != BlockedPermission {
 		return resume{}, state
 	}
@@ -267,6 +296,50 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 		return resume{}, state.Reason(result.Reason)
 	}
 	return next, state
+}
+
+// The reason of a run that crewflow stopped because it had shown nothing and was refused
+// nothing by anybody: an executor that hung. The continuation is the habit of it, and the
+// state of the task is written with the silence the attempt stood in (F-143,
+// docs/DESIGN.md §7a).
+const reasonStanding = "stalled"
+
+// The line a person reads about a run that hung, and the whole of what the next attempt
+// is told: where the work of the task is, and what it was doing when it last said anything
+// (docs/DESIGN.md §7a, §7a.1).
+const (
+	standingHeadline = "the run showed nothing for %s and was stopped there; crewflow goes on in the same session"
+	standingHead     = "the run had shown nothing for longer than the project agreed to put up with"
+	standingTells    = "The run was stopped because it had shown nothing for %s. The last thing it " +
+		"showed of itself was: %s\n" +
+		"Nothing of the work is lost: the work of the task is in this worktree and in this session, where " +
+		"the run left it. Do not start the task over and do not repeat what the run already did — look at " +
+		"what you were doing and go on with it.\n" +
+		"Do the work of the task and open the change request of its branch. crewflow goes on by itself once " +
+		"and no more: a run that stands a second time waits for a person and says so in the queue of attention."
+)
+
+// afterStanding is what a run that stood with a provider that has answered goes on with:
+// once, in the same session and the same worktree, with the silence and the last step of
+// the run named in the text. Whether it goes on at all was settled before the executor was
+// started — the project says no, or the attempt before it stopped for reaching a secret
+// ([runner.mayGoOnAfterStanding]) — and the one promise of §7a is kept here: a run crewflow
+// has already stopped once for a hang is not stopped again, so a run that hangs twice hangs
+// for a person and stands in the queue of attention where they see it (§7a, §7j).
+//
+// The attempt that stood keeps no reason of its own: a run that stands a second time is a
+// run nobody knows what it waits for, and that is what the queue says about it, with the
+// last step of the run in the entry (§6a).
+func (r *runner) afterStanding(state State) (resume, State) {
+	silence, stood := r.hang.stoodOnce()
+	if !stood {
+		return resume{}, state
+	}
+	return resume{habit: habit{
+		reason:   reason(reasonStanding),
+		headline: fmt.Sprintf(standingHeadline, Idle(silence.For)),
+		text:     fmt.Sprintf(standingTells, Idle(silence.For), silence.LastStep),
+	}}, state
 }
 
 // oneHabitOf is the habit every refusal of an attempt is about, and whether crewflow

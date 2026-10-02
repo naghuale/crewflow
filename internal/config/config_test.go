@@ -64,6 +64,10 @@ func TestLoadExample(t *testing.T) {
 		// a key of its own, and the example says the day it puts in a file that says
 		// nothing (docs.DESIGN.md §7i).
 		{"executor.resume_within", cfg.Executor.ResumeWithin, "24h"},
+		// One try again after a refusal of the model provider, and one continuation of a
+		// run that stands: both are policies a project sees and may change (AR-013, §6a, §7a).
+		{"executor.provider_retries", cfg.Executor.ProviderRetries, 1},
+		{"executor.resume_stands", cfg.Executor.ResumeStands, true},
 		{"len(executor.fallback)", len(cfg.Executor.Fallback), 0},
 		{
 			"access.read_from",
@@ -172,6 +176,12 @@ func TestLoadMinimalAppliesDefaults(t *testing.T) {
 		// gets a day: a person comes back to it within a day, and a point of a week ago
 		// is a point about a machine and a task that are not the ones now (§7i).
 		{"executor.resume_within", cfg.Executor.ResumeWithin, "24h"},
+		// The two policies of a run that waits and of a run that stands: a project that
+		// says nothing gets one try again after a refusal of the provider and one
+		// continuation of a run that stands, and both are keys of its file (F-119, F-143,
+		// §6a, §7a).
+		{"executor.provider_retries", cfg.Executor.ProviderRetries, 1},
+		{"executor.resume_stands", cfg.Executor.ResumeStands, true},
 		// A project that says nothing about [access] gets no folder to read: the
 		// executor of it works in its worktree and nowhere else, and a run does not
 		// hand out a permission nobody asked for (docs/DESIGN.md §7d).
@@ -230,6 +240,70 @@ func TestResumeWithin(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestThePolicyOfARunThatWaitsAndOfARunThatStands is the promise of the two keys of §5:
+// how many times crewflow goes on by itself after the model provider refused the run, and
+// whether it goes on at all after a run that stands with a provider that has answered.
+// Both are policies a project agrees to, and both are visible — a key of the file of a
+// project, not a constant of the program (AR-013, F-119, F-143, docs.DESIGN.md §6a, §7a).
+func TestThePolicyOfARunThatWaitsAndOfARunThatStands(t *testing.T) {
+	t.Run("a project that says nothing", func(t *testing.T) {
+		cfg, err := loadFile(t, "minimal.toml")
+		if err != nil {
+			t.Fatalf("Load(minimal.toml) returned an error: %v", err)
+		}
+		if cfg.Executor.ProviderRetries != 1 {
+			t.Errorf("executor.provider_retries = %d, want 1: one try again, and the work is kept either way",
+				cfg.Executor.ProviderRetries)
+		}
+		if !cfg.Executor.ResumeStands {
+			t.Error("executor.resume_stands = false, want true: a run that stands is continued once")
+		}
+	})
+	t.Run("a project that decides every refusal itself", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "crewflow.toml")
+		writeFile(t, path, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+provider_retries = 0
+resume_stands = false
+`)
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load returned an error: %v", err)
+		}
+		if cfg.Executor.ProviderRetries != 0 {
+			t.Errorf("executor.provider_retries = %d, want 0: a key written as 0 is a decision and not a missing key",
+				cfg.Executor.ProviderRetries)
+		}
+		if cfg.Executor.ResumeStands {
+			t.Error("executor.resume_stands = true, want false: a key written as false is a decision and not a missing key")
+		}
+	})
+	t.Run("a number of no sense", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "crewflow.toml")
+		writeFile(t, path, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+provider_retries = -1
+`)
+		_, err := Load(path)
+		if err == nil {
+			t.Fatal("Load returned no error, want the refusal of a negative number of tries")
+		}
+		for _, want := range []string{"executor.provider_retries", "-1"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err, want)
+			}
+		}
+	})
 }
 
 // TestLoadOwnerApproval checks every value a project may put into

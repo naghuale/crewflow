@@ -51,6 +51,8 @@ var reasons = []string{
 	ReasonNoProgress,
 	ReasonOutOfScope,
 	ReasonOwnerAcceptance,
+	ReasonProviderErrorUnknown,
+	ReasonProviderUnavailable,
 	ReasonReadFailed,
 	ReasonReadInterrupted,
 	ReasonResourceWait,

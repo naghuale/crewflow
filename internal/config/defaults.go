@@ -6,12 +6,18 @@ import "github.com/BurntSushi/toml"
 // model or a language of the host: a project says all of that itself, and
 // crewflow only fills in the parts that mean the same everywhere.
 const (
-	defaultBranch            = "main"
-	defaultLanguage          = "en"
-	defaultWorktreesRoot     = "~/.crewflow/worktrees/{repo}"
-	defaultExecutorTimeout   = "90m"
-	defaultStallAfter        = "10m"
-	defaultResumeWithin      = "24h"
+	defaultBranch          = "main"
+	defaultLanguage        = "en"
+	defaultWorktreesRoot   = "~/.crewflow/worktrees/{repo}"
+	defaultExecutorTimeout = "90m"
+	defaultStallAfter      = "10m"
+	defaultResumeWithin    = "24h"
+	// One try again, and not more: a refusal of the model provider that repeats is a
+	// decision of a person, and the work of the task is kept either way (F-119, §6a, §7a).
+	defaultProviderRetries = 1
+	// A run that stands with a provider that has answered is continued once, in the same
+	// session: three hangs of a day each cost a person a night (F-143, §7a).
+	defaultResumeStands      = true
 	defaultForgeKind         = "github"
 	defaultTrackerKind       = "forge"
 	defaultIdentityMode      = "owner"
@@ -102,6 +108,19 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	// (docs/DESIGN.md §7i).
 	if c.Executor.ResumeWithin == "" {
 		c.Executor.ResumeWithin = defaultResumeWithin
+	}
+	// A provider that refused the run is given one try again and not more: the work of
+	// the task is where the run left it, and a second refusal is a decision of a person
+	// (F-119, AR-013, docs/DESIGN.md §6a, §7a).
+	if !meta.IsDefined("executor", "provider_retries") {
+		c.Executor.ProviderRetries = defaultProviderRetries
+	}
+	// A run that stands with a provider that has answered is a run whose agent has hung,
+	// and crewflow goes on once by itself where a person used to do it by hand every
+	// night (F-143, docs.DESIGN.md §7a). A project says false where its executor is
+	// quiet on purpose, and then the mark stays a mark.
+	if !meta.IsDefined("executor", "resume_stands") {
+		c.Executor.ResumeStands = defaultResumeStands
 	}
 	// A fallback executor that says nothing about the time limit or about standing
 	// still gets the ones of the executor it stands in for: both are the limits of the

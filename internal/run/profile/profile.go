@@ -40,6 +40,12 @@ type Profile interface {
 	// Blocked returns the reason of the last message that began with "BLOCKED:",
 	// and an empty string when the run was not stopped by the agent itself.
 	Blocked(stdout []byte) string
+	// ProviderFailure returns what the run wrote about the model provider it asked
+	// for: whether the failure is of the provider at all, and whether the provider
+	// itself says the failure may be repeated. Only an explicit mark of the provider
+	// counts — a run crewflow reads the shape of the failure of is a run crewflow
+	// guesses about the cause of the stop of a task (docs.DESIGN.md §6a, §7e).
+	ProviderFailure(stdout, stderr []byte) Failure
 	// Read returns the lines a person reads while a run goes on: the words of the
 	// agent, the tools it called with the argument that names the call and the state
 	// of it, and the permissions it was refused. Both of its arguments are the lines
@@ -72,11 +78,31 @@ type Profile interface {
 	ForeignRights(home string, environ []string) []Rights
 }
 
+// Failure is what a run wrote about the model provider it asked for. It is the whole of
+// what crewflow knows of the provider in the middle of a run, and the zero of this type
+// is the answer for a run the provider refused nothing: a failure of the task is not a
+// failure of the provider, whatever the run wrote about it (F-119, docs/DESIGN.md §6a).
+type Failure struct {
+	// Of says that the failure is of the model provider and not of the task of the run:
+	// it is the only thing that makes a run a wait for a resource and not a run that
+	// stopped by itself.
+	Of bool
+	// Retryable says that the provider itself says the failure may be repeated — the
+	// mark `isRetryable: true`. Where the provider said nothing, it is false: a
+	// failure nobody marked repeatable is not one crewflow repeats, and a refusal of
+	// the login, a lack of rights, a wrong request, a model that is not set up and
+	// money or a quota are decisions of a person (AR-013, docs.DESIGN.md §6a).
+	Retryable bool
+	// Said is what the failure was in the words of the agent, for a state of a task, a
+	// journal and a report. It is the name of the class of the failure where the agent
+	// gave no message with it, and never a guess of what it meant.
+	Said string
+}
+
 // Call is one tool the agent called, with the one argument of it that names the call.
 // The rest of what the tool was given is the answer of the agent and not what the
 // call was for, and a run does not read it (docs/DESIGN.md §7a).
-type Call struct {
-	// Tool is what the agent called it, as the agent calls it: "bash", "read".
+type Call struct { // Tool is what the agent called it, as the agent calls it: "bash", "read".
 	Tool string
 	// Argument is the command of a shell, the path of a file or the pattern of a
 	// search, whole.
@@ -179,6 +205,36 @@ func (opencode) Blocked(stdout []byte) string {
 	return reason
 }
 
+// ProviderFailure is what the run said about the model provider: an event of the run
+// that carries an error is an error of the provider when the agent named it as one, and
+// whether that error may be repeated is what the mark in the line says — the mark and
+// nothing else, because the shape of an error of an agent is a detail of the version of
+// it and the name of the mark is the contract (F-119, docs/DESIGN.md §7a).
+func (opencode) ProviderFailure(stdout, _ []byte) Failure {
+	failure := Failure{}
+	for _, line := range lines(stdout) {
+		if !strings.HasPrefix(strings.TrimSpace(line), "{") {
+			continue
+		}
+		var one event
+		if err := json.Unmarshal([]byte(line), &one); err != nil {
+			continue
+		}
+		if one.Part.Error.Name == "" && kind(one.Part.Type) != "error" {
+			continue
+		}
+		failure.Of, failure.Retryable = true, retryableIn(line)
+		failure.Said = one.Part.Error.Data.Message
+		if failure.Said == "" {
+			// The agent named the class of the failure and gave no message with it: what
+			// crewflow has is the name of it, and a name is said as it is rather than
+			// completed with a guess about what it meant.
+			failure.Said = one.Part.Error.Name
+		}
+	}
+	return failure
+}
+
 // Calls is every call of a tool the run made, with the whole of the argument that
 // names it.
 func (opencode) Calls(stdout []byte) []Call {
@@ -228,6 +284,12 @@ func (generic) Blocked(stdout []byte) string {
 	return reason
 }
 
+// ProviderFailure is nothing: an agent crewflow has never read does not say so where
+// crewflow can see it, and a run of such an agent that failed is a run that failed —
+// crewflow does not read the failure of the provider of an agent whose events it does
+// not know (docs.DESIGN.md §7b, §7e).
+func (generic) ProviderFailure(_, _ []byte) Failure { return Failure{} }
+
 // Read is every line as it is: an agent crewflow has never read is not read through a
 // shape, and the way out of a run of it is shown as it was written, because that is
 // what a person watching the run has to work with.
@@ -269,6 +331,17 @@ type event struct {
 				Pattern  string `json:"pattern"`
 			} `json:"input"`
 		} `json:"state"`
+		// Error is what a run of an agent that could not go on wrote: the class of the
+		// failure and what it said. The mark of whether the failure may be repeated is
+		// not read out of here — where a version of the agent puts it is a detail of
+		// that version, and the name of the mark is read out of the line itself
+		// (docs/DESIGN.md §7a).
+		Error struct {
+			Name string `json:"name"`
+			Data struct {
+				Message string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
 	} `json:"part"`
 }
 
@@ -334,6 +407,22 @@ func (e event) named(limit int) string {
 
 // argLimit is how much of the argument of a tool call a line of a watch holds.
 const argLimit = 80
+
+// retryablePattern finds the mark of the provider that says whether a failure may be
+// repeated. It is read out of the raw line of the event and not out of a path in a
+// structure of the agent: where a version of the agent puts the mark is a detail of
+// that version, the name of it is the contract, and a line that holds the word of the
+// mark anywhere but names no error of a provider is not a failure of one (F-119,
+// docs/DESIGN.md §7a).
+var retryablePattern = regexp.MustCompile(`"isRetryable"\s*:\s*(true|false)`)
+
+// retryableIn is whether the line of an event of a run carries the mark of the provider
+// that says the failure may be repeated. A line with no mark says no: nothing proven is
+// not a permission to repeat a task (MODEL: UNKNOWN не успех, docs/DESIGN.md §6a).
+func retryableIn(line string) bool {
+	match := retryablePattern.FindStringSubmatch(line)
+	return match != nil && match[1] == "true"
+}
 
 // kind is the name of a thing as it is compared, with the marks of the naming of the
 // agents left out: a call of a tool is "tool-use" in one version of an agent and

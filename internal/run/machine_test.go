@@ -361,9 +361,22 @@ func (m *machine) stream(ctx context.Context, name string, args []string, dir st
 	}
 	switch {
 	case answer.more != nil:
-		for text := range answer.more {
-			if _, err := io.WriteString(stdout, text); err != nil {
-				return 0, err
+		// An executor that goes on writing is an executor that can be stopped: a program
+		// crewflow asks to stop with the context of the run stops where it stands, and a
+		// fake that kept writing after that would hang a test of the run that stops a
+		// hanging run by itself (docs/DESIGN.md §7a).
+	writing:
+		for {
+			select {
+			case text, open := <-answer.more:
+				if !open {
+					break writing
+				}
+				if _, err := io.WriteString(stdout, text); err != nil {
+					return 0, err
+				}
+			case <-ctx.Done():
+				return -1, nil
 			}
 		}
 	case answer.wait != nil:

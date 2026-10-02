@@ -192,7 +192,10 @@ A run ends with one outcome: `pr-opened`, `blocked`, `blocked-secret`, `blocked-
 `stalled` is not one of them, because such a run has not ended: see
 [A run that stands](#a-run-that-stands). `blocked` is
 the one a run that stopped by itself ends with, and it carries the reason — `keychain-approval`
-when nobody answered the window of the keychain, the words of the executor otherwise.
+when nobody answered the window of the keychain, `provider-unavailable` or
+`provider-error-unknown` when the model provider refused the run (see
+[A provider that is not there](#a-provider-that-is-not-there)), the words of the executor
+otherwise.
 `blocked-secret` is the one a run that reached for a key ends with: nothing continues such a task by itself, and the
 report says which path it reached for and how. `task list` says which
 project the tasks are counted on, who ran each of them and whose name it worked under
@@ -205,12 +208,26 @@ the next run does.
 
 A run goes on working and gets quiet — a window of the keychain nobody answered, an executor
 that hangs, a machine with no network. After `[executor] stall_after` (10 minutes by default)
-crewflow calls it `stalled`, and the mark changes nothing: the process goes on, and the attempt
-ends the way it would have ended.
+crewflow calls it `stalled`, and the mark by itself changes nothing: the process goes on, and
+the attempt ends the way it would have ended.
 
 ```
 43  feat(run): the list of runs      opencode · bot  stalled 11m  43-1  #45
 ```
+
+**One exception, and it is the case of a hung agent.** A run that stands with no reason crewflow
+knows — nobody is waiting for a window, the provider is answering — is a run whose agent has
+hung, and crewflow stops it **once** and goes on in the same session and the same worktree, the
+way it answers a known refusal (§7a.1 of the design). The journal of the hung attempt says so:
+`crewflow: stalled — no activity for 12m …`, `crewflow: stopped the run here …` and
+`crewflow: resumed once — the run showed nothing for 12m and was stopped there`; the next
+attempt says `RUN_RESUMED` with the habit it went on for. On 2026-10-03 three runs hung like
+that in a day and each time an orchestrator interrupted and continued the run by hand
+(F-143, #37). **A run that hangs a second time is not stopped again**: it stands in the queue
+where a person sees it, and that is the whole of what crewflow does about it. A run standing at
+the keychain window is *waited for*, never cut — a person is at the machine there, not crewflow.
+A project whose executor is quiet on purpose turns the continuation off with
+`[executor] resume_stands = false`, and gets the mark alone.
 
 `task list` shows the kind and the length of the silence, and `-json` holds `stalled_for` (in
 seconds), `last_step` (the last line of the executor, read through its profile, or the last step
@@ -233,6 +250,39 @@ The state of a run is written *before* crewflow asks the machine for anything, s
 in front of the keychain window is in `~/.crewflow/state` while it stands there; a run refused
 for another reason puts the state back as it was and leaves no attempt behind. See §7a of the
 design.
+
+## A provider that is not there
+
+A model provider that does not answer is a **resource of the machine a run waits for**, not a
+defect of the task: the branch, the worktree and the session stay where the run left them, a
+checkpoint says where to go on from, and crewflow tries once more by itself. On 2026-10-02 both
+nightly runs of #37 died with `Cannot connect to API (https://opencode.ai)` and
+`isRetryable: true`, and both came out of `crewflow task run` as a plain `executor-failed` —
+no reason, no retry, no work kept, and the task had to be started again by hand (F-119).
+
+Only an **explicit mark** counts as a refusal of the provider: `isRetryable: true`, or a class
+of failure the profile of the agent reads unambiguously. A run that failed for a reason of its
+own and mentioned a provider in passing is not a run the provider refused, and a failure of the
+provider that carries no mark is **not** a temporary unavailability — it is `provider-error-unknown`,
+and none of it is repeated: a refused login, missing rights, a wrong request, a model that is not
+set up, money or a quota are decisions of a person.
+
+The retry is the policy of the project — `[executor] provider_retries` (one by default), counted
+over the state of the task, so a task never retries itself behind a person's back. The second
+refusal is **waits** (`blocked`, `provider-unavailable`), not "failed" and not "standing", and the
+queue names four things: the provider, whether the provider said the refusal may be repeated,
+that the work of the task is kept, and the command to go on — `crewflow task resume 43`, the same
+session and the same checkpoint the run left (§7i). The journal of the attempt holds
+`PROVIDER_UNAVAILABLE`, `PROVIDER_RETRY_SCHEDULED` and, after the run that went on, one
+`PROVIDER_AVAILABLE` — the answer to the first call, not a promise about the next one.
+
+```
+ATTENTION REQUIRED
+  #43 · blocked · provider-unavailable · the model provider of the run
+    waiting 12m · next: orchestrator · crewflow task resume 43
+    the work of the task is kept in the worktree and the session of the run, and the provider
+    said the refusal may be repeated; crewflow goes on by itself once and no more
+```
 
 ## The attention queue
 
@@ -517,6 +567,8 @@ command = ["opencode", "run", "--dir", "{worktree}", "--format", "json", "{promp
 timeout = "90m"           # how long a run may take: a hang is an outcome, not a wait
 stall_after = "10m"       # how long it may be quiet before it is marked as standing (§7a)
 resume_within = "24h"     # how long the checkpoint of a run waiting for your decision is good (§7i)
+provider_retries = 1      # how many times crewflow goes on by itself after a refused provider (F-119, §7a.2)
+resume_stands = true      # whether it goes on once itself after a run stood with a provider up (F-143, §7a)
 ```
 
 ## Whose name the executor works under

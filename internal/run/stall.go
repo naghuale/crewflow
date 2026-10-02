@@ -212,6 +212,15 @@ func stalledOf(silence Stall) string {
 // not only its beginning.
 func resumedOf() string { return "crewflow: the run of the task is working again" }
 
+// haltedOf is the line the way out of an attempt holds when crewflow stopped the run
+// itself because it stood with nothing to wait for: the attempt is over and the run goes
+// on in the same session, and a person who opens the journal afterwards sees that nobody
+// stopped it by hand (F-143, docs/DESIGN.md §7a).
+func haltedOf(silence Stall) string {
+	return fmt.Sprintf("crewflow: stopped the run here — no activity for %s, the last step: %s; "+
+		"the run goes on in this worktree and this session, once", Idle(silence.For), silence.LastStep)
+}
+
 // Idle is how long a silence is in the words a person reads a time in: "35s", "11m",
 // "2h20m". A journal, a record under a task and a report of a command are read by a
 // person, and "11m0s" is what a program prints.
@@ -274,6 +283,75 @@ func (a *alive) sign() (time.Time, string, string) {
 	return a.at, a.step, a.reason
 }
 
+// hang is what crewflow does with a run that stands with nothing to wait for: the handle
+// that ends it, the silence it hung in, and whether the run was stopped for that already.
+// It is of the run of a task and not of an attempt: the attempt crewflow goes on with is
+// not stopped a second time, and a run that hangs twice hangs for a person to look at
+// rather than for crewflow to keep cutting (F-143, docs/DESIGN.md §7a).
+//
+// It is behind a lock because the watch of the run is a goroutine of its own and the run
+// reads this while it ends: one thing of one run and two goroutines of it, as the sign of
+// life above is.
+type hang struct {
+	mu     sync.Mutex
+	cancel context.CancelFunc
+	// stopped is whether the attempt going now is one crewflow stopped for a hang, and
+	// stood is whether the run was stopped for one at all, whatever attempt of it is on.
+	stopped bool
+	stood   bool
+	silence Stall
+}
+
+// running is what ends the run of the executor, given to the watch of its own silence: it
+// is put in place when the executor of an attempt is started and taken away when that
+// attempt is over, so that the only thing a watch can end is a run that is going
+// (docs.DESIGN.md §7a).
+func (h *hang) running(cancel context.CancelFunc) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cancel, h.stopped = cancel, false
+}
+
+// over is the run when the executor of its attempt is over: there is nothing left to end,
+// and a watch that comes late must not end the attempt after it.
+func (h *hang) over() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cancel = nil
+}
+
+// stand ends the run once because it has shown nothing for longer than the silence the
+// project agreed to, and answers whether it did: a run crewflow already went on with by
+// itself for a hang is not stopped a second time, and a run whose executor has not started
+// is not stopped at all (F-143, docs.DESIGN.md §7a).
+func (h *hang) stand(silence Stall) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.stood || h.cancel == nil {
+		return false
+	}
+	h.stood, h.stopped, h.silence = true, true, silence
+	h.cancel()
+	return true
+}
+
+// stoodHere is whether the attempt that is going now is one crewflow stopped for a hang:
+// that attempt ends as `stalled`, because there is nothing else it failed at (F-143, §7a).
+func (h *hang) stoodHere() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.stopped
+}
+
+// stoodOnce is the silence the run hung in and that crewflow stopped it for, and whether
+// it stopped the run at all: the attempt that is over names in the continuation what it
+// was doing when it last showed a sign of life (F-143, docs.DESIGN.md §7a).
+func (h *hang) stoodOnce() (Stall, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.silence, h.stood
+}
+
 // watcher looks at the silence of a run while its executor works, and says it in the
 // way out of the attempt once for every episode of it.
 //
@@ -288,6 +366,10 @@ type watcher struct {
 	attempt Attempt
 	files   *AttemptFiles
 	after   time.Duration
+	// mayResume is whether crewflow may stop this run and go on with it because it hung,
+	// and it is worked out before the executor is started: the project may say no, and the
+	// attempt before this one may have stopped for reaching a secret (§7a, §7a.1, §8).
+	mayResume bool
 	// standing is whether the run is standing right now, and is what keeps an episode
 	// of silence to one line. Only the goroutine of the watch touches it.
 	standing bool
@@ -297,23 +379,52 @@ type watcher struct {
 // for it: a run has to know that nobody is writing to the files of its attempt before
 // it closes them. The function is safe to call twice, because every return of a run that
 // watches stops the watch and not one of them is the one that got there first.
-func (r *runner) watch(ctx context.Context, attempt Attempt, files *AttemptFiles, after time.Duration) func() {
+func (r *runner) watch(ctx context.Context, attempt Attempt, files *AttemptFiles, after time.Duration, mayResume bool) func() {
 	if r.env.Tick == nil || after <= 0 {
 		return func() {}
 	}
-	w := &watcher{runner: r, attempt: attempt, files: files, after: after}
+	w := &watcher{runner: r, attempt: attempt, files: files, after: after, mayResume: mayResume}
 	return r.env.Tick(ctx, stallTick(after), w.look)
+}
+
+// mayGoOnAfterStanding is whether crewflow may stop this run and go on with it because it
+// hung. Two things keep it from doing so and both of them are known before the executor of
+// the run is started, so that the watch of the silence may ask the question and answer it
+// without stopping a run nothing would go on with:
+//
+//   - the project says no: `[executor] resume_stands = false`, and then the mark of a run
+//     that stands is a mark and nothing else (§7a);
+//   - the attempt before this one stopped for reaching a secret: nothing crewflow does on
+//     its own follows a run that read a key, and what a person has to say about that comes
+//     before anything crewflow would do (§7a.1, §8).
+func (r *runner) mayGoOnAfterStanding(attempts []Attempt) bool {
+	if !r.cfg.Executor.ResumeStands {
+		return false
+	}
+	if len(attempts) < 2 {
+		return true
+	}
+	return attempts[len(attempts)-2].Outcome != BlockedSecret
 }
 
 // look is one turn of the watch: the silence of the run as the run itself knows it, and
 // a line for every change of what it is — into a silence and out of it. Nothing else is
 // said, and nothing is said twice.
+//
+// A run that stands with nothing to wait for is stopped here, once, and goes on in the same
+// session: the agent of it has hung, and the three hangs of a day that cost a person a
+// night each were ended by hand (F-143, docs/DESIGN.md §7a). A run that stands in front of
+// something crewflow knows the name of — the window of the keychain — is a run that is
+// waited for, and nothing of this touches it (§6a, §7i).
 func (w *watcher) look() {
 	silence := silenceOf(w.runner.attemptNow(w.attempt), w.runner.profile.Name(), w.runner.env.Now())
 	switch {
 	case silence.standing(w.after) && !w.standing:
 		w.standing = true
 		w.note(stalledOf(silence))
+		if silence.Reason == "" && w.mayResume && w.runner.hang.stand(silence) {
+			w.note(haltedOf(silence))
+		}
 	case !silence.standing(w.after) && w.standing:
 		w.standing = false
 		w.note(resumedOf())

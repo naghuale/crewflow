@@ -142,8 +142,23 @@ type Executor struct {
 	// resume`, as a duration such as "24h". It is here and not in the spec of the
 	// agent because it is not a property of the agent: it is the term of the
 	// checkpoint of a run, whatever agent runs the next attempt, and a point older
-	// than this is refused rather than guessed at (docs/DESIGN.md §7i).
+	// than this is refused rather than guessed at (docs.DESIGN.md §7i).
 	ResumeWithin string `toml:"resume_within"`
+	// ProviderRetries is how many times crewflow goes on by itself after the model
+	// provider refused the run and said the refusal may be repeated: the work of the
+	// task is where the run left it, and one try again in the same session is worth
+	// more than a night of a person waking up to a task that waits. One is the default
+	// and more than a few is a project repeating a task for itself — a repeated
+	// refusal is a decision of a person, and crewflow stops before the third guess
+	// (AR-013, F-119, docs.DESIGN.md §6a, §7a).
+	ProviderRetries int `toml:"provider_retries"`
+	// ResumeStands says whether crewflow stops a run that has shown nothing for longer
+	// than `stall_after` and goes on in the same session, once. A run that stands with
+	// a provider that has answered is a run whose agent has hung, and continuing it is
+	// what an orchestrator used to do by hand every night (F-143); a project whose
+	// executor is quiet on purpose says false here and keeps the mark for what it is —
+	// a mark, with the run going on (docs/DESIGN.md §7a).
+	ResumeStands bool `toml:"resume_stands"`
 	// Fallback lists the executors to try, in order, after the primary one.
 	Fallback []ExecutorSpec `toml:"fallback"`
 }
