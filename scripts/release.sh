@@ -49,9 +49,10 @@ if git rev-parse -q --verify "refs/tags/$version" >/dev/null 2>&1; then
 fi
 
 # There is something to release: a version whose section would hold no line is a
-# version a reader has nothing to read, and it is not worth a tag. The folder of the
-# fragments is not a part of the root: a project that has released everything has
-# none of it, and that is the refusal below rather than a wrong folder.
+# version a reader has nothing to read, and it is not worth a tag. The folder of
+# the fragments need not be there: a project that has released everything has
+# none of it, and that is the refusal below and not a wrong folder.
+
 fragments=0
 if [ -d changelog.d ]; then
 	fragments=$(find changelog.d -maxdepth 1 -name '*.md' -type f | wc -l)
