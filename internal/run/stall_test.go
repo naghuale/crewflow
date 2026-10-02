@@ -406,6 +406,118 @@ func TestTheRunThatIsGoingSaysWhenItStands(t *testing.T) {
 	}
 }
 
+// TestF144AJournalThatWasWrittenHalfAMinuteAgoIsNotAStand is the proof the decision to go
+// on rests on the *last activity of the run*, not on the sign of life the state of the task
+// happens to hold.
+//
+// F-144 (03.10, журнал #37): три раза за час `task attention` показал
+// `stands · no-progress` о прогонах, которые в ту же минуту писали в свой журнал (#164 00:06,
+// #179 04:40, 04:45, 05:07). Признак жизни прогона — более позднее из двух: последний шаг,
+// который crewflow написал в состояние задачи, и последняя строка, которую исполнитель
+// написал в журнал попытки (`run.silenceOf`, §6, §7a). У работающего прогона журнал свежий, а
+// состояние отстаёт — и выигрывает журнал. Иначе решение остановить прогон и пойти дальше,
+// принятое по устаревшему шагу, убивало бы работу, которая идёт.
+//
+// Фикстура буквальная: в момент, когда исполнитель пишет в журнал, признак жизни в состоянии
+// — четверть часа назад; к моменту, когда смотрит watch, прошло полминуты.
+func TestF144AJournalThatWasWrittenHalfAMinuteAgoIsNotAStand(t *testing.T) {
+	m := newMachine(t)
+	more, wrote := make(chan string), make(chan struct{})
+	m.answers["opencode"] = answer{stdout: theRun, wrote: wrote, more: more}
+	host := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+	// The threshold is two minutes, so that the silence measured from the journal of the run
+	// (half a minute and the minute the clock of the machine adds to every question) is under
+	// it and the silence measured from the state of the task (a quarter of an hour) is over.
+	cfg.Executor.StallAfter = "2m"
+
+	over := make(chan outcome, 1)
+	go func() {
+		result, err := Run(t.Context(), m.env(), cfg, host.set(), Request{Number: 43, RepoDir: m.repo})
+		over <- outcome{result: result, err: err}
+	}()
+	<-wrote
+	journals := newJournals(m.home, "naghuale-crewflow")
+	// The run has said nothing as far as the state of the task knows: the last step crewflow
+	// wrote into it is a quarter of an hour old. The executor is writing all the same.
+	m.quiet(15 * time.Minute)
+	more <- `{"type":"text","sessionID":"ses_fake","part":{"type":"text","text":"I went on."}}` + "\n"
+	m.begins(writtenAt(t, journals.JournalPath(43, 1)))
+	m.quiet(30 * time.Second)
+
+	m.look()
+
+	// Half a minute of silence is not a stand: nothing is said, nothing is stopped, and the
+	// run is the one attempt that was going.
+	if said := read(t, journals.errorJournalPath(43, 1)); strings.Contains(said, "crewflow: stalled") ||
+		strings.Contains(said, "stopped the run here") {
+		t.Errorf("the way out of the run holds %q, want nothing: the journal of the run was written "+
+			"half a minute ago", said)
+	}
+	state := stateOf(t, m, 43)
+	if len(state.Attempts) != 1 {
+		t.Fatalf("the state holds %d attempts, want the one that is going: a working run is not "+
+			"stopped and not continued", len(state.Attempts))
+	}
+	if state.Attempts[0].Outcome != Running {
+		t.Errorf("the attempt came out as %q, want %q", state.Attempts[0].Outcome, Running)
+	}
+	// And the run goes on to its work, because nothing cut it short.
+	close(more)
+	finished := <-over
+	if finished.err != nil {
+		t.Fatalf("Run returned an error: %v", finished.err)
+	}
+	if finished.result.Outcome != ChangeRequestOpened {
+		t.Errorf("the run came out as %q, want %q", finished.result.Outcome, ChangeRequestOpened)
+	}
+}
+
+// TestF144TheQueueDoesNotSayStandsWhileTheJournalIsBeingWritten is the same fact read by
+// the queue of attention, and it is read by the same function: `run.silenceOf` is what a list
+// of runs, `task attention` and `check-stalled` work the silence of a run out of, so they
+// cannot tell a working run from a standing one differently (D-044, §6, §6a, §7a).
+//
+// The контроль рядом: тот же самый state без свежего журнала — «стоит».
+func TestF144TheQueueDoesNotSayStandsWhileTheJournalIsBeingWritten(t *testing.T) {
+	home := t.TempDir()
+	repo := "naghuale-crewflow"
+	started := monday.Add(8 * time.Hour)
+	last := started.Add(15 * time.Minute)
+	writeState(t, home, repo, 43, "прогон пишет", nil,
+		try{startedAt: started, outcome: Running, pid: 100, lastAt: last, lastStep: "go test ./..."})
+	journal := newJournals(home, repo).JournalPath(43, 1)
+	said := `{"type":"text","sessionID":"ses_fake","part":{"type":"text","text":"Я пишу."}}` + "\n"
+	// The run reads at this moment, and its executor wrote in the journal half a minute ago.
+	now := last.Add(15*time.Minute + 30*time.Second)
+	putJournal(t, journal, said, now.Add(-30*time.Second))
+	env := attentionEnvOf(now, 100)
+
+	queue := queueOf(t, home, repo, env, nil)
+
+	for _, one := range queue.Entries {
+		if one.State == AttentionStands {
+			t.Errorf("the queue says %q with the reason %q, want no such row: the journal of the run "+
+				"was written half a minute ago (F-144)", one.State, one.Reason)
+		}
+	}
+	if len(queue.Entries) != 0 {
+		t.Errorf("the queue holds %v, want nothing: a run that is working asks for nobody", queue.Entries)
+	}
+
+	// The control: the same state of the same run, and a journal that has not been written for a
+	// quarter of an hour — that run stands, and the queue says so.
+	putJournal(t, journal, said, now.Add(-15*time.Minute))
+	standing := queueOf(t, home, repo, attentionEnvOf(now.Add(15*time.Minute), 100), nil)
+	if len(standing.Entries) != 1 || standing.Entries[0].State != AttentionStands {
+		t.Fatalf("the queue holds %v, want one run standing: without a fresh journal the silence of "+
+			"the run is a quarter of an hour", standing.Entries)
+	}
+	if standing.Entries[0].LastStep != "Я пишу." {
+		t.Errorf("the last step of the run = %q, want the last line of its journal", standing.Entries[0].LastStep)
+	}
+}
+
 // TestF143ARunThatHungIsContinuedOnceInTheSameSession is F-143 and what it cost: three runs
 // hung for more than ten minutes in a day, the provider was answering all the time, and each
 // time a person interrupted the run and went on with it by hand (journal #37). Now crewflow

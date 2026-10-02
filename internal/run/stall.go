@@ -324,6 +324,10 @@ func (h *hang) over() {
 // project agreed to, and answers whether it did: a run crewflow already went on with by
 // itself for a hang is not stopped a second time, and a run whose executor has not started
 // is not stopped at all (F-143, docs.DESIGN.md §7a).
+//
+// The silence it is given is the one [silenceOf] worked out — the later of the last line of
+// the journal and the last step of the state — so a run that is writing is never stopped for
+// not writing (F-144).
 func (h *hang) stand(silence Stall) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
