@@ -1,0 +1,17 @@
+# Zero is not a port a proxy listens on.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[network]
+mode = "proxy"
+active_proxy = "home"
+
+[network.proxies.home]
+type = "http"
+host = "192.168.0.4"
+port = 0
+credentials = "none"

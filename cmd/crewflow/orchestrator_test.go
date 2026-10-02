@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -475,17 +476,50 @@ func TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothin
 // who runs crewflow, which is what a project in the shared mode is (§7a, §7i).
 func TestTheGitOfACommandCarriesTheSettingsOfTheAccount(t *testing.T) {
 	apart := &reviewHost{orchestrator: "crewflow-orchestrator[bot]", signedIn: "crewflow-orchestrator[bot]"}
-	environment := gitEnvironment(t.Context(), forge.Set{Forge: apart})
+	cfg := config.Config{Network: config.Network{Mode: "direct"}}
+	environment, err := gitEnvironment(t.Context(), cfg, forge.Set{Forge: apart}, io.Discard)
+	if err != nil {
+		t.Fatalf("the environment of the commands of git: %v", err)
+	}
 
 	if !strings.Contains(strings.Join(environment, " "), "crewflow auth git-credential -as orchestrator") {
 		t.Errorf("the environment of the commands of git is %v, want the helper of the orchestrator in it", environment)
 	}
 	shared := &reviewHost{signedIn: "naghuale"}
-	if got := gitEnvironment(t.Context(), forge.Set{Forge: shared}); got != nil {
-		t.Errorf("the environment of the commands of git is %v, want nothing for the shared mode", got)
+	got, err := gitEnvironment(t.Context(), cfg, forge.Set{Forge: shared}, io.Discard)
+	if err != nil || got != nil {
+		t.Errorf("the environment of the commands of git is %v (%v), want nothing for the shared mode", got, err)
 	}
-	if got := gitEnvironment(t.Context(), forge.Set{}); got != nil {
-		t.Errorf("the environment of the commands of git is %v, want nothing for a project without a host", got)
+	got, err = gitEnvironment(t.Context(), cfg, forge.Set{}, io.Discard)
+	if err != nil || got != nil {
+		t.Errorf("the environment of the commands of git is %v (%v), want nothing for a project without a host", got, err)
+	}
+}
+
+// TestCFNET002TheGitOfAReviewAndAMergeGoesThroughTheRoute: a fetch of the objects of the
+// head of a change and a push of a merge are network like any other, and a project whose
+// owner named a proxy expects both to go through it — in the environment of that one
+// command, and in no setting of the machine or of git (docs/DESIGN.md §7d, §7h).
+func TestCFNET002TheGitOfAReviewAndAMergeGoesThroughTheRoute(t *testing.T) {
+	apart := &reviewHost{orchestrator: "crewflow-orchestrator[bot]", signedIn: "crewflow-orchestrator[bot]"}
+	cfg := config.Config{Network: config.Network{
+		Mode:        "proxy",
+		ActiveProxy: "home",
+		Proxies: map[string]config.Proxy{
+			"home": {Type: "http", Host: "192.168.0.4", Port: 1082, Credentials: "none"},
+		},
+	}}
+
+	environment, err := gitEnvironment(t.Context(), cfg, forge.Set{Forge: apart}, io.Discard)
+
+	if err != nil {
+		t.Fatalf("the environment of the commands of git: %v", err)
+	}
+	joined := strings.Join(environment, " ")
+	for _, want := range []string{"HTTP_PROXY=http://192.168.0.4:1082", "git-credential -as orchestrator"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("the environment of the commands of git is %v, want %q in it", environment, want)
+		}
 	}
 }
 

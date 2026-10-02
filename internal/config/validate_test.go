@@ -45,6 +45,13 @@ func TestLoadRejects(t *testing.T) {
 		{"ci_kind_unknown.toml", []string{"ci.kind", "teamcity", "forge, jenkins, command, none"}},
 		{"parallel_max_tasks_zero.toml", []string{"parallel.max_tasks", "0"}},
 		{"isolation_mode_unknown.toml", []string{"isolation.mode", "vm", "host"}},
+		{"network_proxy_type_unknown.toml", []string{"network.proxies.home.type", "socks4", "http, https, socks5"}},
+		{"network_proxy_port_zero.toml", []string{"network.proxies.home.port", "must be a port from 1 to 65535"}},
+		{
+			"network_proxy_host_with_credentials.toml",
+			[]string{"network.proxies.home.host", "scheme", "store of secrets"},
+		},
+		{"network_active_proxy_unknown.toml", []string{"network.active_proxy", "office"}},
 		{"requirements_tool_duplicate.toml", []string{"requirements.tools[1].name", "go"}},
 		{"capabilities_duplicate.toml", []string{"capabilities[1].name", "github-keys"}},
 		{"fallback_command_no_prompt.toml", []string{"executor.fallback[0].command", "{prompt}"}},
@@ -89,7 +96,7 @@ func TestLoadRejects(t *testing.T) {
 func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
 		"example.toml", "minimal.toml", "identity_bot.toml", "orchestrator_separate.toml",
-		"attention_thresholds.toml", "resume_within_custom.toml",
+		"attention_thresholds.toml", "resume_within_custom.toml", "network_proxy.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

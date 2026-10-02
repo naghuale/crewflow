@@ -653,6 +653,11 @@ type Env struct {
 	// Now is the clock of the machine. A token of a run is signed with it and lives
 	// an hour, so a role that mints tokens needs to know what time it is.
 	Now func() time.Time
+	// RouteError is the route of the project that could not be worked out, left by the
+	// roles that could not hand it to the programs they start (docs/DESIGN.md §7d). A
+	// command that has roles to read refuses with it before it asks the host anything:
+	// a host that answered through somebody else's proxy is a host that answered.
+	RouteError error
 }
 
 // Set is what a project has for the three roles: the implementations its

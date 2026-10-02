@@ -71,6 +71,22 @@ mode = "host"              # host | sandbox | container (§7d)
 [worktrees]
 root = "~/.crewflow/worktrees/{repo}"   # вне рабочей папки человека
 
+[network]
+# Как программы crewflow выходят в сеть (§7d). Прямой маршрут или один из
+# именованных профилей; адрес прокси на машинах разный, поэтому в файле имя
+# профиля, а не адрес.
+mode = "direct"             # direct | proxy | fallback (fallback — #145)
+active_proxy = ""           # имя профиля из [network.proxies]; пусто — маршрут прямой
+no_proxy = []               # цели, которые всегда идут напрямую: правила стандартного NO_PROXY
+connect_timeout = "10s"     # сколько проверка маршрута ждёт ответа
+test_valid_for = "1h"       # сколько проверка capabilities остаётся фактом о машине
+
+# [network.proxies.home]
+# type = "http"             # http | https | socks5 — только реально поддержанные
+# host = "192.168.0.4"      # без схемы и без учётных данных: они в связке ключей
+# port = 1082
+# credentials = "none"      # none | secret-store — где логин и пароль профиля
+
 [[gates]]
 name = "format"
 run = ["sh", "-c", "test -z \"$(gofmt -l .)\""]

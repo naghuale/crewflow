@@ -30,6 +30,13 @@ const (
 	defaultAttentionEscalate = "24h"
 	defaultAttentionRemind   = "24h"
 	defaultAttentionWeekly   = "168h"
+	// The route of a project that says nothing is a straight route, and the two
+	// terms of it are the ones a person would name anyway (§7d).
+	defaultNetworkMode    = "direct"
+	defaultConnectTimeout = "10s"
+	defaultTestValidFor   = "1h"
+	defaultProxyType      = "http"
+	defaultCredentials    = "none"
 )
 
 // DefaultWorktreesRoot is where the worktree of a task is made when the file of
@@ -159,5 +166,30 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Attention.WeeklyAfter == "" {
 		c.Attention.WeeklyAfter = defaultAttentionWeekly
+	}
+	// A project that says nothing about the network goes straight out to it, and the
+	// two terms of its route are the ones a person would name anyway: how long a check
+	// of a route waits for an answer, and how long that answer is a fact about the
+	// machine (docs/DESIGN.md §7d).
+	if c.Network.Mode == "" {
+		c.Network.Mode = defaultNetworkMode
+	}
+	if c.Network.ConnectTimeout == "" {
+		c.Network.ConnectTimeout = defaultConnectTimeout
+	}
+	if c.Network.TestValidFor == "" {
+		c.Network.TestValidFor = defaultTestValidFor
+	}
+	// A profile is written by a person and it always says all of itself: a profile
+	// without a protocol cannot be talked to and one without a decision about
+	// credentials leaves a question crewflow would have to guess at.
+	for name, proxy := range c.Network.Proxies {
+		if proxy.Type == "" {
+			proxy.Type = defaultProxyType
+		}
+		if proxy.Credentials == "" {
+			proxy.Credentials = defaultCredentials
+		}
+		c.Network.Proxies[name] = proxy
 	}
 }

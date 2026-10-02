@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/network"
 	"github.com/naghuale/crewflow/internal/proc"
 	"github.com/naghuale/crewflow/internal/run/profile"
 	"github.com/naghuale/crewflow/internal/secret"
@@ -44,10 +46,10 @@ type Env struct {
 	// person may have put settings of their own for the agent. A run writes the rights
 	// of the policy of the project over them and hands both on (§7d).
 	Environ []string
-	// Command starts a program in dir and returns what it wrote and the code it
-	// exited with. Git and the tools of a project go through it, the way they do in
-	// doctor (§7d).
-	Command func(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error)
+	// Command starts a program in dir with the extra environment added to the one of
+	// the process, and returns what it wrote and the code it exited with. Git and the
+	// tools of a project go through it, the way they do in doctor (§7d).
+	Command func(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error)
 	// Stream starts a program in dir and writes what it writes to stdout and stderr
 	// as it comes, with the given environment added to the one of the process. The
 	// executor goes through it and nothing else does: the journal of a run is written
@@ -140,12 +142,13 @@ func Tick(ctx context.Context, every time.Duration, onTick func()) func() {
 	}
 }
 
-// Start starts a program in dir and returns what it wrote and the code it exited
-// with. It is the runner of doctor, and the reason it is that one is written down
-// there: the stdin of a program is the empty device, because an agent that waits
-// for an answer waits for it until the timeout of the run is out (docs/DESIGN.md §7a).
-func Start(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error) {
-	return doctor.Command(ctx, name, args, dir, nil)
+// Start starts a program in dir, with the extra environment added to the one of the
+// process, and returns what it wrote and the code it exited with. It is the runner of
+// doctor, and the reason it is that one is written down there: the stdin of a program is
+// the empty device, because an agent that waits for an answer waits for it until the
+// timeout of the run is out (docs/DESIGN.md §7a).
+func Start(ctx context.Context, name string, args []string, dir string, extraEnv []string) (stdout, stderr []byte, exitCode int, err error) {
+	return doctor.Command(ctx, name, args, dir, extraEnv)
 }
 
 // Request is one run of one task.
@@ -354,6 +357,11 @@ type runner struct {
 	// crewflow, and the watch of the run reads it while the executor works
 	// (docs/DESIGN.md §6, §7a).
 	alive *alive
+	// route is what the programs of this run are told about the network: the four names
+	// of the profile the owner chose, and nothing else. It is empty in the mode
+	// `direct`, because a run that hands its executor a proxy nobody chose is a run that
+	// sends a task of a person to a machine of somebody else (docs/DESIGN.md §7d).
+	route []string
 }
 
 // readTask takes the task from the tracker and checks that it may be run at all.
@@ -379,11 +387,40 @@ func (r *runner) readTask(ctx context.Context) error {
 	}
 	r.profile = profile.For(r.cfg.Executor.ExecutorSpec.Command)
 	r.journals = newJournals(r.env.Home, r.cfg.RepoName())
+	// The route of the run is worked out here, before anything of the run is started:
+	// a profile whose credentials are missing stops the run here rather than in the
+	// middle of a task, and a route nobody can work out is not a route to start a task
+	// on (docs/DESIGN.md §7d).
+	if err := r.throughRoute(); err != nil {
+		return err
+	}
 	// The access of the run is worked out here, before the worktree of the task is
 	// made: a run that may not be given what the task asks for must leave nothing
 	// behind, and neither must a run whose agent takes rights of its own somewhere
 	// crewflow does not write (docs/DESIGN.md §7d, §7f).
 	return r.readings(ctx)
+}
+
+// throughRoute is what the programs of this run are told about the network. It is the
+// route of the mode of the project — straight out, or through the active profile — and
+// the exceptions of the file beside it. The credentials of the profile are read here and
+// nowhere else: they go into the environment of the child processes and into nothing that
+// a journal or a state of a task holds (docs/DESIGN.md §7d, §7e).
+func (r *runner) throughRoute() error {
+	route, err := network.Choose(r.cfg, "")
+	if err != nil {
+		return err
+	}
+	credentials, err := network.Credentials(r.env.Secrets, route)
+	if err != nil {
+		return err
+	}
+	environment, err := route.Environment(r.cfg.Network.NoProxy, credentials)
+	if err != nil {
+		return err
+	}
+	r.route = environment
+	return nil
 }
 
 // readings is the policy of the run: the folders the file of the project named, the
@@ -516,8 +553,13 @@ func (r *runner) repoDir() string {
 // git runs one command of git in dir and returns what it wrote. Every way git can
 // say no is an error with the command in it, because a person who is told what to
 // run by hand sees what crewflow saw.
+//
+// The git of a run goes out through the route of the project the way the executor does:
+// the environment of the route is added to the environment of the process and to nothing
+// else, so a git that fetches goes through the profile the owner named, and a run in the
+// mode `direct` leaves git as it was (docs/DESIGN.md §7d).
 func (r *runner) git(ctx context.Context, dir string, args ...string) error {
-	_, stderr, code, err := r.env.Command(ctx, "git", args, dir)
+	_, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
 		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
@@ -530,7 +572,7 @@ func (r *runner) git(ctx context.Context, dir string, args ...string) error {
 // output runs one command of git in dir and returns what it wrote, for the one
 // command whose answer crewflow reads: the files the run changed.
 func (r *runner) output(ctx context.Context, dir string, args ...string) (string, error) {
-	stdout, stderr, code, err := r.env.Command(ctx, "git", args, dir)
+	stdout, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
@@ -538,6 +580,13 @@ func (r *runner) output(ctx context.Context, dir string, args ...string) (string
 		return "", fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, firstLine(stderr))
 	}
 	return string(stdout), nil
+}
+
+// started is the program of the machine of this run with the route of the project added
+// to the environment of it, and nothing else: no setting of the person, no setting of
+// git, and no file of the machine anywhere (docs/DESIGN.md §7d).
+func (r *runner) started(ctx context.Context, name string, args []string, dir string) (stdout, stderr []byte, exitCode int, err error) {
+	return r.env.Command(ctx, name, args, dir, r.route)
 }
 
 // stateOf is what crewflow keeps of the task with one attempt more in it, out of the
@@ -804,7 +853,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// into a file kept for ever and pasted into an issue (§7e, §7i).
 	var out, errOut bytes.Buffer
 	journal, wayOut := secret.NewRedactor(files.Out, r.identity.Secrets...), secret.NewRedactor(files.ErrOut, r.identity.Secrets...)
-	environment := append(append(rights, r.identity.Env...), tempEnv(r.worktree)...)
+	environment := slices.Concat(rights, r.identity.Env, tempEnv(r.worktree), r.route)
 	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, environment,
 		io.MultiWriter(&out, journal), io.MultiWriter(&errOut, wayOut))
 	// What is held back is a beginning of a line and may be the beginning of a
@@ -900,7 +949,7 @@ func (r *runner) access() access.Env {
 	return access.Env{
 		Home: r.env.UserHome,
 		Run: func(ctx context.Context, name string, args []string) ([]byte, []byte, int, error) {
-			return r.env.Command(ctx, name, args, "")
+			return r.started(ctx, name, args, "")
 		},
 	}
 }

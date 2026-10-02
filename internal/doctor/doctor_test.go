@@ -62,7 +62,7 @@ run = ["golangci-lint", "run", "./..."]
 
 	want := []string{
 		"config", "git", "gh", "gh login", "executor identity", "orchestrator identity", "authority separation", "executor",
-		"access read", "executor rights", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
+		"access read", "executor rights", "network route", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {
 		t.Errorf("checks = %v, want %v", got, want)

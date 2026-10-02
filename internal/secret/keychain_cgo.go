@@ -329,11 +329,12 @@ func (keychain) Allowed(service string) (bool, error) {
 	}
 }
 
-// delete takes an item of the keychain away. It is not a part of [Store] and crewflow
-// has no reason to take a secret away: what it does with a key of an App is to keep it.
-// It is here for the one test of this package that writes into the keychain of the
-// person who runs it, because an item of a test has to be gone when the test is over.
-func (keychain) delete(service, account string) error {
+// Delete takes an item of the keychain away. It is not a part of [Store] and crewflow has
+// no reason to take a secret away from what it keeps — a key of an App is kept and not
+// thrown out; it is what a person asks for by name, as with the credentials of a proxy
+// profile that is gone: one item under one name, and nothing else
+// (docs/DESIGN.md §7e).
+func (keychain) Delete(service, account string) error {
 	name, who := C.CString(service), C.CString(account)
 	defer C.free(unsafe.Pointer(name))
 	defer C.free(unsafe.Pointer(who))
@@ -351,6 +352,7 @@ var (
 	_ Store    = keychain{}
 	_ Presence = keychain{}
 	_ Trust    = keychain{}
+	_ Remover  = keychain{}
 )
 
 // keychainRefused is what macOS said, in the words of macOS: a code and a sentence are

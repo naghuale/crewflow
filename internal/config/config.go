@@ -21,6 +21,7 @@ type Config struct {
 	Executor     Executor     `toml:"executor"`
 	Access       Access       `toml:"access"`
 	Worktrees    Worktrees    `toml:"worktrees"`
+	Network      Network      `toml:"network"`
 	Gates        []Gate       `toml:"gates"`
 	CI           CI           `toml:"ci"`
 	Merge        Merge        `toml:"merge"`
@@ -187,6 +188,63 @@ type Worktrees struct {
 	// Root is the directory that holds one worktree per task. It may start with
 	// "~/" and contain "{repo}".
 	Root string `toml:"root"`
+}
+
+// Network is how the programs of crewflow reach the network: whether directly or
+// through one of the named proxy profiles, and what goes to the network without a
+// proxy even when the mode says otherwise (docs/DESIGN.md §7d).
+//
+// Only the declared configuration is in the file of a project. Whether a profile
+// answers today is not: it is asked of the machine, one capability at a time, and
+// what came of it lives in that answer (`crewflow doctor network`, `crewflow
+// network proxy test`) — a file that stored the answer would be a file that says
+// the route works on a machine where nobody asked.
+type Network struct {
+	// Mode is how a request of a program of crewflow goes out: "direct" for a
+	// straight route, "proxy" for the active profile, "fallback" for a straight
+	// route and one attempt through the profile. The last is described and not
+	// written yet (#145).
+	Mode string `toml:"mode"`
+	// ActiveProxy is the name of the profile requests go through in the mode
+	// "proxy". It names a profile of the table below and never a host: the address
+	// of a proxy is different on every machine, and a file with an address in it
+	// is a file of one machine.
+	ActiveProxy string `toml:"active_proxy"`
+	// NoProxy are the targets that go out directly whatever the mode says, with
+	// the rules of the standard NO_PROXY: an exact name, a domain suffix, an
+	// address and a network in CIDR. A rule crewflow cannot read one way is
+	// refused rather than guessed at.
+	NoProxy []string `toml:"no_proxy"`
+	// ConnectTimeout is how long a check of a route waits for an answer, as a
+	// duration such as "10s". It bounds a probe of a capability and nothing else.
+	ConnectTimeout string `toml:"connect_timeout"`
+	// TestValidFor is how long a check of a capability stays a fact about the
+	// machine, as a duration such as "1h". A check older than it is stale, and a
+	// stale check is not a fact about now (docs/DESIGN.md §7d).
+	TestValidFor string `toml:"test_valid_for"`
+	// Proxies are the named profiles of the project, by the name a person gives
+	// them: "home", "work", "office".
+	Proxies map[string]Proxy `toml:"proxies"`
+}
+
+// Proxy is one named way out to the network: what speaks to it, where it listens
+// and whether it takes credentials (docs/DESIGN.md §7d).
+type Proxy struct {
+	// Type is the protocol crewflow speaks to the proxy over: "http", "https" or
+	// "socks5". Only the protocols that are really supported are named here, and
+	// anything else is refused while it is added or checked — a profile of a type
+	// crewflow cannot talk to is a profile that does not work.
+	Type string `toml:"type"`
+	// Host is the host or the address of the proxy, without a scheme and without
+	// credentials: a login and a password in an address of a proxy are a secret in
+	// the file of a project, and they are in the store of secrets instead.
+	Host string `toml:"host"`
+	// Port is the port the proxy listens on, from 1 to 65535.
+	Port int `toml:"port"`
+	// Credentials says where the login and the password of the profile are:
+	// "none" when it takes none, "secret-store" when they are kept in the store of
+	// secrets of the machine under the name of the profile.
+	Credentials string `toml:"credentials"`
 }
 
 // Gate is a command of the project that has to pass on the commit.

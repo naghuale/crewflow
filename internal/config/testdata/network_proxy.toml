@@ -1,0 +1,21 @@
+# A route of a project that has named its profiles: direct by default, with the
+# exceptions, the terms of a check, and a proxy that takes no credentials.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[network]
+mode = "proxy"
+active_proxy = "home"
+no_proxy = [".internal.example", "192.168.0.0/16"]
+connect_timeout = "5s"
+test_valid_for = "30m"
+
+[network.proxies.home]
+type = "http"
+host = "192.168.0.4"
+port = 1082
+credentials = "none"

@@ -152,6 +152,13 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 	}
 	number := taskOfChange(home, cfg, change)
 	state := stateOfTaskAt(home, cfg, number)
+	// The route of the project is worked out before anything is asked of the host: a
+	// proxy that cannot be read is a refusal here and not an answer of somebody else's
+	// machine dressed as the answer of this one (docs/DESIGN.md §7d).
+	checkoutEnvironment, err := gitEnvironment(ctx, cfg, set, stderr)
+	if err != nil {
+		return merge.Deps{}, config.Config{}, err
+	}
 	return merge.Deps{
 		Gate: gate.Deps{
 			Forge:           set.Forge,
@@ -170,7 +177,7 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 			Dir:     checkoutOf(repoDir),
 			Branch:  cfg.Project.DefaultBranch,
 			HeadRef: headRefOf(set.Forge, change),
-			Run:     gitOf(gitEnvironment(ctx, set)),
+			Run:     gitOf(checkoutEnvironment),
 		},
 		Tracker:      set.Tracker,
 		Task:         number,

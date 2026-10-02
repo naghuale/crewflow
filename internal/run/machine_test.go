@@ -77,6 +77,9 @@ type machine struct {
 	// handed is the answer the executor of the last run was started with, which is
 	// where the environment a run hands its executor is found.
 	handed answer
+	// given is the extra environment the machine handed to the programs it started,
+	// which is where the route of the project is found.
+	given []string
 	// clock is the time of the machine, which moves on with every question asked of
 	// it, so that a report says when a thing happened and a test does not wait for
 	// it to happen.
@@ -214,6 +217,22 @@ func (m *machine) env() Env {
 	}
 }
 
+// wasGiven is the extra environment the machine handed to a program, which is where the
+// route of the project is found in the programs a run starts for itself.
+func (m *machine) wasGiven(environment []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.given = append(m.given, environment...)
+}
+
+// givenToPrograms is everything the machine handed to the programs of the last run,
+// which is how a test sees what a run tells its own git about the network.
+func (m *machine) givenToPrograms() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.given...)
+}
+
 // process is the process a run of a test happens in: a number and the moment it was
 // started, both of the machine of the test, so that no test of a run asks the machine
 // it happens to run on.
@@ -298,9 +317,10 @@ func (m *machine) look() {
 
 // exec runs a command the way the machine answers it, and leaves behind what the
 // command did to the machine.
-func (m *machine) exec(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
+func (m *machine) exec(ctx context.Context, name string, args []string, dir string, extraEnv []string) ([]byte, []byte, int, error) {
 	program := filepath.Base(name)
 	m.started(program, args, dir)
+	m.wasGiven(extraEnv)
 	answer, ok := m.answerOf(program, args)
 	if !ok {
 		return nil, nil, 127, fmt.Errorf("exec: %q: no answer in the machine", program)

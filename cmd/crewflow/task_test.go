@@ -1709,7 +1709,7 @@ func (h *host) otherProject(t *testing.T) (checkout, configPath string) {
 
 // exec is the machine of a test: git says nothing, the executor is the events of a
 // run, and every start of it is written down.
-func (h *host) exec(_ context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
+func (h *host) exec(_ context.Context, name string, args []string, dir string, _ []string) ([]byte, []byte, int, error) {
 	if filepath.Base(name) == "git" {
 		switch {
 		case len(args) > 1 && args[0] == "worktree" && args[1] == "add":
@@ -1741,7 +1741,7 @@ func (h *host) exec(_ context.Context, name string, args []string, dir string) (
 // stream starts the executor of a test: it writes what it says to the journal of the
 // run as it says it, which is how a run of a test leaves a journal a watch can show.
 func (h *host) stream(_ context.Context, name string, args []string, _ string, _ []string, stdout, stderr io.Writer) (int, error) {
-	out, errOut, code, err := h.exec(context.Background(), name, args, "")
+	out, errOut, code, err := h.exec(context.Background(), name, args, "", nil)
 	if err != nil {
 		return code, err
 	}

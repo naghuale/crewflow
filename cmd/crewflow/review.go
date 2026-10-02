@@ -70,7 +70,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	facts, err := gatherReview(ctx, set, cfg, home, *repoDir, change)
+	facts, err := gatherReview(ctx, set, cfg, home, *repoDir, change, stderr)
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}
@@ -102,7 +102,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 // record of a review is an approval, and the owners, whose records are the decision of a
 // person — where the orchestrator works apart from the owner, the first of the two is
 // its account and the second is not it (§5, §7h, §7i).
-func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int) (gate.Facts, error) {
+func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int, stderr io.Writer) (gate.Facts, error) {
 	reviewers, err := reviewersOf(ctx, cfg, set)
 	if err != nil {
 		return gate.Facts{}, err
@@ -112,6 +112,10 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 		return gate.Facts{}, err
 	}
 	number := taskOfChange(home, cfg, change)
+	history, err := historyOf(ctx, cfg, set, repoDir, stderr)
+	if err != nil {
+		return gate.Facts{}, err
+	}
 	return gate.Collect(ctx, gate.Deps{
 		Forge:           set.Forge,
 		CI:              set.CI,
@@ -124,7 +128,7 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 		Task:            number,
 		TaskOf:          taskFactsOf(set, cfg),
 		RequireChecks:   cfg.CI.Required,
-		Git:             historyOf(ctx, cfg, set, repoDir),
+		Git:             history,
 	}, change), nil
 }
 
@@ -132,12 +136,16 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 // was called in, or the one -repo named. A review is asked in a checkout of the
 // project and creates nothing in it: a fetch of the objects of the head is a fetch
 // like any other, and nothing else of the run writes there (§7h).
-func historyOf(ctx context.Context, cfg config.Config, set forge.Set, repoDir string) gate.History {
+func historyOf(ctx context.Context, cfg config.Config, set forge.Set, repoDir string, stderr io.Writer) (gate.History, error) {
+	environment, err := gitEnvironment(ctx, cfg, set, stderr)
+	if err != nil {
+		return gate.History{}, err
+	}
 	dir := repoDir
 	if dir == "" {
 		dir = "."
 	}
-	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: gitOf(gitEnvironment(ctx, set))}
+	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: gitOf(environment)}, nil
 }
 
 // taskFactsOf is what the gate asks the tracker about the task of a change: the paths

@@ -272,6 +272,18 @@ type Env struct {
 	Secrets secret.Store
 	HTTP    *http.Client
 	Now     func() time.Time
+	// Git is the git of the machine, asked with the given environment added to the one of
+	// the process: the check of the capability of a route is the git of this machine and
+	// not a git of a test (docs/DESIGN.md §7d). It is nil for a report that asks no
+	// route of anything, and the check of the capability of git is then `unknown` —
+	// nothing was learned, and nothing failed either.
+	Git func(ctx context.Context, args []string, environment []string) (stderr string, exitCode int, err error)
+	// NetworkAPI is the address the check of the capability of the host asks, when the
+	// machine of the report is not the one of the project: a test hands a report its own
+	// server, so that no check of crewflow reaches the network of the machine the tests
+	// run on (§7d). Empty is the API of the host of the project, which is what a report
+	// of a machine asks.
+	NetworkAPI string
 	// Out is where the report says which step of itself it is making, and where the
 	// store of the secrets says what it is waiting for. The report itself is printed
 	// where the caller wants it — the answer of a command with `-json` is the report
@@ -323,6 +335,8 @@ func Run(ctx context.Context, env Env) Report {
 	c.executors(cfg)
 	c.step("the reading policy")
 	c.reading(ctx, cfg)
+	c.step("the route to the network")
+	c.network(cfg)
 	if env.Probe {
 		c.step("the executor of the project")
 		c.probe(ctx, cfg)

@@ -41,11 +41,11 @@ func TestTheKeychainOfThisMachineWhenTheOwnerAsks(t *testing.T) {
 	}
 	// Whatever is under that name is taken away first and last: an item of a test that
 	// outlived it is rubbish in a store of a person.
-	if err := keys.delete(service, account); err != nil {
+	if err := keys.Delete(service, account); err != nil {
 		t.Fatalf("take the item of the test away before it starts: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := keys.delete(service, account); err != nil {
+		if err := keys.Delete(service, account); err != nil {
 			t.Errorf("take the item %s/%s away: %v", service, account, err)
 		}
 	})

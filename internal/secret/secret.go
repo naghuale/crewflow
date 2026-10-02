@@ -62,6 +62,18 @@ type Trust interface {
 	Allowed(service string) (bool, error)
 }
 
+// Remover is what a store may answer about a secret it keeps: take it away. It is a
+// question of its own and not a part of [Store], because keeping a secret is what crewflow
+// does with the key of an App and with the credentials of a proxy, while taking one away is
+// something a person asks for by name — the item of a profile that is gone, and nothing
+// else (docs/DESIGN.md §7e).
+type Remover interface {
+	// Delete takes the value kept under the service and the account away, and is not an
+	// error where there is none: an item of a test has to be gone when the test is over,
+	// and an item nobody ever imported is already where it should be.
+	Delete(service, account string) error
+}
+
 // ErrNotFound is the answer of a store for a secret that is not in it. It is a
 // sentinel and not a text, because the callers that must tell "the owner never
 // imported the key" from "the keychain could not be read" are reports, and a report
@@ -73,6 +85,15 @@ var ErrNotFound = errors.New("no such secret in the store")
 // looks at the keychain of a machine sees which App a key belongs to.
 func AppKey(appID int64) string {
 	return "github-app-" + strconv.FormatInt(appID, 10)
+}
+
+// ProxyKey is the account the login and the password of the proxy profile with this
+// name are kept under. The name of the profile is in it and not the address of the
+// proxy: the address is different on every machine and changes when the owner moves, and
+// the value in the keychain has to outlive the address in the file of a project
+// (docs/DESIGN.md §7d, §7e).
+func ProxyKey(name string) string {
+	return "network-proxy/" + name
 }
 
 // Redacted is what the value of a secret is replaced with in everything a person

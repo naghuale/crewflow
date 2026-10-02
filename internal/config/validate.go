@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"regexp"
 	"slices"
 	"strings"
@@ -36,6 +37,9 @@ var (
 	mergeVias         = []string{"git-push", "forge"}
 	isolationModes    = []string{"host", "sandbox", "container"}
 	ownerApprovals    = []string{"all", "risky", "none"}
+	networkModes      = []string{"direct", "proxy", "fallback"}
+	proxyTypes        = []string{"http", "https", "socks5"}
+	credentialPlaces  = []string{"none", "secret-store"}
 )
 
 // Validate reports the first thing that is wrong with the config, naming the key
@@ -104,6 +108,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := validateLogins("merge.owners", c.Merge.Owners); err != nil {
+		return err
+	}
+	if err := validateNetwork(c.Network); err != nil {
 		return err
 	}
 	if err := Separation(c.Orchestrator.Mode, c.Merge.Owners, c.Merge.Reviewers, c.Project.Repo); err != nil {
@@ -407,6 +414,95 @@ func validateAccess(access Access) error {
 		}
 	}
 	return nil
+}
+
+// validateNetwork checks the route of a project against the profiles it names: a
+// mode crewflow does not do, an active profile that is not in the table, and a
+// profile crewflow could not talk to anyway — a protocol outside the list, a
+// port that is not a port, and an address with a login in it, which is a secret
+// in the file of a project and is kept in the store of secrets instead
+// (docs/DESIGN.md §7d, §7e).
+func validateNetwork(network Network) error {
+	if err := oneOf("network.mode", network.Mode, networkModes); err != nil {
+		return err
+	}
+	if err := errors.Join(
+		validateDuration("network.connect_timeout", network.ConnectTimeout),
+		validateDuration("network.test_valid_for", network.TestValidFor),
+	); err != nil {
+		return err
+	}
+	if network.ActiveProxy != "" {
+		if _, known := network.Proxies[network.ActiveProxy]; !known {
+			return fmt.Errorf("network.active_proxy: no profile %q in [network.proxies], "+
+				"the profiles of the project are %s", network.ActiveProxy, knownProfiles(network))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(network.Proxies)) {
+		if err := validateProxy(name, network.Proxies[name]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateProxy checks one named profile: the name a person gives it, the
+// protocol crewflow speaks to it over, where it listens and whether it takes
+// credentials.
+func validateProxy(name string, proxy Proxy) error {
+	table := fmt.Sprintf("network.proxies.%s", name)
+	if err := proxyName(name); err != nil {
+		return fmt.Errorf("%s: %w", table, err)
+	}
+	if err := oneOf(table+".type", proxy.Type, proxyTypes); err != nil {
+		return err
+	}
+	if strings.TrimSpace(proxy.Host) == "" {
+		return fmt.Errorf("%s.host: must be the host or the address of the proxy, got %q", table, proxy.Host)
+	}
+	for _, secret := range []struct{ what, mark string }{
+		{"a scheme", "://"},
+		{"a login", "@"},
+		{"a path", "/"},
+	} {
+		if strings.Contains(proxy.Host, secret.mark) {
+			return fmt.Errorf("%s.host: must be the host or the address of the proxy without %s, got %q: "+
+				"a scheme is what the type says, and credentials are in the store of secrets, "+
+				"not in the file of the project", table, secret.what, proxy.Host)
+		}
+	}
+	if proxy.Port < 1 || proxy.Port > 65535 {
+		return fmt.Errorf("%s.port: must be a port from 1 to 65535, got %d", table, proxy.Port)
+	}
+	if err := oneOf(table+".credentials", proxy.Credentials, credentialPlaces); err != nil {
+		return err
+	}
+	return nil
+}
+
+// proxyName checks the name a person gives a profile. A name goes into the key
+// of the profile in the store of secrets and into a line of a report, so it is a
+// name and not a path, a URL or a piece of TOML.
+func proxyName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("must not be empty: it is the name of the profile")
+	}
+	for _, mark := range []string{" ", "\"", "'", "[", "]", ".", "/", "=", "#", "@"} {
+		if strings.Contains(name, mark) {
+			return fmt.Errorf("must be a name without %q, got %q", mark, name)
+		}
+	}
+	return nil
+}
+
+// knownProfiles are the names of the profiles of a project, for the one refusal
+// that has to tell a person what to write instead.
+func knownProfiles(network Network) string {
+	names := slices.Sorted(maps.Keys(network.Proxies))
+	if len(names) == 0 {
+		return "none yet"
+	}
+	return strings.Join(names, ", ")
 }
 
 // validateDuration checks that a key holds a duration a person can wait out, and not a

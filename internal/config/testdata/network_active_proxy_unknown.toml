@@ -1,0 +1,11 @@
+# A route that names a profile nobody defined is a file no command can work with.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[network]
+mode = "proxy"
+active_proxy = "office"

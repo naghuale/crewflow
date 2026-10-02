@@ -46,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runVerify(args[1:], stdout, stderr)
 	case "auth":
 		return runAuth(args[1:], stdout, stderr)
+	case "network":
+		return runNetwork(args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -107,6 +109,8 @@ Subcommands:
   changelog build  Build the unreleased part of the journal out of the fragments (§6)
   changelog check  Check the fragments and the journal of a change (§6)
   auth app       The GitHub Apps a run and an orchestrator work as: import a key, check it (§7i)
+  network mode   How the programs of crewflow go out to the network: direct or proxy (§7d)
+  network proxy  The named proxies of the project: list, add, edit, use, remove, test (§7d)
   help           Show this message
   version        Print the version, the commit and the build time
 
@@ -126,6 +130,15 @@ Subcommands:
   crewflow auth app import <file.pem> [-config path] [-as executor|orchestrator]
   crewflow auth app check [-config path] [-as executor|orchestrator] [-json]
   crewflow auth git-credential [get] [-config path] [-as executor|orchestrator]
+  crewflow network proxy list [-json] [-config path]
+  crewflow network proxy add <name> -type http|https|socks5 -host H -port P [-credentials none|secret-store]
+  crewflow network proxy edit <name> [-type T] [-host H] [-port P] [-credentials none|secret-store]
+  crewflow network proxy use <name> [-config path]
+  crewflow network proxy remove <name> [-config path]
+  crewflow network proxy credentials <name> set -file <path> | remove | status
+  crewflow network proxy test [name] [-json] [-config path]
+  crewflow network mode direct|proxy [-config path]
+  crewflow doctor network [-json] [-config path]
 
 Pages of the project, where the words of a refusal and the rest are written:
   docs/DESIGN.md §7i           how a run works as a GitHub App and what signs its push

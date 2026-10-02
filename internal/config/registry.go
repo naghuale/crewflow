@@ -202,6 +202,31 @@ var settings = []Setting{
 	// the person (§8).
 	{Key: "worktrees.root", Status: Supported, Applies: "cfg.Worktrees.Root"},
 
+	// [network] — how the programs of crewflow reach the network (§7d). The route
+	// is declared here and nothing of it is kept: whether a profile answers today is
+	// asked of the machine, one capability at a time, and what came of it is in that
+	// answer and not in the file of a project.
+	{
+		Key: "network.mode", Status: Specified, Supported: []string{"direct", "proxy"},
+		Applies: "cfg.Network.Mode",
+		Unwritten: []Asked{
+			{
+				Key: "network.mode", Value: "fallback", Task: 145,
+				Instead: `put mode = "direct" or mode = "proxy" here: a straight route, ` +
+					`or the active profile`,
+				asks: func(c Config) bool { return c.Network.Mode == "fallback" },
+			},
+		},
+	},
+	{Key: "network.active_proxy", Status: Supported, Applies: "cfg.Network.ActiveProxy"},
+	{Key: "network.no_proxy", Status: Supported, Applies: "cfg.Network.NoProxy"},
+	{Key: "network.connect_timeout", Status: Supported, Applies: "cfg.Network.ConnectTimeout"},
+	{Key: "network.test_valid_for", Status: Supported, Applies: "cfg.Network.TestValidFor"},
+	// [network.proxies.<name>] — the named ways out of a machine. The file names a
+	// profile and says where it listens and what it speaks; whether it answers is
+	// asked of the machine and is in no file.
+	{Key: "network.proxies", Status: Supported, Applies: "cfg.Network.Proxies"},
+
 	// [[gates]] — the commands of the project that have to pass before a change
 	// is reviewed (§6). The name and the command line are what a run hands to the
 	// agent and what doctor looks the programs of; a gate that must not run

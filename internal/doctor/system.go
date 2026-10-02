@@ -30,6 +30,7 @@ func System(configPath, tempDir string, probe bool, out io.Writer) Env {
 	return Env{
 		LookPath:   exec.LookPath,
 		Run:        Command,
+		Git:        Git,
 		ConfigPath: configPath,
 		Home:       home,
 		Environ:    os.Environ(),
@@ -81,4 +82,16 @@ func Command(ctx context.Context, name string, args []string, dir string, extraE
 		err = nil
 	}
 	return out.Bytes(), errOut.Bytes(), exitCode, err
+}
+
+// Git runs the git of the machine with the given environment added to the one of the
+// process, and says what it wrote: it is the check of the capability of a route, and a
+// route that is not asked here is not checked at all (docs/DESIGN.md §7d).
+//
+// What it wrote is joined of both its streams, because what a person reads in a check of a
+// route is the sentence of the failure — "could not resolve host" — and that sentence goes
+// to one of them or the other depending on the version of git.
+func Git(ctx context.Context, args []string, environment []string) (string, int, error) {
+	stdout, stderr, exitCode, err := Command(ctx, "git", args, "", environment)
+	return string(stdout) + string(stderr), exitCode, err
 }

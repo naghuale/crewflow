@@ -11,11 +11,13 @@ package roles
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github"
 	"github.com/naghuale/crewflow/internal/forge/github/app"
+	"github.com/naghuale/crewflow/internal/network"
 )
 
 // New returns the roles the settings of the project ask for, or an error that
@@ -98,6 +100,15 @@ const (
 // that each of them has an account of its own, or the login of the person, is the
 // whole of §7i.
 func rolesOf(cfg config.Config, env forge.Env, mode, orchestration string, way Way) (forge.Set, error) {
+	// Every program the roles of the project start goes out through the route of the
+	// project: gh is a program of the machine like any other, and a project whose owner
+	// named a proxy expects the tasks, the reviews and the checks to be read through it
+	// as well as the code. Nothing else changes — the route is added to the environment
+	// of the child process and to no setting of this one (docs/DESIGN.md §7d).
+	env = throughRoute(cfg, env)
+	if env.RouteError != nil {
+		return forge.Set{}, env.RouteError
+	}
 	hosting, err := hostOf(cfg, env, mode, orchestration, way)
 	if err != nil {
 		return forge.Set{}, err
@@ -186,6 +197,37 @@ func hostOf(cfg config.Config, env forge.Env, mode, orchestration string, way Wa
 // (docs.DESIGN.md §7i).
 func withoutSecrets(env forge.Env) forge.Env {
 	env.Secrets = nil
+	return env
+}
+
+// throughRoute is the machine of the roles of a project with the environment of the route
+// added to every program it starts, and the credentials of the profile read once here —
+// the one place in the adapter of a host where a secret of a route is read at all, and it
+// goes into the environment of a child process and nowhere else (docs/DESIGN.md §7d, §7e).
+//
+// A route that cannot be worked out is not a route the roles can be built on: gh would
+// then go out the way the shell of the machine happened to leave it, and a report would
+// say the project cannot be read while the answer would be a proxy of somebody else.
+func throughRoute(cfg config.Config, env forge.Env) forge.Env {
+	route, err := network.Choose(cfg, "")
+	if err != nil {
+		env.RouteError = err
+		return env
+	}
+	credentials, err := network.Credentials(env.Secrets, route)
+	if err != nil {
+		env.RouteError = err
+		return env
+	}
+	environment, err := route.Environment(cfg.Network.NoProxy, credentials)
+	if err != nil {
+		env.RouteError = err
+		return env
+	}
+	run := env.Run
+	env.Run = func(ctx context.Context, name string, args []string, dir string, extra []string) ([]byte, []byte, int, error) {
+		return run(ctx, name, args, dir, slices.Concat(extra, environment))
+	}
 	return env
 }
 

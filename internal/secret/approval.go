@@ -127,6 +127,20 @@ func (w *waited) Allowed(service string) (bool, error) {
 	return true, nil
 }
 
+// Delete takes a secret away through the wait of the keychain of macOS, and says nothing
+// before it: taking a secret away is not a window of the system and is not a read, and the
+// person who asked for it by name is not waiting for anything (docs/DESIGN.md §7e).
+func (w *waited) Delete(service, account string) error {
+	remover, ok := w.store.(Remover)
+	if !ok {
+		return fmt.Errorf("%s/%s: the store of this machine cannot take a secret away", service, account)
+	}
+	_, err := inTime(w.after, nil, func() (struct{}, error) {
+		return struct{}{}, remover.Delete(service, account)
+	})
+	return err
+}
+
 // announce is what crewflow says before it asks the store of the machine for a secret,
 // and it is said only where the store itself says a window of the system is coming: a
 // program the keychain trusts is let in at once, and a line about a window that will not

@@ -173,6 +173,7 @@ crewflow task attention -all  # what of every project on this machine needs you,
 crewflow task run 12 -continue "fix the failing test"   # the same session, after a review
 crewflow changelog build     # build the unreleased part of CHANGELOG.md out of changelog.d/
 crewflow changelog check     # every fragment is a fragment, a task, and the journal is the build
+crewflow doctor network      # what the route to the network can do, one capability at a time
 ```
 
 Every key of `crewflow.toml` has a status in the code: `supported`, which the code
@@ -656,6 +657,56 @@ any other file. So a test needs no change of the config: mark the line. A value 
 of a test — a token of a run, a password — belongs in neither list, and the check is right to stop
 the merge. The check proves both halves of that promise on every run of itself, on values it builds
 in the runner and does not commit.
+
+## The route to the network
+
+A proxy is a resource like any other: its address is different on every machine and
+changes when you move, so `crewflow.toml` names the profiles and the commands change
+them.
+
+```sh
+crewflow network proxy add home --type http --host 192.168.0.4 --port 1082
+crewflow network proxy test home      # what that route can do, right now
+crewflow network proxy use home       # the active profile
+crewflow network mode proxy           # and go through it
+crewflow network proxy list           # the profiles, and whether they take credentials
+```
+
+In the mode `proxy` the route is in the **environment of the processes crewflow starts** —
+`gh`, `git`, the executor — and nowhere else: the environment of your shell, the global
+git configuration and the system one stay as they are, so a proxy of one project does not
+follow you into another checkout. In the mode `direct` nothing is added at all, because a
+variable left over in a shell is a route nobody chose.
+
+A target of `[network] no_proxy` goes straight out whatever the mode says — the rules of
+the standard `NO_PROXY`: an exact name, a domain suffix, an address, a network in CIDR. A
+rule that could be read two ways is refused rather than guessed at.
+
+**A profile that is there is not a profile that works.** `network proxy test` and
+`crewflow doctor network` check three capabilities separately — `github-api`,
+`git-https`, `model-provider` — and say `available`, `unavailable`, `unknown` or `stale`
+for each, with the time the check took. The success of GitHub says nothing about the model
+provider, and "the executor goes through the proxy" stays `unknown` until a run has really
+proved it. Editing a profile never activates it and never checks it: a profile can be
+prepared before it answers.
+
+Credentials of a profile live in the keychain of the machine under
+`network-proxy/<name>`, never in the file of the project — an address with a login in it
+(`http://user:pass@…`) is refused:
+
+```sh
+crewflow network proxy edit work --credentials secret-store
+crewflow network proxy credentials work set -file ~/.proxy-password
+crewflow network proxy credentials work status   # credentials_configured: true, and nothing more
+```
+
+Every command that shows the route — `list`, `credentials status`, `test`, `doctor
+network` — says *whether* the credentials are configured and never reads the value. It is
+read in one place only: where a connection through the profile is really made. Removing a
+profile from the file and removing its credentials from the keychain are two different
+operations on purpose.
+
+See §7d of the design.
 
 ## Process health
 

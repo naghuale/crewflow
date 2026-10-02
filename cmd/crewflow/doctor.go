@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
 )
 
@@ -31,6 +32,12 @@ var marks = map[doctor.Status]string{
 // runDoctor checks the machine before a task starts, so that what is missing is
 // found out here and not in the middle of a task.
 func runDoctor(args []string, stdout, stderr io.Writer) int {
+	// `crewflow doctor network` is a check of its own: it asks the machine whether the
+	// route of the project works, one capability at a time, and a report of readiness
+	// must not stand in front of a proxy of a project every time it runs (§7d).
+	if len(args) > 0 && args[0] == "network" {
+		return runDoctorNetwork(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { usage(stderr) }
@@ -74,6 +81,63 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 	if report.OK() {
 		return exitOK
 	}
+	return exitFailure
+}
+
+// runDoctorNetwork is `crewflow doctor network`: what the route of the project can do,
+// with each capability apart from the others. A report that said one word for all three
+// would say nothing about the one that is broken — and the success of the host of the code
+// says nothing at all about the provider of the model (docs/DESIGN.md §7d).
+func runDoctorNetwork(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("doctor network", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.Usage = func() { usage(stderr) }
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	asJSON := flags.Bool("json", false, "print the checks as JSON, for the orchestrator")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	if flags.NArg() > 0 {
+		fmt.Fprintf(stderr, "crewflow doctor network: unexpected argument %q\n\n", flags.Arg(0))
+		usage(stderr)
+		return exitUsage
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return doctorFailed(stderr, err)
+	}
+	folder, removeFolder, err := probeFolder(false)
+	if err != nil {
+		return doctorFailed(stderr, err)
+	}
+	defer removeFolder()
+	env := systemEnv(*configPath, folder, false, stderr)
+	checks := doctor.Network(context.Background(), env, cfg)
+	if *asJSON {
+		if err := printJSON(stdout, checks); err != nil {
+			return doctorFailed(stderr, err)
+		}
+	} else {
+		for _, check := range checks {
+			fmt.Fprintf(stdout, "%s %-22s %s\n", marks[check.Status], check.Name, check.Detail)
+			if check.Hint != "" {
+				fmt.Fprintf(stdout, "  %s\n", check.Hint)
+			}
+		}
+	}
+	for _, check := range checks {
+		if check.Status == doctor.Fail {
+			return exitFailure
+		}
+	}
+	return exitOK
+}
+
+// doctorFailed is what a check of the machine says when it could not be made at all: a
+// check that could not be made is not a check that passed.
+func doctorFailed(stderr io.Writer, err error) int {
+	fmt.Fprintf(stderr, "crewflow doctor: %v\n", err)
 	return exitFailure
 }
 

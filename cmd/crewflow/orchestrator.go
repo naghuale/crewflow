@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"slices"
 
 	"github.com/naghuale/crewflow/internal/config"
@@ -10,6 +11,8 @@ import (
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/merge"
+	"github.com/naghuale/crewflow/internal/network"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // resets are the settings of git whose value the environment of the commands of git takes to
@@ -126,8 +129,47 @@ func loginsOf(accounts []forge.Subject) []string {
 
 // gitEnvironment is what the commands of git of a review and of a merge are started
 // with: the settings the adapter of the host named for the account the orchestrator
-// works as, and nothing else (docs/DESIGN.md §7a, §7i).
-func gitEnvironment(ctx context.Context, set forge.Set) []string {
+// works as, the route of the project, and nothing else (docs/DESIGN.md §7a, §7d, §7i).
+//
+// The route is beside the settings of git and not in them: it is the environment of the
+// process and holds for that one command, and a global setting or a system one would be
+// a proxy of this project in every other checkout on the machine.
+func gitEnvironment(ctx context.Context, cfg config.Config, set forge.Set, stderr io.Writer) ([]string, error) {
+	store := storeOfSecrets(secret.NewNotices(stderr))
+	route, err := network.EnvironmentOf(cfg, "", credentialsOf(cfg, set, store))
+	if err != nil {
+		return nil, err
+	}
+	settings := settingsOfOrchestrator(ctx, set)
+	if len(settings) == 0 && len(route) == 0 {
+		return nil, nil
+	}
+	return slices.Concat(settings, route), nil
+}
+
+// credentialsOf is the login and the password of the active profile of the project, and
+// only when a route really goes through one: a report of the settings of a review must
+// not read the store of the machine for a route nobody uses (docs/DESIGN.md §7e).
+func credentialsOf(cfg config.Config, set forge.Set, store secret.Store) string {
+	if set.Forge == nil || cfg.Network.Mode != "proxy" {
+		return ""
+	}
+	route, err := network.Through(cfg, cfg.Network.ActiveProxy)
+	if err != nil {
+		return ""
+	}
+	value, err := network.Credentials(store, route)
+	if err != nil {
+		return ""
+	}
+	return value
+}
+
+// settingsOfOrchestrator are the settings of git of the account the orchestrator works
+// as, asked without a token of it: a push is signed by the helper of the credentials,
+// which signs its own token for that one push, and a token in the environment of every
+// command of git would be a token in the journal of a merge of a test as well (§7e, §7i).
+func settingsOfOrchestrator(ctx context.Context, set forge.Set) []string {
 	if set.Forge == nil {
 		return nil
 	}
@@ -135,10 +177,6 @@ func gitEnvironment(ctx context.Context, set forge.Set) []string {
 	if !ok {
 		return nil
 	}
-	// The line of the mode and the settings of git are asked without a token of it: a
-	// push is signed by the helper of the credentials, which signs its own token for
-	// that one push, and a token in the environment of every command of git would be a
-	// token in the journal of a merge of a test as well (§7e, §7i).
 	identity, err := described.DescribeOrchestrator(ctx)
 	if err != nil {
 		return nil
