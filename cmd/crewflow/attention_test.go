@@ -15,9 +15,12 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/github"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // The queue of attention of a project as a person and a schedule of an orchestrator read
@@ -302,6 +305,85 @@ func TestRunTaskListShowsTheQueueOverTheTable(t *testing.T) {
 	}
 }
 
+// storeThatFallsOver is the store of the secrets of a machine whose keychain of macOS asks
+// the owner of the machine in a window of the system: reading a key of an App out of it opens
+// that window, and on a build nobody has trusted yet nobody is at it. The read is a fall and
+// not a refusal, so that a test says which key was asked for and stops there (docs.DESIGN.md §7i).
+type storeThatFallsOver struct{}
+
+func (storeThatFallsOver) Get(service, account string) ([]byte, error) {
+	panic(fmt.Sprintf("the key %s/%s was read: a command that only shows the state of a project has no business asking for it",
+		service, account))
+}
+
+func (storeThatFallsOver) Set(string, string, []byte) error { return nil }
+
+func (storeThatFallsOver) Has(string, string) (bool, error) { return false, nil }
+
+// TestTheCommandsThatShowTheStateAskTheRolesThatHoldNoKeyOfAnApp: the failure this is here
+// for, at the level of the commands that run on a schedule. The queue of what wants a person
+// counts records by the numbers the host publishes and reads a foreign service as the person
+// who runs crewflow, and it used to do that with the roles of a review — so every login of the
+// lists of the gate was turned into a number by asking the App of the orchestrator for its own
+// name, and on a build of the program nobody had trusted yet that read opened a window of the
+// keychain of macOS and stood in front of it for two minutes at a time. The whole queue of
+// #37 became `read-failed` that way (F-109, docs.DESIGN.md §6a, §7i).
+//
+// So the two commands that only show the state are made of the roles that carry the numbers of
+// the Apps and no key of them, the machine of the test hands out a store of secrets that falls
+// over on the read, and both of them answer the queue out of the host of the test as before.
+func TestTheCommandsThatShowTheStateAskTheRolesThatHoldNoKeyOfAnApp(t *testing.T) {
+	for _, command := range []string{"attention", "list"} {
+		t.Run("task "+command, func(t *testing.T) {
+			host := &host{opened: true, task: taskOf(43)}
+			host.use(t)
+			was := secretsOfMachine
+			t.Cleanup(func() { secretsOfMachine = was })
+			secretsOfMachine = func() secret.Store { return storeThatFallsOver{} }
+			asked, withKeys := 0, 0
+			stateRoles = func(cfg config.Config, env forge.Env) (forge.Set, error) {
+				// The roles of a command that only shows the state are the ones crewflow
+				// builds by number, and they are asked for here with the machine of the
+				// command — the store of the keys is in that machine, and the roles are to
+				// leave it out (docs.DESIGN.md §6a, §7i).
+				built, err := roles.ToShow(cfg, env)
+				if err != nil {
+					return forge.Set{}, err
+				}
+				asked++
+				if adapter, is := built.Forge.(*github.Adapter); is && adapter.Orchestrator().Store != nil {
+					withKeys++
+				}
+				// The queue of a test is a queue of a host of a test.
+				return forge.Set{Tracker: host, Forge: host}, nil
+			}
+			project := host.configAs(t, separateConfig)
+			ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+			taskClock = func() time.Time { return ended.Add(time.Hour) }
+			var stdout, stderr bytes.Buffer
+
+			run([]string{"task", command, "-config", project}, &stdout, &stderr)
+
+			if asked == 0 {
+				t.Errorf("crewflow task %s did not ask for the roles of the project at all", command)
+			}
+			if withKeys != 0 {
+				t.Errorf("crewflow task %s was given the roles of the project %d times with the store of the keys "+
+					"of the machine in them, want the roles that only show the state, which carry no store", command, withKeys)
+			}
+			said := stdout.String() + stderr.String()
+			if strings.Contains(said, "keychain") {
+				t.Errorf("crewflow task %s wrote %q, want nothing about the keychain of macOS: it did not ask it for anything", command, said)
+			}
+			// The queue is the answer these two commands are for: a command that could not
+			// read the host would be saying nothing about the work of the project.
+			if strings.Contains(said, "COULD NOT READ") || strings.Contains(said, "host could not be read") {
+				t.Errorf("crewflow task %s wrote %q, want the queue of the project read out of the host of the test", command, said)
+			}
+		})
+	}
+}
+
 // TestRunTaskAttentionOfAProjectWithNoHostSaysWhatTheStateHolds: a project whose host of
 // its own cannot be read is answered out of the state of its tasks, and it says so rather
 // than reaching a host that is not there.
@@ -358,6 +440,7 @@ func TestRunTaskAttentionReadsTheHostAsTheOrchestratorOfTheProject(t *testing.T)
 	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Tracker: host, Forge: host.as(5140522)}, nil
 	}
+	stateRoles = reviewRoles
 	project := host.configAs(t, separateConfig)
 	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
 	taskClock = func() time.Time { return ended.Add(time.Hour) }
@@ -846,6 +929,7 @@ func TestRunTaskAttentionSaysThatItIsReadingWhenTheHostIsSlow(t *testing.T) {
 			Forge:   host,
 		}, nil
 	}
+	stateRoles = reviewRoles
 	was := readSilence
 	readSilence = time.Millisecond
 	t.Cleanup(func() { readSilence = was })

@@ -27,7 +27,7 @@ import (
 // orchestrator: a run that could write a record of a review in the name of the
 // orchestrator would be an executor with a pen in its hand (§7i).
 func New(cfg config.Config, env forge.Env) (forge.Set, error) {
-	return rolesOf(cfg, env, cfg.Identity.Mode, forge.ModeShared)
+	return rolesOf(cfg, env, cfg.Identity.Mode, forge.ModeShared, WithKeys)
 }
 
 // AsOwner returns the roles of a project as the person who runs crewflow, whoever
@@ -39,7 +39,7 @@ func New(cfg config.Config, env forge.Env) (forge.Set, error) {
 // mode of the owner gets the same roles either way, and `task run` asks for the ones
 // of [New].
 func AsOwner(cfg config.Config, env forge.Env) (forge.Set, error) {
-	return rolesOf(cfg, env, forge.ModeOwner, forge.ModeShared)
+	return rolesOf(cfg, env, forge.ModeOwner, forge.ModeShared, WithKeys)
 }
 
 // AsOrchestrator returns the roles of a project as its orchestrator: the account the
@@ -52,16 +52,53 @@ func AsOwner(cfg config.Config, env forge.Env) (forge.Set, error) {
 // executor nor opens a change request of its own, and an adapter that carried the App
 // of a run into a review is one command away from an executor writing a record (§7i).
 func AsOrchestrator(cfg config.Config, env forge.Env) (forge.Set, error) {
-	return rolesOf(cfg, env, forge.ModeOwner, cfg.Orchestrator.Mode)
+	return rolesOf(cfg, env, forge.ModeOwner, cfg.Orchestrator.Mode, WithKeys)
 }
+
+// ToShow returns the roles of the project as a command that only shows its state sees
+// them: the roles of the orchestrator, and nothing of the secrets of the machine in them.
+// A command that shows a person what is going on has no business asking the keychain of
+// macOS about the key of an App — on a new build of the program that window opens for
+// every read and nobody is at it, and a queue of what wants a person stands in front of
+// it for two minutes at a time (docs/DESIGN.md §6a, §7i).
+//
+// What such a command needs of the host it gets from the login of the person, which reads
+// everything a command that only looks reads: the numbers of the two Apps of the project
+// are in the file of the project, and the numbers a gate counts records by are in the
+// answers of the host whatever account asks. So the ways are the same and the only thing
+// that changes is who is asked — the same subjects, from the same host, without a token
+// in a single environment (§7h, §7i).
+func ToShow(cfg config.Config, env forge.Env) (forge.Set, error) {
+	return rolesOf(cfg, env, forge.ModeOwner, cfg.Orchestrator.Mode, ByNumber)
+}
+
+// A Way is what the roles of a project are built out of: the keys of the Apps of the
+// project, which the machine keeps in the store of its secrets, or nothing but the numbers
+// of those Apps, which the file of the project holds. It is the way a caller builds them
+// in and not a mode of the project: one project is read both ways on the same morning
+// (docs.DESIGN.md §7i).
+type Way int
+
+const (
+	// WithKeys builds the roles with the store of the secrets of the machine in them, and
+	// the store is where a run finds the key of its App and a review the key of the App of
+	// the orchestrator: both act in the name of an account of the host, and an act of that
+	// kind is signed with a token of an hour (§7i).
+	WithKeys Way = iota
+	// ByNumber builds the roles with the numbers of the Apps of the file of the project and
+	// with no store at all: every account of the lists of the gate is counted by a number
+	// the host publishes, and a number is not a secret. The adapter of a project built this
+	// way asks the host as the person and refuses to write (§7i).
+	ByNumber
+)
 
 // rolesOf is the roles of a project under the mode of the executor, which is what a
 // run works under, and under the mode of the orchestrator, which is what a review and
 // a merge work under. A run never has the second one and a review never the first:
 // that each of them has an account of its own, or the login of the person, is the
 // whole of §7i.
-func rolesOf(cfg config.Config, env forge.Env, mode, orchestration string) (forge.Set, error) {
-	hosting, err := hostOf(cfg, env, mode, orchestration)
+func rolesOf(cfg config.Config, env forge.Env, mode, orchestration string, way Way) (forge.Set, error) {
+	hosting, err := hostOf(cfg, env, mode, orchestration, way)
 	if err != nil {
 		return forge.Set{}, err
 	}
@@ -106,7 +143,15 @@ func rolesOf(cfg config.Config, env forge.Env, mode, orchestration string) (forg
 // built for that one, so that a review can never end up writing its record in the name
 // of the executor and a run can never write anything at all in the name of the
 // orchestrator.
-func hostOf(cfg config.Config, env forge.Env, mode, orchestration string) (*github.Adapter, error) {
+//
+// The way is what the adapter is built out of, and the numbers of the Apps of the
+// project are in it either way: they are what the file of the project says, and a gate
+// counts records by them. What the way [ByNumber] takes away is the store of the secrets
+// of the machine, so there is no key in the adapter to read and no token to mint (§7i).
+func hostOf(cfg config.Config, env forge.Env, mode, orchestration string, way Way) (*github.Adapter, error) {
+	if way == ByNumber {
+		env = withoutSecrets(env)
+	}
 	switch cfg.Forge.Kind {
 	case "github":
 		adapter := github.New(cfg.Project.Repo, cfg.Forge.Host, env).
@@ -122,12 +167,26 @@ func hostOf(cfg config.Config, env forge.Env, mode, orchestration string) (*gith
 				DefaultBranch:  cfg.Project.DefaultBranch,
 			})
 		}
+		if way == ByNumber {
+			adapter = adapter.ToLook()
+		}
 		return adapter, nil
 	case "none":
 		return nil, nil
 	default:
 		return nil, &forge.ErrNotImplemented{Key: "forge.kind", Kind: cfg.Forge.Kind}
 	}
+}
+
+// withoutSecrets is the machine of a caller that must not read the keys of the Apps of
+// the project: the same programs, the same way of starting them and the same clock, and
+// no store of secrets at all. An adapter built on it holds no store, so nothing in it can
+// read a key even by mistake — and a read of a key is a question to the keychain of macOS,
+// and that question opens a window of the system on a build nobody has trusted yet
+// (docs.DESIGN.md §7i).
+func withoutSecrets(env forge.Env) forge.Env {
+	env.Secrets = nil
+	return env
 }
 
 // orchestratorOf is the App of the orchestrator of the project, and nothing where the

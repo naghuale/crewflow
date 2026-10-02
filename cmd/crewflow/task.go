@@ -39,8 +39,15 @@ const watchTick = 500 * time.Millisecond
 // taskRoles and taskRunEnv are how the task command gets the roles of a project and
 // the machine to run a task on. They are variables so that a test of the command
 // runs against a host and a machine of its own and reaches nothing.
+//
+// stateRoles is the third of them: the roles of a command that only shows the state of
+// the project, built with the numbers of the Apps of the file and with no key of an App
+// in them. A queue of what wants a person reads a foreign service through the login of
+// the person, and on a new build of this program a read of a key stands in front of a
+// window of the keychain of macOS that nobody is at (docs.DESIGN.md §6a, §7i).
 var (
 	taskRoles  = roles.New
+	stateRoles = roles.ToShow
 	taskRunEnv = taskrun.System
 	// taskMachine is how a list of runs asks the machine whether a run is still going,
 	// and taskClock is the clock it says how long that run has been going. They are
@@ -561,13 +568,21 @@ func attentionEnvOfTheFolder(configPath string) (taskrun.AttentionEnv, error) {
 
 // hostOfTheProject is the host of the project as the queue of attention asks about it.
 //
+// It is the roles of a command that only shows the state, and not the roles of a review:
+// a queue asks the host what is there and nothing more, every account of the lists of the
+// gate is counted by a number the host publishes, and the key of an App of the project is
+// not among the things a queue needs — on a build of the program nobody has trusted yet a
+// read of that key opens a window of the keychain of macOS and stands in front of it for
+// two minutes, and a whole queue turns into `read-failed` while it does (F-109,
+// docs/DESIGN.md §6a, §7i).
+//
 // A project whose roles cannot be built gets a host that answers nothing and says why: the
 // queue is then worked out of the state of the tasks alone, which is a whole answer for
 // everything but the review and the acceptance of a change, and every entry of it says that
 // the host was not read. A queue that says "nobody is waiting" because the host was out of
-// reach would be lying about the work of the project (docs/DESIGN.md §6a, §7h).
+// reach would be lying about the work of the project (docs.DESIGN.md §6a, §7h).
 func hostOfTheProject(ctx context.Context, cfg config.Config, configPath string) taskrun.Host {
-	set, err := reviewRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+	set, err := stateRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
 	if err != nil {
 		return hostUnreachable{err}
 	}

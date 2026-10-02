@@ -2,7 +2,9 @@ package github
 
 import (
 	"fmt"
+	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -211,7 +213,7 @@ func commentAuthors(login, kind string) string {
 // accounts by login, and the gate counts records by the number the host keeps each of them
 // under — so the adapter is asked once of every login the file names, and what it answers
 // is a person with the number of that account and an App with the number of that App
-// (docs/DESIGN.md §7h, §7i).
+// (docs.DESIGN.md §7h, §7i).
 func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
 	m, api := machineWithTwoApps(t)
 	api.answer["/users/naghuale"] = map[string]any{
@@ -219,6 +221,7 @@ func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
 	}
 	m.prints("api users/crewflow-orchestrator%5Bbot%5D",
 		`{"id": 1988, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`)
+	m.prints("api apps/crewflow-orchestrator", `{"id": 5107053, "slug": "crewflow-orchestrator"}`)
 	m.prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`)
 	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
 
@@ -256,15 +259,17 @@ func TestSubjectOfALoginOfTheSettingsIsTheAccountBehindIt(t *testing.T) {
 }
 
 // TestAnAccountOfAnAppOfAnotherProjectIsARefusal: the host answers `/users/<slug>[bot]`
-// with the account of an App and with nothing about that App, so a login of an App that is
-// neither the one of the executor nor the one of the orchestrator is an account whose
-// number crewflow cannot learn. It is a refusal and not an account of no number: a person
-// who wrote it into `[merge] reviewers` has to be told, because no record of it could ever
-// count (docs/DESIGN.md §7h, §7i).
+// with the account of an App and with nothing about that App, so crewflow asks the host which
+// App the name belongs to — and a login of an App that is neither the one of executor nor the
+// one of the orchestrator is an account no record of which could ever be counted. It is a
+// refusal and not an account of no number: a person who wrote it into `[merge] reviewers` has
+// to be told, because the gate would count nothing and say that nobody had approved anything
+// (docs.DESIGN.md §7h, §7i).
 func TestAnAccountOfAnAppOfAnotherProjectIsARefusal(t *testing.T) {
 	m, api := machineWithTwoApps(t)
 	m.prints("api users/somebody-else%5Bbot%5D",
 		`{"id": 4242, "login": "somebody-else[bot]", "type": "Bot"}`)
+	m.prints("api apps/somebody-else", `{"id": 777, "slug": "somebody-else"}`)
 	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053, API: api.URL()})
 
 	_, err := a.Subject(t.Context(), "somebody-else[bot]")
@@ -275,6 +280,183 @@ func TestAnAccountOfAnAppOfAnotherProjectIsARefusal(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("the refusal %q does not mention %q: a person has to know what to change", err, want)
 		}
+	}
+}
+
+// storeNobodyMayRead is the store of the secrets of a machine whose keychain of macOS asks
+// the owner of the machine in a window of the system: reading a key out of it opens that
+// window, and on a build nobody has trusted yet nobody is at it. The read is a fall and not
+// a refusal, so that a test says which key was asked for and stops there (docs/DESIGN.md §7i).
+type storeNobodyMayRead struct{}
+
+func (storeNobodyMayRead) Get(service, account string) ([]byte, error) {
+	panic(fmt.Sprintf("the key %s/%s was read: an adapter that only looks has no store of secrets at all",
+		service, account))
+}
+
+func (storeNobodyMayRead) Set(string, string, []byte) error { return nil }
+
+func (storeNobodyMayRead) Has(string, string) (bool, error) { return false, nil }
+
+// TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp: the rules of the
+// model of rights of §7h, in the way a command that only shows the state of a project counts
+// them. The numbers are in the file of the project and in the answers of the host, so the way
+// needs no key of any App and the store of the machine is one that falls over on the read:
+// the accounts of `[merge] owners` and `[merge] reviewers` come out of it exactly as they
+// come out of the roles that hold the keys (F-109, docs/DESIGN.md §7h, §7i).
+func TestTheAccountsOfTheListsAreCountedByTheirNumbersWithoutAKeyOfAnyApp(t *testing.T) {
+	cases := []struct {
+		name string
+		// login is what the file of a project writes, answer what the host says about
+		// that account, and app the number the host publishes for the name of the App the
+		// account belongs to: the whole of what the host knows and the file does not.
+		login  string
+		answer string
+		app    int64
+		want   forge.Subject
+		// refused are the words a refusal has to hold: a person who reads it is to know
+		// which list of the file to change.
+		refused []string
+	}{
+		{
+			name:   "ID-001 a person is the account of the number the host keeps it under",
+			login:  "naghuale",
+			answer: `{"id": 93920024, "login": "naghuale", "type": "User"}`,
+			want:   forge.Subject{Kind: forge.KindUser, ID: 93920024, Login: "naghuale"},
+		},
+		{
+			name:   "ID-002 the app of the orchestrator is the number of that app",
+			login:  "crewflow-orchestrator[bot]",
+			answer: `{"id": 336252606, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`,
+			app:    5107053,
+			want:   forge.Subject{Kind: forge.KindApp, ID: 5107053, Login: "crewflow-orchestrator[bot]"},
+		},
+		{
+			name:   "the app of the executor is told apart by its own number",
+			login:  "crewflow-executor[bot]",
+			answer: `{"id": 1988, "login": "crewflow-executor[bot]", "type": "Bot"}`,
+			app:    5107052,
+			want:   forge.Subject{Kind: forge.KindApp, ID: 5107052, Login: "crewflow-executor[bot]"},
+		},
+		{
+			name:    "ID-006 the right login of an app of another project is not our app",
+			login:   "somebody-else[bot]",
+			answer:  `{"id": 4242, "login": "somebody-else[bot]", "type": "Bot"}`,
+			app:     777,
+			refused: []string{"somebody-else[bot]", "executor", "orchestrator"},
+		},
+		{
+			name:    "ID-004 an account of a kind crewflow does not read is a refusal",
+			login:   "crewflow",
+			answer:  `{"id": 1, "login": "crewflow", "type": "Organization"}`,
+			refused: []string{"does not know"},
+		},
+		{
+			name:    "ID-008 a person whose login is called an app is a refusal",
+			login:   "crewflow-orchestrator[bot]",
+			answer:  `{"id": 339150227, "login": "crewflow-orchestrator[bot]", "type": "User"}`,
+			refused: []string{"called an app"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			slug := strings.TrimSuffix(tc.login, botSuffix)
+			m := newMachine().
+				prints("api users/"+url.PathEscape(tc.login), tc.answer).
+				prints("api apps/"+url.PathEscape(slug), fmt.Sprintf(`{"id": %d, "slug": %q}`, tc.app, slug))
+			m.secrets = storeNobodyMayRead{}
+			a := New(repo, "", m.env(t)).
+				WithBot(Bot{AppID: 5107052}).
+				WithOrchestrator(Orchestrator{AppID: 5107053}).
+				ToLook()
+
+			got, err := a.Subject(t.Context(), tc.login)
+
+			if len(tc.refused) > 0 {
+				if err == nil {
+					t.Fatalf("Subject(%q) = %+v, want a refusal", tc.login, got)
+				}
+				for _, want := range tc.refused {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("the refusal %q does not mention %q: a person has to know what to change", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Subject(%q) returned an error: %v", tc.login, err)
+			}
+			if !got.Same(tc.want) {
+				t.Errorf("Subject(%q) = %+v, want %+v", tc.login, got, tc.want)
+			}
+			if got.Login != tc.want.Login {
+				t.Errorf("Subject(%q) is written %q, want %q: a report names the account the file names",
+					tc.login, got.Login, tc.want.Login)
+			}
+		})
+	}
+}
+
+// TestAnAdapterThatOnlyLooksAsksAsThePersonAndWritesNothing: a token of an App is minted to
+// act in its name, and a command that shows the state of a project does not act — so gh is
+// the login of the person in every question, and a write is refused before gh is started at
+// all. A record written as the person where the App of the orchestrator was meant is a
+// decision of the owner, and a gate counts none of it while saying that nobody had approved
+// anything (docs.DESIGN.md §7h, §7i).
+func TestAnAdapterThatOnlyLooksAsksAsThePersonAndWritesNothing(t *testing.T) {
+	m := newMachine().prints("pr list", "[]")
+	m.secrets = storeNobodyMayRead{}
+	a := New(repo, "", m.env(t)).WithOrchestrator(Orchestrator{AppID: 5107053}).ToLook()
+
+	if _, _, err := a.FindChangeRequest(t.Context(), "crewflow/43-task"); err != nil {
+		t.Fatalf("FindChangeRequest of a project that only shows its state returned an error: %v", err)
+	}
+	for _, command := range m.ran {
+		if slices.ContainsFunc(command.env, func(pair string) bool { return strings.HasPrefix(pair, "GH_TOKEN=") }) {
+			t.Errorf("gh was asked for %q with %v, want the login of the person",
+				strings.Join(command.args, " "), command.env)
+		}
+	}
+
+	for _, write := range []struct {
+		name string
+		do   func() error
+	}{
+		{
+			name: "the record of a review",
+			do:   func() error { return a.WriteComment(t.Context(), 7, "REVIEW: APPROVED 9f1c0de") },
+		},
+		{
+			name: "the closing of a task",
+			do:   func() error { return a.CloseTask(t.Context(), 43, "merged #7") },
+		},
+		{
+			name: "the notice under a task",
+			do:   func() error { return a.CommentTask(t.Context(), 43, "the run stands") },
+		},
+		{
+			name: "the change request of a run",
+			do: func() error {
+				_, err := a.OpenChangeRequest(t.Context(), "crewflow/43-task", "the run", "Closes #43")
+				return err
+			},
+		},
+	} {
+		t.Run(write.name, func(t *testing.T) {
+			err := write.do()
+			if err == nil {
+				t.Fatal("an adapter that only looks wrote a record of the project")
+			}
+			if !strings.Contains(err.Error(), "writes nothing") {
+				t.Errorf("the refusal %q does not say that the adapter writes nothing: a person has to know why", err)
+			}
+		})
+	}
+	// The refusal comes before gh is started, so the one read above is the only command
+	// the machine of the test saw: a write that stands in front of the keychain of macOS
+	// before it refuses would be a defect of the other kind.
+	if len(m.ran) != 1 {
+		t.Errorf("gh was asked %d times, want the one read and no command of a write at all", len(m.ran))
 	}
 }
 

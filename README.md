@@ -134,6 +134,12 @@ the attempt, in the report and in `-json`. A run refused the key before its exec
 the worktree and the branch it made away with it, so the next `task run` of the task simply starts
 again. Nothing is stored outside the keychain.
 
+The commands that only **show** the state — `task attention` and `task list` — ask for no key at
+all: what they count records by is in the answers of the host and in the file of the project, and
+the host answers them as the login you run crewflow as. A key is read where crewflow acts in the
+name of an App: a run, a review, a merge, and a record left under a task. `crewflow doctor` reads
+keys on purpose — checking them is what it is for.
+
 When nobody answered the window, the run leaves a **checkpoint** in the state of the task — the
 step to go on from, the commit the branch stands at, the task as crewflow read it — and the event
 of the request (`HUMAN_AUTHORIZATION_REQUIRED`) with the channel, the resource and the action. You
@@ -248,6 +254,15 @@ ATTENTION REQUIRED
 the host of the project in it — a reviewed change is not in it at all. The two are asked the same
 way and answer about the same tasks: `task list` asks the host about the tasks whose work may be
 over and nothing else, so a table and a queue cannot call one and the same task different things.
+Both count records by the numbers the host publishes — `performed_via_github_app.id` for an App
+and `user.id` for a person — and both ask the host as the login you run crewflow as. **Neither
+reads a key of an App**: a queue that only shows the state has no reason to ask the keychain of
+macOS anything, and on a build nobody has trusted yet that question opens a window of the system
+and stands in front of it for two minutes. On 2026-10-02 that is exactly what happened to the
+queue of #37, live: every task came out as `read-failed` and the run took 120 seconds
+(`merge.reviewers[0]: … the private key of the app 5140522 … nobody answered in 2m0s`, #130).
+A record *left under a task* is a different matter: that is a write in the name of the App of
+the orchestrator, and it is made with the roles of a review.
 A run whose change is merged or closed, or whose task the host has closed, is remembered as settled
 and is not asked about again for a day, so a machine that ran a hundred tasks reads a few.
 `crewflow task attention` is made for a schedule: it exits non-zero while anything in the queue

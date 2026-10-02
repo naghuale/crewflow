@@ -82,6 +82,26 @@ type Adapter struct {
 	// other's way.
 	signed  string
 	signing sync.Mutex
+	// looking says that this adapter was built to show the state of the project and not
+	// to act in it: gh is the login of the person in it, and a write is refused instead
+	// of being made in a name nobody chose (§7i).
+	looking bool
+}
+
+// ToLook returns the adapter as a caller that only shows the state of the project sees
+// it: the numbers of the Apps of the file are still in it — the accounts of the lists of
+// the gate are counted by them — and gh is the login of the person, because a token of an
+// App is minted to act in its name and showing the state is not acting. Reading the state
+// of a project is a question of the host that the login of a person answers as well as
+// the App, and it is a question whose answer must not depend on who asked (§7i).
+//
+// A write is refused here and not made as the person: a record of a review in the name of
+// the owner is a decision of the owner, which is the one thing §7h and §7i exist to keep
+// apart, and a change request opened as the person is a request the gate reads as though
+// the person had asked for it (docs.DESIGN.md §7h, §7i).
+func (a *Adapter) ToLook() *Adapter {
+	a.looking = true
+	return a
 }
 
 // The adapter is all three roles of the core at once, and each of them may check
@@ -131,6 +151,9 @@ func (a *Adapter) Task(ctx context.Context, number int) (forge.Task, error) {
 // closed and by whom, because the person who reads the task afterwards is not
 // the machine that closed it (docs/DESIGN.md §7h).
 func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) error {
+	if err := a.mayAct(); err != nil {
+		return err
+	}
 	arguments := []string{"issue", "close", strconv.Itoa(number), "-R", a.repo, "--comment", comment}
 	environment, err := a.speaking(ctx)
 	if err != nil {
@@ -152,6 +175,9 @@ func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) err
 // orchestrator look at the task, and a task whose run is standing is not a task that is
 // done (docs/DESIGN.md §6).
 func (a *Adapter) CommentTask(ctx context.Context, number int, body string) error {
+	if err := a.mayAct(); err != nil {
+		return err
+	}
 	arguments := []string{"issue", "comment", strconv.Itoa(number), "-R", a.repo, "--body", body}
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
 	switch {
@@ -393,28 +419,57 @@ func (a *Adapter) Subject(ctx context.Context, login string) (forge.Subject, err
 // subjectOfOurApp is the subject of the account of the App of this project it belongs to,
 // with the number of that App, and an error where it belongs to none. The host answers
 // `/users/<slug>[bot]` with the account of an App and with nothing about the App itself,
-// so which App it is crewflow knows of the two the file of a project names — the App of
-// the executor and the App of the orchestrator — and of no other: a login of a third App
-// is an account whose number cannot be learned, and a subject with no number counts for
-// nothing, so the person who wrote it into `[merge] reviewers` is told to name the App of
-// the orchestrator instead (docs.DESIGN.md §7h, §7i).
+// so which App it is crewflow asks the host about by the name it wrote the account under —
+// and the answer is a number, which is the whole of what a gate compares. The numbers it is
+// compared with are the two the file of the project names: the App of the executor and the
+// App of the orchestrator. A login of a third App is a number of neither of them, and no
+// record of it could ever be counted (docs/DESIGN.md §7h).
+//
+// The number is asked of the login of the person, with nothing of the identity of an App
+// in it: a subject has to be the same subject whether a review of a change or a queue of
+// attention counts it, and an answer of the App about itself and an answer of the person
+// about it are two answers to one question (§7i).
 func (a *Adapter) subjectOfOurApp(ctx context.Context, subject forge.Subject) (forge.Subject, error) {
+	number, err := a.numberOfAnApp(ctx, strings.TrimSuffix(subject.Login, botSuffix))
+	if err != nil {
+		return forge.Subject{}, fmt.Errorf("the account %q: %w", subject.Login, err)
+	}
 	for _, source := range []*app.Source{a.orchestrator, a.app} {
-		if source == nil {
-			continue
-		}
-		bot, err := source.Bot(ctx)
-		if err != nil {
-			return forge.Subject{}, err
-		}
-		if strings.EqualFold(bot.Login, subject.Login) {
-			return forge.Subject{Kind: forge.KindApp, ID: source.AppID, Login: bot.Login}, nil
+		if source != nil && source.AppID == number {
+			return forge.Subject{Kind: forge.KindApp, ID: number, Login: subject.Login}, nil
 		}
 	}
 	return forge.Subject{}, fmt.Errorf("the account %q is the account of an app that is neither the app of the "+
 		"executor nor the app of the orchestrator of this project: crewflow cannot tell which app it is, so no "+
 		"record of it could be counted — name the app of the orchestrator by its number", subject.Login)
 }
+
+// numberOfAnApp is the number the host keeps the App of the name under. The endpoint is
+// what a host publishes about an App of it, and the account of an App is written under the
+// name of that App with the suffix the host puts behind every account of that kind, so the
+// login the file of a project holds is the whole of the question (docs/DESIGN.md §7i).
+func (a *Adapter) numberOfAnApp(ctx context.Context, slug string) (int64, error) {
+	out, err := a.jsonOfTheHost(ctx, "api", "apps/"+url.PathEscape(slug))
+	if err != nil {
+		return 0, err
+	}
+	var answer struct {
+		ID int64 `json:"id"`
+	}
+	if err := decode(out, &answer); err != nil {
+		return 0, err
+	}
+	if answer.ID <= 0 {
+		return 0, fmt.Errorf("the app %q: the answer of the host holds no number", slug)
+	}
+	return answer.ID, nil
+}
+
+// botSuffix is what the host appends to the login of every account that is an App of it.
+// It is never read out of a login to decide anything: what kind of account the host holds
+// a login as is in the answer of the host already, and a person may have a login that ends
+// in it (docs.DESIGN.md §7h, §7i).
+const botSuffix = "[bot]"
 
 // Status returns how the check runs of the commit stand. A commit with a check
 // that has not finished is a commit crewflow waits for, whatever the others say;
@@ -654,8 +709,23 @@ func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([
 	if err != nil {
 		return nil, err
 	}
+	return a.jsonWith(ctx, append(environment, extra...), args...)
+}
+
+// jsonOfTheHost is gh in the environment of the project and with nothing of the identity
+// of an App in it: the questions whose answers have to be the same whoever asks them are
+// asked of the login of the person, and the number of an App is one of them — a subject of
+// §7h has to be one subject, whether a review of a change or a queue of attention counts
+// it, and a question of the App about itself and a question of the person about it would
+// be two questions with two answers (docs.DESIGN.md §7i).
+func (a *Adapter) jsonOfTheHost(ctx context.Context, args ...string) ([]byte, error) {
+	return a.jsonWith(ctx, a.environment(), args...)
+}
+
+// jsonWith is gh in an environment and what it wrote.
+func (a *Adapter) jsonWith(ctx context.Context, environment []string, args ...string) ([]byte, error) {
 	command := append([]string{}, args...)
-	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(environment, extra...))
+	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", environment)
 	if err != nil {
 		return nil, fmt.Errorf("gh %s: %w", strings.Join(command, " "), err)
 	}
@@ -688,9 +758,15 @@ func (a *Adapter) environment() []string {
 // A command that does not talk to the host is not given the token: `gh --version` and
 // the report of a machine are not the business of the App, and a token in the
 // environment of a command is a token in whatever that command writes (§7e).
+//
+// An adapter that was built to look is the login of the person in every question, with an
+// App of the orchestrator behind it or without one: a token of an App is minted to act in
+// its name, and reading the state of a project is not acting. The accounts of the lists of
+// the gate are counted by the numbers of §7h, and those come out of the answers of the host
+// whoever asks them (docs.DESIGN.md §7i).
 func (a *Adapter) speaking(ctx context.Context) ([]string, error) {
 	environment := a.environment()
-	if a.orchestrator == nil {
+	if a.looking || a.orchestrator == nil {
 		return environment, nil
 	}
 	token, err := a.orchestratorToken(ctx)
@@ -698,6 +774,18 @@ func (a *Adapter) speaking(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 	return append(environment, "GH_TOKEN="+token), nil
+}
+
+// mayAct is the right to write under a task or under a change request, and a refusal
+// where the adapter was built to look: a record written as the person where the App of
+// the orchestrator was meant is a decision of the owner, and a gate counts none of it
+// while saying that nobody had approved anything (docs.DESIGN.md §7h, §7i).
+func (a *Adapter) mayAct() error {
+	if !a.looking {
+		return nil
+	}
+	return errors.New("this host of the project shows the state of the project and writes nothing in it: a record " +
+		"in the name of the app of the orchestrator is written by the roles that hold its key")
 }
 
 // decode is json.Unmarshal with the command in the error, because a JSON of a

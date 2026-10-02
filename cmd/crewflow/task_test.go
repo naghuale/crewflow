@@ -1624,6 +1624,7 @@ func (h *host) use(t *testing.T) {
 	t.Cleanup(func() {
 		taskRoles = roles.New
 		reviewRoles = roles.AsOrchestrator
+		stateRoles = roles.ToShow
 		taskRunEnv = taskrun.System
 		taskMachine = proc.System()
 		taskClock = time.Now
@@ -1641,8 +1642,14 @@ func (h *host) use(t *testing.T) {
 	// The queue of attention asks the host as the orchestrator of the project and not as
 	// the executor of a run, so the roles of the orchestrator are a host of the test as
 	// well: a command that reached the host of a person would read the tracker of a project
-	// that is not the one of the test (docs/DESIGN.md §6a, §7i).
+	// that is not the one of the test (docs.DESIGN.md §6a, §7i).
 	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
+		return forge.Set{Tracker: h, Forge: h}, nil
+	}
+	// The queue is read with the roles of a command that only shows the state, and those
+	// are a host of the test too — and they are asked for by name, so that a test can see
+	// which of the two ways of §7i the command asked the roles in (docs/DESIGN.md §6a, §7i).
+	stateRoles = func(config.Config, forge.Env) (forge.Set, error) {
 		return forge.Set{Tracker: h, Forge: h}, nil
 	}
 	taskRunEnv = func(home string) taskrun.Env {

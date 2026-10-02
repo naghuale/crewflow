@@ -261,9 +261,11 @@ func (h hostOfAttention) changeFacts(ctx context.Context, number, task int, labe
 // no tracker, and the answer says so rather than letting a schedule believe that a notice
 // is there (docs/DESIGN.md §6a, §7g).
 //
-// The roles of the project are the roles of its orchestrator — the same ones a review and a
-// merge are made of — and they are built the first time there is something to leave under a
-// task, and not before: a project whose host is not reachable, or a queue with nothing
+// The roles of the project are the roles of its orchestrator with its key — the same ones
+// a review and a merge are made of, and not the ones a command that only shows the state
+// works with. A record under a task is a write, and a write is an act in the name of the
+// App of the orchestrator: it is built the first time there is something to leave under a
+// task, and not before, so a project whose host is not reachable, or a queue with nothing
 // escalated in it, is answered without a network at all. A record of the queue is a word to
 // the orchestrator and is written as him: in the mode of an account of its own the App of the
 // executor is refused by the host of an issue, and a notice that cannot be written is no

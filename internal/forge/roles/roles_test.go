@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -150,7 +151,7 @@ func TestHostOfWithoutAHost(t *testing.T) {
 		CI:      config.CI{Kind: "none"},
 	}
 
-	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode, cfg.Orchestrator.Mode)
+	hosting, err := hostOf(cfg, newMachine().env(t), cfg.Identity.Mode, cfg.Orchestrator.Mode, WithKeys)
 	if err != nil {
 		t.Fatalf("hostOf returned an error: %v", err)
 	}
@@ -378,6 +379,121 @@ func TestTheExecutorOfTheProjectIsTheAppItRunsAs(t *testing.T) {
 	if asOwner := ExecutorOf(load(t, baseConfig)); asOwner.ID != 0 || asOwner.Kind != "" {
 		t.Errorf("the executor of a project in the mode of the owner is %+v, want nobody in particular", asOwner)
 	}
+}
+
+// storeNobodyMayRead is the store of the secrets of a machine whose keychain of macOS asks
+// the owner of the machine in a window of the system: reading a key out of it opens that
+// window, and on a build nobody has trusted yet nobody is at it — a command that only
+// shows the state of a project stands in front of that window for two minutes a read
+// (F-109, docs/DESIGN.md §6a, §7i).
+//
+// The read is a fall and not a refusal, so that a test says which key was asked for and
+// stops there: a store that returns an error is a store a caller may swallow.
+type storeNobodyMayRead struct{}
+
+func (storeNobodyMayRead) Get(service, account string) ([]byte, error) {
+	panic(fmt.Sprintf("the key %s/%s was read: a command that only shows the state of a project has no business asking for it",
+		service, account))
+}
+
+func (storeNobodyMayRead) Set(string, string, []byte) error { return nil }
+
+func (storeNobodyMayRead) Has(string, string) (bool, error) { return false, nil }
+
+// TestTheRolesThatShowTheStateCountTheAccountsByTheirNumbers: the whole of the second way
+// of the roles of a project. A queue of what wants a person only shows the state of the
+// work, and the accounts it counts records by are numbers the host publishes and numbers
+// the file of the project holds — so the queue is worked out with the store of the secrets
+// of the machine standing in the machine: nothing in it can read a key, and a command that
+// only looks must work exactly as it is (docs/DESIGN.md §6a, §7h, §7i).
+func TestTheRolesThatShowTheStateCountTheAccountsByTheirNumbers(t *testing.T) {
+	m := machineOfTheNumbers()
+	cfg := load(t, baseConfig+botConfig+orchestratorConfig+
+		"\n[merge]\nreviewers = [\"crewflow-orchestrator[bot]\"]\nowners = [\"naghuale\"]\n")
+	m.secrets = storeNobodyMayRead{}
+
+	set, err := ToShow(cfg, m.env(t))
+	if err != nil {
+		t.Fatalf("ToShow returned an error: %v", err)
+	}
+
+	reviewers, err := ReviewersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("ReviewersOf returned an error: %v", err)
+	}
+	owners, err := OwnersOf(t.Context(), cfg, set)
+	if err != nil {
+		t.Fatalf("OwnersOf returned an error: %v", err)
+	}
+	if want := (forge.Subject{Kind: forge.KindApp, ID: 5107053}); len(reviewers) != 1 || !reviewers[0].Same(want) {
+		t.Errorf("the reviewers are %+v, want the app of the orchestrator %+v", reviewers, want)
+	}
+	if want := (forge.Subject{Kind: forge.KindUser, ID: 93920024}); len(owners) != 1 || !owners[0].Same(want) {
+		t.Errorf("the owners are %+v, want the account of the owner %+v", owners, want)
+	}
+	if want := (forge.Subject{Kind: forge.KindApp, ID: 5107052}); !ExecutorOf(cfg).Same(want) {
+		t.Errorf("the executor is %+v, want the app of the file %+v", ExecutorOf(cfg), want)
+	}
+	// The number of the App of the orchestrator is asked of the host and not read out of
+	// the keychain: a name in the file of a project is turned into a number by the one
+	// question every host answers about its own apps.
+	if asked := slices.ContainsFunc(m.ran, func(line string) bool {
+		return strings.HasPrefix(line, "api apps/crewflow-orchestrator")
+	}); !asked {
+		t.Errorf("gh was asked %v, want the number of the app the login of the file names", m.ran)
+	}
+	// The host is asked as the person: a token of an App is minted to act in its name, and
+	// a queue is not an act (docs/DESIGN.md §7e, §7i).
+	for i, environment := range m.environment {
+		if slices.ContainsFunc(environment, func(pair string) bool { return strings.HasPrefix(pair, "GH_TOKEN=") }) {
+			t.Errorf("gh was asked for %q with %v, want the login of the person and no token of an app",
+				m.commandLine(i), environment)
+		}
+	}
+}
+
+// TestTheRolesThatShowTheStateHoldNoStoreAtAll: the numbers of the Apps are in the file of
+// the project and stay in the adapter, and the key of an App is not in the file of anything
+// — so an adapter built to show the state carries no store of secrets, and a mistake in it
+// has nothing to read the key with (docs/DESIGN.md §7e, §7i).
+func TestTheRolesThatShowTheStateHoldNoStoreAtAll(t *testing.T) {
+	cfg := load(t, baseConfig+botConfig+orchestratorConfig)
+
+	set, err := ToShow(cfg, newMachine().env(t))
+	if err != nil {
+		t.Fatalf("ToShow returned an error: %v", err)
+	}
+	adapter, ok := set.Forge.(*github.Adapter)
+	if !ok {
+		t.Fatalf("the host of the project is %T, want the adapter of GitHub", set.Forge)
+	}
+	if orchestrator := adapter.Orchestrator(); orchestrator == nil || orchestrator.Store != nil {
+		t.Errorf("the app of the orchestrator of the project is %+v, want its number and no store of secrets", orchestrator)
+	}
+	if app := adapter.App(); app != nil {
+		t.Errorf("the app of the executor is %+v, want none: a command that shows the state neither commits as a run nor opens its change request", app)
+	}
+	// The gate is made of the roles that hold the keys: a review writes its record in the
+	// name of the App of the orchestrator, and that is a write (§7h, §7i).
+	gate, err := AsOrchestrator(cfg, newMachine().env(t))
+	if err != nil {
+		t.Fatalf("AsOrchestrator returned an error: %v", err)
+	}
+	withKeys, ok := gate.Forge.(*github.Adapter)
+	if !ok || withKeys.Orchestrator() == nil || withKeys.Orchestrator().Store == nil {
+		t.Errorf("the app of the orchestrator of a review is %+v, want the store where its key is kept", gate.Forge)
+	}
+}
+
+// machineOfTheNumbers is the machine of a project in the mode of a second App: what gh
+// answers about the two accounts the lists of the file name, and the number it publishes for
+// the name of the App of the orchestrator (docs/DESIGN.md §7h, §7i).
+func machineOfTheNumbers() *machine {
+	return newMachine().
+		prints("api users/crewflow-orchestrator%5Bbot%5D",
+			`{"id": 336252606, "login": "crewflow-orchestrator[bot]", "type": "Bot"}`).
+		prints("api users/naghuale", `{"id": 93920024, "login": "naghuale", "type": "User"}`).
+		prints("api apps/crewflow-orchestrator", `{"id": 5107053, "slug": "crewflow-orchestrator"}`)
 }
 
 // load reads a crewflow.toml of the test into the settings, and it writes the

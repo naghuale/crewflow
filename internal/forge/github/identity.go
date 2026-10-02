@@ -230,8 +230,12 @@ func (a *Adapter) account() string {
 // Where the orchestrator of the project has an account of its own, that account is the
 // one — gh is given the token of the App in every command, so the login it happens to
 // be signed in as is not what a record of a review is written in (§7i).
+//
+// An adapter that was built to look speaks as the login of the person in every command,
+// and that is the account it names: a record nobody is going to write has no account to
+// be written in (§7i).
 func (a *Adapter) SignedIn(ctx context.Context) (string, error) {
-	if a.orchestrator != nil {
+	if a.orchestrator != nil && !a.looking {
 		bot, err := a.orchestrator.Bot(ctx)
 		if err != nil {
 			return "", err
@@ -253,8 +257,16 @@ func (a *Adapter) SignedIn(ctx context.Context) (string, error) {
 // what changes when an App is renamed (F-081, docs.DESIGN.md §7h, §7i). The login above
 // is where the answer comes from; the number is one question more of the host, and it is
 // asked only where something is decided by it.
+//
+// An adapter that was built to look has no name to give and does not go and ask the host
+// for one: the number of the App of the orchestrator is all the file of the project says
+// about it, the host publishes no name against a number, and a subject without a name is
+// a subject a gate counts records by like any other (§7i).
 func (a *Adapter) SigningAs(ctx context.Context) (forge.Subject, error) {
 	if a.orchestrator != nil {
+		if a.looking {
+			return forge.Subject{Kind: forge.KindApp, ID: a.orchestrator.AppID}, nil
+		}
 		bot, err := a.orchestrator.Bot(ctx)
 		if err != nil {
 			return forge.Subject{}, err
@@ -279,6 +291,9 @@ func (a *Adapter) SigningAs(ctx context.Context) (forge.Subject, error) {
 // would be a request the gate of a review cannot tell from one of the owner, which is
 // the very thing the mode of the bot is for (§7h).
 func (a *Adapter) OpenChangeRequest(ctx context.Context, branch, title, body string) (forge.ChangeRequest, error) {
+	if err := a.mayAct(); err != nil {
+		return forge.ChangeRequest{}, err
+	}
 	if a.app == nil {
 		return forge.ChangeRequest{}, errors.New("this project has no app of its own, so its runs open no change request for themselves")
 	}
@@ -344,6 +359,9 @@ func (a *Adapter) HeadRef(number int) string {
 // orchestrator works apart from the owner, and the login of the person where it does
 // not (docs/DESIGN.md §7h, §7i).
 func (a *Adapter) WriteComment(ctx context.Context, number int, body string) error {
+	if err := a.mayAct(); err != nil {
+		return err
+	}
 	environment, err := a.speaking(ctx)
 	if err != nil {
 		return err
