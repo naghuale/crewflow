@@ -274,10 +274,9 @@ type Env struct {
 	Now     func() time.Time
 	// Git is the git of the machine, asked with the given environment added to the one of
 	// the process: the check of the capability of a route is the git of this machine and
-	// not a git of a test (docs/DESIGN.md §7d). It is nil for a report that asks no
-	// route of anything, and the check of the capability of git is then `unknown` —
-	// nothing was learned, and nothing failed either.
-	Git func(ctx context.Context, args []string, environment []string) (stderr string, exitCode int, err error)
+	// not a git of a test (docs/DESIGN.md §7d). Its list and its complaint are two
+	// streams, and a check reads the first as the answer and the second as the reason.
+	Git func(ctx context.Context, args []string, environment []string) (stdout, stderr string, exitCode int, err error)
 	// NetworkAPI is the address the check of the capability of the host asks, when the
 	// machine of the report is not the one of the project: a test hands a report its own
 	// server, so that no check of crewflow reaches the network of the machine the tests

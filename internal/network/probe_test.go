@@ -33,12 +33,30 @@ func (c *clockOfTheTest) tick(d time.Duration) { c.at = c.at.Add(d) }
 type machineOfTheTest struct {
 	clock       *clockOfTheTest
 	answered    string
+	gitListed   string
 	gitSaid     string
 	gitCode     int
+	gitFails    error
 	gitRan      [][]string
 	gitWasGiven [][]string
 	withoutGit  bool
+	// gitAnswers are the answers of one run after another, so that a case can give the
+	// straight route and the proxied route of the same check different answers: the results
+	// of two routes are two results and are never mixed (§7d).
+	gitAnswers []recordedGit
 }
+
+// recordedGit is one answer of the git of a machine of a test: the two streams as a real
+// git writes them, and the code it exited with.
+type recordedGit struct {
+	listed string
+	said   string
+	code   int
+}
+
+// aHeadOfMain is what a real git writes for `ls-remote <url> refs/heads/main` on a
+// repository it may read: forty signs of the commit, a tab, and the name of the ref.
+const aHeadOfMain = "119aae76c4a2f1e4bd1e1e1c2b8f2c0e9a7d4b31\trefs/heads/main\n"
 
 // api answers the check of the host with whatever the case wrote, and nothing else.
 func (m *machineOfTheTest) api(w http.ResponseWriter, _ *http.Request) {
@@ -62,13 +80,20 @@ func (m *machineOfTheTest) code() int {
 	return http.StatusOK
 }
 
-func (m *machineOfTheTest) git(_ context.Context, args, environment []string) (string, int, error) {
+// git is the git of the machine of the test: it records what it was asked and answers with
+// what the case wrote, as two streams, the way a real git writes them.
+func (m *machineOfTheTest) git(_ context.Context, args, environment []string) (string, string, int, error) {
 	m.gitRan = append(m.gitRan, args)
 	m.gitWasGiven = append(m.gitWasGiven, environment)
-	if m.gitSaid == "" {
-		return "", m.gitCode, nil
+	if len(m.gitAnswers) > 0 {
+		answer := m.gitAnswers[0]
+		m.gitAnswers = m.gitAnswers[1:]
+		return answer.listed, answer.said, answer.code, nil
 	}
-	return m.gitSaid, m.gitCode, nil
+	if m.gitFails != nil {
+		return "", "", -1, m.gitFails
+	}
+	return m.gitListed, m.gitSaid, m.gitCode, nil
 }
 
 // machine is the machine of the check with the server of the API of it and the clock
@@ -81,6 +106,7 @@ func machine(t *testing.T, m *machineOfTheTest) (Machine, func()) {
 		Now: m.clock.now, Timeout: 2 * time.Second, ValidFor: time.Hour,
 		APIURL: answer.URL + "/rate_limit",
 		GitURL: "https://github.com/naghuale/crewflow.git",
+		GitRef: "refs/heads/main",
 	}
 	if !m.withoutGit {
 		checked.Git = m.git
@@ -198,20 +224,28 @@ func TestACheckThatCouldNotBeMadeIsUnknownAndNotAFailure(t *testing.T) {
 	}
 }
 
-// TestACheckOfTheHostThatAnswersAndRefusesIsARouteThatWorks: a host that says 401 has
-// been reached through the route, and a person sent to the proxy because of it would be
-// sent away from the thing that is broken.
-func TestACheckOfTheHostThatAnswersAndRefusesIsARouteThatWorks(t *testing.T) {
+// TestGITNET014TheAnswerOfTheHostIsReadByTheClosedRule: an answer of the API of the host
+// says about the route what it says and nothing more. 2xx and 3xx are the route working;
+// a 407 is the proxy wanting a login, which is a route that does not work as it is; 401,
+// 403 and 404 say that the host answered and did not let this request in, which proves
+// nothing about the route and is therefore `unknown`; 5xx is the host failing
+// (docs/DESIGN.md §7d).
+func TestGITNET014TheAnswerOfTheHostIsReadByTheClosedRule(t *testing.T) {
 	for _, tc := range []struct {
-		code string
-		want string
+		code   string
+		want   string
+		reason string
 	}{
-		{"code 401", StateAvailable},
-		{"code 404", StateAvailable},
-		{"code 502", StateUnavailable},
+		{"code 200", StateAvailable, ""},
+		{"code 301", StateAvailable, ""},
+		{"code 401", StateUnknown, ReasonAPIUnclassified},
+		{"code 403", StateUnknown, ReasonAPIUnclassified},
+		{"code 404", StateUnknown, ReasonAPIUnclassified},
+		{"code 407", StateUnavailable, ReasonProxyAuth},
+		{"code 502", StateUnavailable, ReasonAPIUnclassified},
 	} {
 		t.Run(tc.code, func(t *testing.T) {
-			fake := &machineOfTheTest{answered: tc.code}
+			fake := &machineOfTheTest{answered: tc.code, gitListed: aHeadOfMain}
 			checked, closeServer := machine(t, fake)
 			defer closeServer()
 			_, cfg := withFile(t, keysOf("mode", `"direct"`))
@@ -225,8 +259,12 @@ func TestACheckOfTheHostThatAnswersAndRefusesIsARouteThatWorks(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the check of the route: %v", err)
 			}
-			if states[0].Result != tc.want {
-				t.Errorf("the API came out as %q (%s), want %q", states[0].Result, states[0].Detail, tc.want)
+			api := states[0]
+			if api.Result != tc.want {
+				t.Errorf("the API came out as %q (%s), want %q", api.Result, api.Detail, tc.want)
+			}
+			if api.Reason != tc.reason {
+				t.Errorf("the API came out with the reason %q (%s), want %q", api.Reason, api.Detail, tc.reason)
 			}
 		})
 	}
@@ -240,10 +278,10 @@ func TestACheckOlderThanTheTermOfTheProjectIsStale(t *testing.T) {
 	checked, closeServer := machine(t, fake)
 	defer closeServer()
 	checked.ValidFor = time.Minute
-	checked.Git = func(context.Context, []string, []string) (string, int, error) {
+	checked.Git = func(context.Context, []string, []string) (string, string, int, error) {
 		// The check takes longer than the project says a fact of it is worth.
 		fake.clock.tick(2 * time.Minute)
-		return "", 0, nil
+		return aHeadOfMain, "", 0, nil
 	}
 	_, cfg := withFile(t, keysOf("mode", `"direct"`))
 	route, err := Choose(cfg, "api.github.com")

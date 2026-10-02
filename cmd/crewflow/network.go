@@ -557,7 +557,7 @@ func runNetworkTest(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "route: %s (%s://%s:%d)\n", route.Why, route.Profile.Type, route.Profile.Host, route.Profile.Port)
 		}
 		for _, state := range states {
-			fmt.Fprintf(stdout, "%-15s %-11s %s%s\n", state.Capability, state.Result, state.Detail, timingOf(state))
+			fmt.Fprintf(stdout, "%-15s %-11s %s%s\n", state.Capability, state.Result, reasonOf(state), timingOf(state))
 		}
 	}
 	for _, state := range states {
@@ -566,6 +566,20 @@ func runNetworkTest(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	return exitOK
+}
+
+// reasonOf is the closed reason of a capability beside its state, for a person to read:
+// `unavailable` without the reason is a failure of the route with nothing said about which
+// one it is, and `unknown` without it is a check that learned nothing with no word to look
+// for in a log (docs/DESIGN.md §7d).
+func reasonOf(state network.State) string {
+	if state.Reason == "" {
+		return state.Detail
+	}
+	if state.Detail == "" {
+		return state.Reason + ": nothing else to say"
+	}
+	return state.Reason + ": " + state.Detail
 }
 
 // timingOf is how long a check took, as a person reads a time next to what it found.

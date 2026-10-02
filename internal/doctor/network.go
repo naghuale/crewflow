@@ -82,23 +82,49 @@ func Network(ctx context.Context, env Env, cfg config.Config) []Check {
 	if err != nil {
 		return []Check{{Name: networkCheck, Status: Fail, Detail: err.Error()}}
 	}
-	route, err := network.Choose(cfg, "")
-	if err != nil {
-		return []Check{{Name: networkCheck, Status: Fail, Detail: err.Error()}}
+	// The straight route and the active profile are two routes and are checked apart: the
+	// results of one say nothing about the other, and a report that mixed them would be a
+	// report about a route nobody uses (docs/DESIGN.md §7d).
+	straight := network.Route{Direct: true, Why: `network.mode = "direct"`}
+	routes := []network.Route{straight}
+	if cfg.Network.ActiveProxy != "" {
+		proxied, err := network.Through(cfg, cfg.Network.ActiveProxy)
+		if err != nil {
+			return []Check{{Name: networkCheck, Status: Fail, Detail: err.Error()}}
+		}
+		routes = append(routes, proxied)
 	}
-	machine := network.Factory(cfg)(network.System(route, cfg.Network.NoProxy, env.Secrets, env.Now, connect, validFor))
-	machine.Git = env.Git
-	if env.NetworkAPI != "" {
-		machine.APIURL = env.NetworkAPI
-	}
-	states, err := network.Check(ctx, machine, route, cfg.Network.NoProxy)
-	if err != nil {
-		return []Check{{Name: networkCheck, Status: Fail, Detail: err.Error()}}
-	}
-	checks := make([]Check, 0, len(states)+1)
-	checks = append(checks, routeCheck(route))
-	for _, state := range states {
-		checks = append(checks, capabilityCheck(state))
+	checks := make([]Check, 0, len(routes)*(len(network.Capabilities)+1))
+	for _, route := range routes {
+		machine := network.Factory(cfg)(network.System(route, cfg.Network.NoProxy, env.Secrets, env.Now, connect, validFor))
+		machine.Git = env.Git
+		if env.NetworkAPI != "" {
+			machine.APIURL = env.NetworkAPI
+		}
+		states, err := network.Check(ctx, machine, route, cfg.Network.NoProxy)
+		if err != nil {
+			// The route could not be worked out at all, and what the other route answered
+			// stays as it was answered: one route that cannot be checked does not take the
+			// answer of another away from the report.
+			checks = append(checks, Check{
+				Name: networkCheck, Status: Fail,
+				Detail: err.Error(), Hint: "the route of this project cannot be worked out",
+			})
+			continue
+		}
+		checks = append(checks, routeCheck(route))
+		for _, state := range states {
+			checks = append(checks, capabilityCheck(route, state))
+		}
+		if ctx.Err() != nil {
+			// The check was stopped: the route is marked, and the route that comes after
+			// it is not checked at all rather than checked into nothing.
+			checks = append(checks, Check{
+				Name: networkCheck, Status: Warn,
+				Detail: "the check was stopped before it could answer the rest of the routes",
+			})
+			break
+		}
 	}
 	return checks
 }
@@ -120,17 +146,21 @@ func routeCheck(route network.Route) Check {
 	}
 }
 
-// capabilityCheck is one capability and what came of it. A capability nobody checked is a
-// warning and not a failure: nothing was learned, and a check that could not be made is
-// not a check that failed (§7d).
-func capabilityCheck(state network.State) Check {
-	check := Check{Name: "network " + state.Capability, Detail: state.Detail}
+// capabilityCheck is one capability of one route and what came of it. An `unknown` is a
+// warning and not a failure: nothing was learned, and a check that could not read its
+// answer is not a check that failed — MODEL holds that UNKNOWN is not success (§7d, §6a).
+func capabilityCheck(route network.Route, state network.State) Check {
+	check := Check{Name: "network " + nameOf(route) + " " + state.Capability, Detail: state.Detail}
+	if state.Reason != "" {
+		check.Detail = state.Reason + ": " + check.Detail
+	}
 	switch state.Result {
 	case network.StateAvailable:
 		check.Status = OK
 	case network.StateUnavailable:
 		check.Status = Fail
-		check.Hint = "try another profile, or `crewflow network mode direct`, and check again with `crewflow network proxy test`"
+		check.Hint = "try another profile, or `crewflow network mode direct`, " +
+			"and check again with `crewflow network proxy test`"
 	default:
 		check.Status = Warn
 	}
@@ -138,4 +168,13 @@ func capabilityCheck(state network.State) Check {
 		check.Detail += " (" + state.Duration + ")"
 	}
 	return check
+}
+
+// nameOf is how a report names the route of a capability: two routes are two sets of lines,
+// and the name of the route is in every one of them.
+func nameOf(route network.Route) string {
+	if route.Direct {
+		return "direct"
+	}
+	return route.Name
 }

@@ -684,11 +684,22 @@ rule that could be read two ways is refused rather than guessed at.
 
 **A profile that is there is not a profile that works.** `network proxy test` and
 `crewflow doctor network` check three capabilities separately — `github-api`,
-`git-https`, `model-provider` — and say `available`, `unavailable`, `unknown` or `stale`
-for each, with the time the check took. The success of GitHub says nothing about the model
-provider, and "the executor goes through the proxy" stays `unknown` until a run has really
-proved it. Editing a profile never activates it and never checks it: a profile can be
-prepared before it answers.
+`git-https`, `model-provider` — each with its own word (`available`, `unavailable`,
+`unknown`, `interrupted`, `stale`), its own closed reason (`dns-failed`,
+`connection-refused`, `connection-timeout`, `tls-failed`, `proxy-authentication-required`,
+`git-check-unclassified`) and the time the check took. Both routes are checked and reported
+apart: what the straight route answered says nothing about the profile, and what the profile
+answered says nothing about the straight route.
+
+The list of reasons is closed, and that is the point: a non-zero exit of git never counts as
+a working route by itself. Credentials refused (`Authentication failed`, `Permission
+denied`), a repository or a ref that is not there, a code crewflow has no word for, nothing
+said at all — all of it is `unknown`, which is a check that learned nothing and is not a
+reason to change the route. A refusal of credentials is not a failure of the network: the
+network got there. The success of GitHub says nothing about the model provider either, and
+"the executor goes through the proxy" stays `unknown` until a run has really proved it.
+Editing a profile never activates it and never checks it: a profile can be prepared before
+it answers.
 
 Credentials of a profile live in the keychain of the machine under
 `network-proxy/<name>`, never in the file of the project — an address with a login in it

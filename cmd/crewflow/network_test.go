@@ -351,7 +351,9 @@ func (n *networkHost) use(t *testing.T) {
 		return doctor.Env{
 			ConfigPath: configPath, TempDir: tempDir, Probe: probe, Out: out,
 			Secrets: n.secrets, Now: time.Now, NetworkAPI: n.api + "/rate_limit",
-			Git: func(context.Context, []string, []string) (string, int, error) { return "", 0, nil },
+			Git: func(context.Context, []string, []string) (string, string, int, error) {
+				return "119aae76c4a2f1e4bd1e1e1c2b8f2c0e9a7d4b31\trefs/heads/main\n", "", 0, nil
+			},
 		}
 	}
 }
