@@ -75,6 +75,13 @@ type Env struct {
 	// cannot say leaves the state of the task as it was written before: an attempt
 	// that names no process, which a list reads the old way.
 	Process func() (proc.Process, bool)
+	// Alive asks the machine whether the process of another run of the project is still
+	// there, and it is what takes a run that crewflow was killed in the middle of out of
+	// the set of the runs that are going (docs.DESIGN.md §7). A machine that is not asked
+	// is a machine whose answer is the one the state of the task gives, so a run whose
+	// process crewflow cannot ask about goes on counting as a run that is going
+	// (docs.DESIGN.md §7c).
+	Alive Liveness
 	// ConfigPath is the crewflow.toml this run was asked for, which a hint of a
 	// refusal names: a person who is told "add app_id to <path>" has to know which
 	// file (docs/DESIGN.md §5).
@@ -109,6 +116,7 @@ func System(home string) Env {
 		Tick:     Tick,
 		Now:      time.Now,
 		Process:  machine.Self,
+		Alive:    machine.Alive,
 		// The key of the App of the project is in the store of the machine, and a
 		// run in the mode of the bot signs a token with it; a run in the mode of the
 		// owner never touches the store (docs/DESIGN.md §7i).
@@ -222,6 +230,12 @@ type Result struct {
 	// went outside the boundaries of the task is told about the request as well, or
 	// a person would not see the work to look at.
 	ChangeRequest *forge.ChangeRequest `json:"change_request,omitempty"`
+	// Admission is the record of the pair that let this run start while another run of the
+	// project was going, and it is nothing for a run that had the project to itself. A
+	// report says it where the run went beside another one: a run that went on by an
+	// exception of the owner is a run two people decided on, and it is not a pair of two
+	// clean tasks however clean the criteria of its record look (docs.DESIGN.md §7c).
+	Admission *task.Admission `json:"admission,omitempty"`
 }
 
 // OK is whether the run did what a run is for: it opened the change request of its
@@ -255,6 +269,14 @@ const (
 func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Request) (Result, error) {
 	r := &runner{env: env, cfg: cfg, set: set, req: req, hang: &hang{}, by: byPerson}
 	if err := r.readTask(ctx); err != nil {
+		return Result{}, err
+	}
+	// A second run of one project does not begin without a record of the admission of the
+	// pair, and the check is here rather than in the memory of an orchestrator: the rule was
+	// written down twice and did not hold the action twice (F-135, F-146). It is applied
+	// before the worktree of the task is made and before the key of the App is asked for,
+	// so that a refusal of it leaves nothing behind (§7c, §7i).
+	if err := r.admit(ctx); err != nil {
 		return Result{}, err
 	}
 	// The point of the task is read and checked before the worktree of it is looked at
@@ -393,6 +415,12 @@ type runner struct {
 	// `direct`, because a run that hands its executor a proxy nobody chose is a run that
 	// sends a task of a person to a machine of somebody else (docs/DESIGN.md §7d).
 	route []string
+	// admission is the record of the pair that let this run start beside another run of
+	// the project. It is worked out before the worktree of the task is made, and it is said
+	// in the journal of the attempt and in the report of the run: a run that went beside
+	// another one is a run somebody decided to let it go, and a person reading it
+	// afterwards has to see that (docs.DESIGN.md §7c, §7i).
+	admission *task.Admission
 }
 
 // readTask takes the task from the tracker and checks that it may be run at all.
@@ -847,11 +875,15 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		_ = files.Close()
 		return r.stopBeforeStart(state, err)
 	}
-	// Whose name the run went under is the first line of the journal, before what the
-	// executor did and before the rights it was given: a person reading a journal of a
-	// run afterwards has to see whose name it went under without reading the state file
-	// as well (docs/DESIGN.md §7i).
+	// Whose name the executor of the run worked under, and what it went on with, are the
+	// first lines of the journal, before what the executor did and before the rights it
+	// was given: a person reading a journal of a run afterwards has to see whose name it
+	// went under without reading the state file as well, and a run that went beside
+	// another one has to see there that it did (docs.DESIGN.md §7i, §7c).
 	fmt.Fprintf(files.Out, "crewflow: executor: %s\n", r.identity.Description)
+	if r.admission != nil {
+		fmt.Fprintln(files.Out, markOf(*r.admission))
+	}
 	// Every attempt that goes on in the session of the attempt before it says so in its own
 	// journal, with what it went on for and the session it goes on in: a person who opens
 	// the journal of the second attempt of a task has to see there whether crewflow went on

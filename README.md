@@ -161,6 +161,7 @@ Put a `crewflow.toml` in the root of your repository (see [the example](crewflow
 crewflow doctor            # tools, requirements, access, the identity of the executor and of the orchestrator
 crewflow task check 12     # is issue #12 ready and, if risky, approved?
 crewflow task run 12       # the executor works on it in its own worktree and opens a PR
+crewflow task admit 11 12  # write the record that lets two tasks run beside each other, and print K1–K8
 crewflow task resume 12    # go on from the point a run stopped at, after a decision of yours
 crewflow review 14         # may PR #14 be merged, and if not, why not
 crewflow review 14 -approve   # write REVIEW: APPROVED <full sha> on the head
@@ -206,6 +207,45 @@ project the tasks are counted on, who ran each of them and whose name it worked 
 (`AGE`), the attempt (`RUN`, `57-2`, and `—` where there was only one) and the change
 request (`CHANGE`). It reads nothing but the local state, and nothing it prints changes what
 the next run does.
+
+## Two tasks beside each other
+
+A second run of one project does not begin beside a going run without a **written record** of the
+pair: `crewflow task run N` refuses it before it makes a worktree, and the refusal names the
+command that writes the record.
+
+```sh
+crewflow task admit 11 12 -c K2=pass -c K3=pass -c K4=pass -c K5=pass -c K6=pass -c K7=pass -c K8=pass
+```
+
+```
+admission of the pair #11, #12: allowed
+  K1 write paths    pass — neither the declared boundaries nor the files of the working copies have anything in common
+  K2 documents      pass
+  …
+  record ~/.crewflow/state/naghuale-crewflow/admission-11-12.json
+```
+
+**K1 the paths is worked out by crewflow**, out of the boundaries the two tasks declare and out of
+the files their working copies have really changed; **K2…K8 the person enters**, with a reason
+where the answer is not a `pass`, and a criterion nobody enters is `unknown` — not a pass. The
+record goes to `~/.crewflow/state/<repo>/admission-<a>-<b>.json` and says what the eight criteria
+are, the decision, and the world the decision was taken against.
+
+At run time the record is applied fail-closed:
+
+| What the record says | What the run gets |
+|---|---|
+| all eight `pass`, decision `allowed` | it goes |
+| no record | `parallel-admission-required` |
+| a record whose world has moved on — a changed specification, boundary, branch, set of running tasks, or a file both tasks may change | `parallel-admission-required`, with what changed |
+| any criterion `unknown` | `parallel-admission-unknown criterion=K…` |
+| any criterion `fail` | `parallel-admission-denied criterion=K… resource=…` |
+| decision `owner-exception` (`-owner-exception "why"`) | it goes, and the journal of the run and the report say so — an experiment of the owner is not a safe pair |
+
+Two runs going and a third starting is refused as well: a record of one pair admits no third task.
+A run that goes on alone is not asked anything about pairs. The words above are a closed list, so
+a program reads one refusal for one reason.
 
 ## A run that stands
 

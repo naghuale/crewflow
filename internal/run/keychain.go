@@ -260,5 +260,9 @@ func (r *runner) resultOf(attempt Attempt, ended time.Time, files *AttemptFiles)
 		EndedAt:      ended,
 		Journal:      files.Journal,
 		ErrorJournal: files.ErrorJournal,
+		// The record of the pair is what let this run start beside another one, and a
+		// report of the run says it: a run that went beside another one is a run somebody
+		// decided to let it go (docs.DESIGN.md §7c).
+		Admission: r.admission,
 	}
 }

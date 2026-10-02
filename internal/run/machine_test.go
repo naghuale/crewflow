@@ -63,6 +63,10 @@ type machine struct {
 	git string
 	// answers is what a command writes and the code it exits with.
 	answers map[string]answer
+	// changed is what git says the working copy of a folder has changed, by that folder:
+	// two worktrees are two questions of the same command line, and the question of the
+	// admission of a pair is asked about the working copies of both tasks of it (§7c).
+	changed map[string]string
 	// then is what a program answers run after run, for a test that runs the same
 	// program more than once and needs to tell the runs apart: the two runs of a task
 	// that crewflow goes on with by itself are two runs of one executor, and what it
@@ -149,9 +153,10 @@ func newMachine(t *testing.T) *machine {
 			"git worktree add":     {},
 			"git diff --name-only": {},
 		},
-		then:   map[string][]answer{},
-		clock:  time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC),
-		looked: make(chan looking),
+		changed: map[string]string{},
+		then:    map[string][]answer{},
+		clock:   time.Date(2026, time.September, 28, 10, 0, 0, 0, time.UTC),
+		looked:  make(chan looking),
 	}
 	// Git is asked where the repository of the project is, because the scratch of a
 	// run is kept out of it, and what commit the worktree of a task stands at, because
@@ -321,7 +326,7 @@ func (m *machine) exec(ctx context.Context, name string, args []string, dir stri
 	program := filepath.Base(name)
 	m.started(program, args, dir)
 	m.wasGiven(extraEnv)
-	answer, ok := m.answerOf(program, args)
+	answer, ok := m.answered(dir, program, args)
 	if !ok {
 		return nil, nil, 127, fmt.Errorf("exec: %q: no answer in the machine", program)
 	}
@@ -344,7 +349,7 @@ func (m *machine) exec(ctx context.Context, name string, args []string, dir stri
 func (m *machine) stream(ctx context.Context, name string, args []string, dir string, env []string, stdout, stderr io.Writer) (int, error) {
 	program := filepath.Base(name)
 	m.started(program, args, dir)
-	answer, ok := m.answerOf(program, args)
+	answer, ok := m.answered(dir, program, args)
 	if !ok {
 		return 127, fmt.Errorf("stream: %q: no answer in the machine", program)
 	}
@@ -436,6 +441,23 @@ func (m *machine) answerOf(program string, args []string) (answer, bool) {
 	}
 	answer, ok := m.answers[program]
 	return answer, ok
+}
+
+// answered is what a command answers in the folder it was run in, and the files the
+// working copies of a test have changed are a question of the folder as much as of the
+// command: two worktrees ask the same `git diff --name-only` and are two different
+// questions (docs/DESIGN.md §7c).
+func (m *machine) answered(dir, program string, args []string) (answer, bool) {
+	changed, is := m.changed[dir]
+	if !is || !strings.HasPrefix(program, "git") {
+		return m.answerOf(program, args)
+	}
+	for _, arg := range args {
+		if arg == "diff" || arg == "ls-files" {
+			return answer{stdout: changed}, true
+		}
+	}
+	return m.answerOf(program, args)
 }
 
 // made is what a command left on the machine. Only git makes worktrees here, and it

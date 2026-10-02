@@ -30,6 +30,19 @@ func (b Boundaries) Outside(files []string) ([]string, error) {
 	return outside, nil
 }
 
+// Covers is whether one of the boundaries names the file: the question a run asks of
+// every file it changed, and the question the admission of a pair asks of every file one
+// of its tasks may change for the other (docs/DESIGN.md §7c).
+func (b Boundaries) Covers(file string) bool {
+	globs, err := b.compile()
+	if err != nil {
+		// A glob crewflow cannot compile is a glob nobody may be told a file is under,
+		// and a boundary that says nothing covers nothing.
+		return false
+	}
+	return slices.ContainsFunc(globs, func(glob *regexp.Regexp) bool { return glob.MatchString(file) })
+}
+
 // compile is every boundary as a matcher. A glob of a task is written by a person
 // in a path syntax of the shell, where `**` is not special either, so crewflow
 // spells out what it means by it: `**` crosses folders, `*` and `?` do not.

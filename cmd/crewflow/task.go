@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -71,6 +72,8 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 		return runTaskResume(args[1:], stdout, stderr)
 	case "check":
 		return runTaskCheck(args[1:], stdout, stderr)
+	case "admit":
+		return runTaskAdmit(args[1:], stdout, stderr)
 	case "watch":
 		return runTaskWatch(args[1:], stdout, stderr)
 	case "list":
@@ -273,6 +276,168 @@ func runTaskCheck(args []string, stdout, stderr io.Writer) int {
 		return exitFailure
 	}
 	return exitOK
+}
+
+// runTaskAdmit is `crewflow task admit <A> <B>`: it takes both of the tasks from the
+// tracker, works K1 out of the boundaries they declare and of the files their working
+// copies have really changed, adds what a person entered for the other seven criteria,
+// and writes the record the second run of the pair is applied from
+// (docs/DESIGN.md §7c).
+//
+// It is written before the run, never after: a record written after the second run
+// started is `parallel-admission-violation`, and the record itself cannot tell the two
+// apart — the state of the world it was taken against is what a run checks, and a pair
+// whose world has not moved on since is a pair whose record was written before (F-135).
+//
+// The code of the command is zero only where the pair is admitted: the record is written
+// whatever it says, and a person who asked about a pair that does not hold is told so by
+// the code as well as by the eight lines.
+func runTaskAdmit(args []string, stdout, stderr io.Writer) int {
+	flags := taskFlags("admit", stderr)
+	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
+	repoDir := flags.String("repo", "", "the repository the working copies of the pair are of, the folder crewflow was called in when empty")
+	entered := criteriaFlags(flags)
+	exception := flags.String("owner-exception", "", "the decision of the owner for this experiment, and why he gave it")
+	asJSON := flags.Bool("json", false, "print the record as JSON, for the orchestrator")
+	one, other, code := takePair(args, flags, stderr)
+	if code != exitOK {
+		return code
+	}
+	first, named := taskNumber(stderr, "admit", one)
+	second, namedOther := taskNumber(stderr, "admit", other)
+	if !named || !namedOther {
+		return exitUsage
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	home, err := cfg.ExpandPath(crewflowHome)
+	if err != nil {
+		return failed(stderr, err)
+	}
+	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
+	if err != nil {
+		return failed(stderr, err)
+	}
+	notices := secret.NewNotices(stderr)
+	env := taskRunEnv(home)
+	env.ConfigPath = *configPath
+	env.Notices = notices
+	record, err := taskrun.Admit(context.Background(), env, cfg, set, taskrun.AdmissionRequest{
+		First:     first,
+		Second:    second,
+		RepoDir:   *repoDir,
+		Entered:   entered.by,
+		Exception: *exception,
+	})
+	if err != nil {
+		return failed(stderr, err)
+	}
+	path := taskrun.JournalsOf(home, cfg.RepoName()).AdmissionPath(record.Tasks)
+	if *asJSON {
+		if err := printJSON(stdout, admissionAnswer{Admission: record, Path: path}); err != nil {
+			return failed(stderr, err)
+		}
+	} else {
+		printAdmission(stdout, record, path)
+	}
+	if !record.Admits() {
+		return exitFailure
+	}
+	return exitOK
+}
+
+// admissionAnswer is the record of a pair as the orchestrator reads it: the record itself
+// and the file it is in, so that a program may look at it without knowing where crewflow
+// keeps the state of a project.
+type admissionAnswer struct {
+	task.Admission
+	// Path is the file the record is written in.
+	Path string `json:"path"`
+}
+
+// criteriaFlags is what a person wrote for the criteria crewflow cannot work out:
+// `-c K2=pass` and `-c "K7=fail: the state of attention is one contract of the two"`, as
+// many times as there are criteria to say.
+//
+// The words are the words of a record and nothing else, and a line crewflow cannot read is
+// a call it refuses rather than a criterion it guesses: a criterion written into a record
+// out of a misread flag is a criterion nobody checked, and it is `unknown` that a record
+// holds for that (docs/DESIGN.md §7c, §7f).
+type criteriaWritten struct {
+	// by is what was entered, by the name of the criterion.
+	by map[string]task.Criterion
+}
+
+// criteriaFlags adds `-c` to the flags of the command and answers what was written into it.
+// A line crewflow cannot read is refused by [criteriaWritten.Set], and the flag package says
+// why where a person reads the refusal of a call.
+func criteriaFlags(flags *flag.FlagSet) *criteriaWritten {
+	written := &criteriaWritten{by: map[string]task.Criterion{}}
+	flags.Var(written, "c", "what a criterion of the pair is, as K2=pass or K3=fail: <what is in common>")
+	return written
+}
+
+// String is the value of the flag as the usage of the command shows it, which is nothing:
+// the criteria of a pair are written once each and a second `-c` of one says the same
+// thing twice.
+func (c *criteriaWritten) String() string { return "" }
+
+// Set is one `-c` of the command: the name of a criterion, the result of it, and the
+// reason a person entered it with, which is required of everything that is not a `pass`.
+// K1 is not among the criteria a person enters — it is worked out of the boundaries of the
+// two tasks and the files their working copies have changed (§7c).
+func (c *criteriaWritten) Set(value string) error {
+	name, rest, cut := strings.Cut(value, "=")
+	if !cut {
+		return fmt.Errorf("%q is not a criterion of a pair: write it as K2=pass, or K3=fail: what is in common", value)
+	}
+	result, reason, _ := strings.Cut(rest, ":")
+	name, result, reason = strings.ToUpper(strings.TrimSpace(name)),
+		strings.ToLower(strings.TrimSpace(result)), strings.TrimSpace(reason)
+	if name == "K1" {
+		return fmt.Errorf("K1 is worked out by crewflow out of the boundaries of the two tasks and the files " +
+			"their working copies have changed, and it is entered by nobody")
+	}
+	if !slices.Contains(task.CriteriaNames(), name) {
+		return fmt.Errorf("%q is not one of the criteria of a pair: %s", name, strings.Join(task.CriteriaNames(), ", "))
+	}
+	if !slices.Contains(task.Results, result) {
+		return fmt.Errorf("the criterion %s is %q, which is not a result of the format: %s",
+			name, result, strings.Join(task.Results, ", "))
+	}
+	if result != task.ResultPass && reason == "" {
+		return fmt.Errorf("the criterion %s is %q with no reason: write it as -c \"%s=%s: what is in common\", "+
+			"because a criterion nobody may explain is a word a person has to guess about", name, result, name, result)
+	}
+	c.by[name] = task.Criterion{Result: result, Reason: reason}
+	return nil
+}
+
+// printAdmission is the record of a pair as a person reads it: the eight criteria with what
+// each of them is, and the decision they add up to. It is the table of DESIGN §7c, written
+// by the program that keeps the record of it and not by hand under the second task — the
+// words are the same so that a person reads one thing in both places (§7c).
+func printAdmission(w io.Writer, record task.Admission, path string) {
+	fmt.Fprintf(w, "admission of the pair %s: %s\n", record.Tasks, record.Decision)
+	for _, name := range task.CriteriaNames() {
+		one, _ := record.Criteria.One(name)
+		fmt.Fprintf(w, "  %s %-14s %s", name, task.Says(name), one.Result)
+		if one.Result != task.ResultPass {
+			fmt.Fprintf(w, " — %s", one.Reason)
+		}
+		fmt.Fprintln(w)
+	}
+	if record.Criteria.K1.Resource != "" {
+		fmt.Fprintf(w, "  what the two of them have in common: %s\n", record.Criteria.K1.Resource)
+	}
+	if owner := record.Owner; owner != nil {
+		fmt.Fprintf(w, "  the owner of the project decided this pair on his own: %s\n", owner.Why)
+	}
+	fmt.Fprintf(w, "  written %s\n", record.CreatedAt.Format(time.RFC3339))
+	fmt.Fprintf(w, "  record %s\n", path)
 }
 
 // runTaskWatch is `crewflow task watch <N>`: it shows what the executor of the last
@@ -894,6 +1059,33 @@ func takeNumber(subcommand string, args []string, flags *flag.FlagSet, stderr io
 	return number, exitOK
 }
 
+// takePair takes the two numbers of a pair out of the arguments of `task admit` and parses
+// the rest as its flags: the flag package of Go stops at the first word that is not a flag,
+// so both orders have to mean the same thing, as they do for one number in [takeNumber].
+func takePair(args []string, flags *flag.FlagSet, stderr io.Writer) (string, string, int) {
+	var pair []string
+	for len(args) > 0 && len(pair) < 2 && !strings.HasPrefix(args[0], "-") {
+		pair, args = append(pair, args[0]), args[1:]
+	}
+	if err := flags.Parse(args); err != nil {
+		return "", "", exitUsage
+	}
+	// The flag package stops at the first word that is not a flag, and the two numbers
+	// written after the flags are those words — so both orders are the same call.
+	pair = append(pair, flags.Args()...)
+	switch {
+	case len(pair) < 2:
+		fmt.Fprintf(stderr, "crewflow task admit: which pair? two numbers, as in `crewflow task admit 145 182`\n\n")
+		usage(stderr)
+		return "", "", exitUsage
+	case len(pair) > 2:
+		fmt.Fprintf(stderr, "crewflow task admit: unexpected argument %q\n\n", pair[2])
+		usage(stderr)
+		return "", "", exitUsage
+	}
+	return pair[0], pair[1], exitOK
+}
+
 // taskNumber is the number of the task a subcommand is about, which is what the
 // tracker of the project numbers its tasks by, and whether the call named one at all.
 // A word that is not a number is a mistake of the call and not a task that does not
@@ -960,6 +1152,17 @@ func printResult(w io.Writer, result taskrun.Result) {
 	fmt.Fprintf(w, "task %d: %s, attempt %d\n", result.Task, result.Outcome, result.Attempt)
 	if result.Continued && result.Session != "" {
 		fmt.Fprintf(w, "  went on in the session %s of the last run\n", result.Session)
+	}
+	// A run that goes beside another one of the project is said in the report: it was
+	// started on a written admission, and where the owner decided the pair himself the
+	// report says that too — a run that went on by an exception is not a pair of two
+	// clean tasks, whatever its criteria look like (docs/DESIGN.md §7c).
+	if record := result.Admission; record != nil {
+		fmt.Fprintf(w, "  it went beside the run of the task %s on the admission %s", record.Tasks, record.Decision)
+		if record.Owner != nil && record.Owner.Why != "" {
+			fmt.Fprintf(w, " of the owner: %s", record.Owner.Why)
+		}
+		fmt.Fprintln(w)
 	}
 	// A run that went on from the point of the task says so, and a run that stands at a
 	// decision of a person says what that decision is and what to do about it.

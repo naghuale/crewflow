@@ -727,6 +727,10 @@ func stateOf(t *testing.T, m *machine, number int) State {
 type host struct {
 	// task is what the tracker holds.
 	task forge.Task
+	// tasks are the other tasks of the same project, by their number: a pair of tasks is
+	// read from one tracker, and a host of a test that holds one of them says of the
+	// other that it is not there (§7c).
+	tasks map[int]forge.Task
 	// noTask is the answer of a tracker for a task it does not have.
 	noTask error
 	// change is the change request of the branch, and opened says whether there is
@@ -815,6 +819,9 @@ func (h *host) OpenChangeRequest(_ context.Context, branch, title, body string) 
 func (h *host) Task(_ context.Context, number int) (forge.Task, error) {
 	if h.noTask != nil {
 		return forge.Task{}, h.noTask
+	}
+	if task, is := h.tasks[number]; is {
+		return task, nil
 	}
 	if h.task.Number != number {
 		return forge.Task{}, fmt.Errorf("could not find issue %d", number)
