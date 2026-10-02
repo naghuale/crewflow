@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,7 @@ func attentionEnv(cfg config.Config) (taskrun.AttentionEnv, error) {
 		{"attention.escalate_after", cfg.Attention.EscalateAfter, &env.EscalateAfter},
 		{"attention.remind_after", cfg.Attention.RemindAfter, &env.RemindAfter},
 		{"attention.weekly_after", cfg.Attention.WeeklyAfter, &env.WeeklyAfter},
+		{"attention.deadline_after", cfg.Attention.DeadlineAfter, &env.DeadlineAfter},
 	} {
 		limit, err := time.ParseDuration(threshold.value)
 		if err != nil {
@@ -250,9 +252,56 @@ func (h hostOfAttention) changeFacts(ctx context.Context, number, task int, labe
 	}
 	return &taskrun.ChangeFacts{
 		Number: change.Number, State: change.State, Head: change.HeadSHA,
+		Base:     change.BaseBranch,
+		Checks:   h.checksOf(ctx, change),
 		Approved: reaction.Approved, Accepted: reaction.Accepted,
 		Refusal: refusal, Last: reaction.Last,
 	}, nil
+}
+
+// checksOf is what the CI of the project says about the head of a change request: whether
+// the change can be merged into its branch at all, and what the checks of its head stand
+// at. Одно изменение, которое нельзя слить, не имеет проверок вовсе — хост их не запускает,
+// и «проверок нет» стоило F-110 шести часов ожидания там, где их не будет никогда
+// (docs.DESIGN.md §6a, §7h).
+//
+// Где CI проекта не умеет называть свои проверки или не ответил, crewflow говорит, что не
+// знает: очередь, которая сказала бы «проверки идут» там, где их не спрашивали, — это
+// F-110 в другую сторону (F-098, §6a).
+func (h hostOfAttention) checksOf(ctx context.Context, change forge.ChangeRequest) taskrun.ChecksFacts {
+	facts := taskrun.ChecksFacts{
+		Conflicted: change.Conflicted,
+		MergeState: change.MergeState,
+	}
+	host, is := h.set.CI.(forge.CheckLister)
+	// Проверки закрытого изменения не ждёт никто, и спрашивать о них — вопрос в чужой
+	// сервис без причины: очередь читается расписанием, и каждая лишняя проверка платится
+	// временем человека (F-061, §6a).
+	if !is || change.State != "open" {
+		return facts
+	}
+	checks, err := host.Checks(ctx, change.HeadSHA)
+	if err != nil {
+		facts.Problem = fmt.Sprintf("read the checks of the commit %s: %v", change.HeadSHA, err)
+		return facts
+	}
+	facts.Asked = true
+	facts.State = stateOfChecks(checks)
+	return facts
+}
+
+// stateOfChecks is what the checks of a head mean to the queue of attention: идут, пока ни
+// одна не кончилась; кончились, когда кончились все — зелёные они или нет, потому что
+// зелёные и красные считают ворота (§7h); и не было ни одной, когда их не было вовсе.
+func stateOfChecks(checks []forge.CheckRun) taskrun.ChecksState {
+	switch {
+	case len(checks) == 0:
+		return taskrun.ChecksNone
+	case slices.ContainsFunc(checks, func(one forge.CheckRun) bool { return one.State == forge.CheckPending }):
+		return taskrun.ChecksRunning
+	default:
+		return taskrun.ChecksDone
+	}
 }
 
 // noticeUnderTheTask is what leaves the notice of an entry of the queue under its task on

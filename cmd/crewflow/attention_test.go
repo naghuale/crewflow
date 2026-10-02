@@ -764,6 +764,45 @@ func TestRunTaskAttentionAllJSONIsOneDocumentOfTheMachine(t *testing.T) {
 	}
 }
 
+// TestRunTaskAttentionAndTaskListNameTheConflictOfOneChangeAlike: CA-010 говорит, что
+// `conflict-with-main` называют и очередь, и список прогонов, и `status`, а все три считают
+// одну и ту же очередь. Одно и то же изменение, у которого `mergeable_state: DIRTY`, читается
+// обоими одинаково — иначе один человек увидит в одном «нужно посмотреть», а в другом «не
+// смотреть» про одну задачу (docs.DESIGN.md §6a, §6, D-044, F-110).
+func TestRunTaskAttentionAndTaskListNameTheConflictOfOneChangeAlike(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43), conflicted: true, mergeState: "DIRTY",
+		ci: ciOfTheTest{}}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	if code := run([]string{"task", "attention", "-config", project, "-json"}, &stdout, &stderr); code != exitFailure {
+		t.Fatalf("crewflow task attention -json = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	fromAttention := attentionOfAnswer(t, stdout.Bytes())
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"task", "list", "-config", project, "-json"}, &stdout, &stderr); code != exitOK {
+		t.Fatalf("crewflow task list -json = %d, want %d (stderr: %q)", code, exitOK, stderr.String())
+	}
+	fromList := attentionOfAnswer(t, stdout.Bytes())
+
+	want := map[int]attentionRecord{
+		43: {task: 43, state: string(taskrun.AttentionBlocked),
+			reason: taskrun.ReasonConflictWithMain, actor: taskrun.ActorOrchestrator},
+	}
+	if !reflect.DeepEqual(fromAttention, want) {
+		t.Errorf("`task attention -json` = %+v,\nwant %+v: конфликт изменения назван сразу", fromAttention, want)
+	}
+	if !reflect.DeepEqual(fromList, want) {
+		t.Errorf("`task list -json` = %+v,\nwant %+v: список отвечает о том же изменении теми же словами",
+			fromList, want)
+	}
+}
+
 // attentionRecord is one answer об attention, as a program reads it: task, attention_state,
 // reason и next_actor — те четыре поля, по которым две команды обязаны совпадать
 // (CL-007…CL-009, docs/DESIGN.md §6a).
@@ -1158,4 +1197,133 @@ func putRunThatEnded(t *testing.T, h *host, ended time.Time) time.Time {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	return ended
+}
+
+// ciOfTheTest is the CI of a project of a test: the checks of the head of a change request
+// and whether the host answers at all. Это третья роль §7g, и очередь внимания читает её
+// отдельно от хостинга — по тем же словам `Checks`, `required-check-missing` и §6a.
+type ciOfTheTest struct {
+	checks  []forge.CheckRun
+	refused error
+}
+
+// Checks are the checks of the head, as the host of them holds them.
+func (c ciOfTheTest) Checks(context.Context, string) ([]forge.CheckRun, error) {
+	if c.refused != nil {
+		return nil, c.refused
+	}
+	return c.checks, nil
+}
+
+// RequiredChecks are none of the rules of the branch of a test: у теста нет ветки, и
+// очередь внимания спрашивает о проверках головы, а не о правилах (§7h).
+func (ciOfTheTest) RequiredChecks(context.Context) ([]forge.RequiredCheck, error) { return nil, nil }
+
+// Status is the whole of this CI as a gate asks it, and the queue of attention спрашивает
+// не его, а Checks (§7g).
+func (ciOfTheTest) Status(context.Context, string) (forge.CheckState, error) {
+	return forge.CheckNone, nil
+}
+
+// Doctor says nothing: у теста нет ни программы, ни входа (§7d).
+func (ciOfTheTest) Doctor(context.Context) []forge.Check { return nil }
+
+// TestRunTaskAttentionNamesTheConflictAndTheAbsenceOfChecksAndTheChecksThatAreGoing:
+// CA-010 / CL-010 / CL-011 через настоящую команду. Изменение с конфликтом, изменение без
+// проверок и изменение, чьи проверки идут, называются в очереди тремя разными причинами, и
+// ни одна из них не «ждём CI». Каждый раз ждёт своего: конфликт — переноса ветки, отсутствие
+// проверок — решения человека, ход проверок — минут CI до срока (docs.DESIGN.md §6a, F-110).
+func TestRunTaskAttentionNamesTheConflictAndTheAbsenceOfChecksAndTheChecksThatAreGoing(t *testing.T) {
+	const head = "9f1c0de"
+	for _, tc := range []struct {
+		name string
+		ci   forge.CheckLister
+		// conflicted and mergeState are what the host says about merging the change.
+		conflicted bool
+		mergeState string
+		want       string
+		notWant    string
+	}{
+		{
+			name:       "изменение конфликтует с main",
+			ci:         ciOfTheTest{checks: []forge.CheckRun{{Name: "test", State: forge.CheckSuccess, SHA: head}}},
+			conflicted: true,
+			mergeState: "DIRTY",
+			want:       taskrun.ReasonConflictWithMain,
+			notWant:    taskrun.ReasonChecksRunning,
+		},
+		{
+			name:       "проверок нет вовсе",
+			ci:         ciOfTheTest{},
+			mergeState: "BLOCKED",
+			want:       taskrun.ReasonNoChecks,
+			notWant:    taskrun.ReasonChecksRunning,
+		},
+		{
+			name:       "проверки идут",
+			ci:         ciOfTheTest{checks: []forge.CheckRun{{Name: "test", State: forge.CheckPending, SHA: head}}},
+			mergeState: "BLOCKED",
+			want:       taskrun.ReasonChecksRunning,
+			notWant:    taskrun.ReasonNoChecks,
+		},
+		{
+			name:       "CI не ответил — очередь не выдумывает причину",
+			ci:         ciOfTheTest{refused: errors.New("gh api repos/naghuale/crewflow/commits/9f1c0de/status: 503")},
+			mergeState: "BLOCKED",
+			want:       taskrun.ReasonReviewRequired,
+			notWant:    taskrun.ReasonNoChecks,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			host := &host{opened: true, task: taskOf(43), ci: tc.ci,
+				conflicted: tc.conflicted, mergeState: tc.mergeState}
+			host.use(t)
+			project := host.config(t)
+			ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+			taskClock = func() time.Time { return ended.Add(time.Hour) }
+			var stdout, stderr bytes.Buffer
+
+			code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+			if code != exitFailure {
+				t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)",
+					code, exitFailure, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Errorf("crewflow task attention wrote %q, want the reason %q", stdout.String(), tc.want)
+			}
+			if strings.Contains(stdout.String(), tc.notWant) {
+				t.Errorf("crewflow task attention wrote %q, want it not to name %q", stdout.String(), tc.notWant)
+			}
+		})
+	}
+}
+
+// TestRunTaskAttentionSaysWhenTheChecksCouldNotBeRead: нет данных — «неизвестно», а не
+// догадка. Где CI проекта не ответил, очередь говорит, что о проверках не знает, и не
+// называет их ни идущими, ни отсутствующими: отсутствие ответа не «ещё идёт» (F-098,
+// docs.DESIGN.md §6a).
+func TestRunTaskAttentionSaysWhenTheChecksCouldNotBeRead(t *testing.T) {
+	host := &host{opened: true, task: taskOf(43), mergeState: "BLOCKED",
+		ci: ciOfTheTest{refused: errors.New("the checks could not be read")}}
+	host.use(t)
+	project := host.config(t)
+	ended := putRunThatEnded(t, host, time.Now().Add(-time.Hour))
+	taskClock = func() time.Time { return ended.Add(time.Hour) }
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "attention", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task attention = %d, want %d (stdout: %q, stderr: %q)",
+			code, exitFailure, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "could not be read") {
+		t.Errorf("crewflow task attention wrote %q, want it to say that the checks are unknown", stdout.String())
+	}
+	for _, unwanted := range []string{taskrun.ReasonNoChecks, taskrun.ReasonChecksRunning} {
+		if strings.Contains(stdout.String(), unwanted) {
+			t.Errorf("crewflow task attention wrote %q, want it not to name %q", stdout.String(), unwanted)
+		}
+	}
 }

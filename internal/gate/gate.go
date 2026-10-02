@@ -315,6 +315,15 @@ func Evaluate(f Facts) Verdict {
 	if f.TargetBranch != f.WantBranch {
 		return refused(WrongTargetBranch, fmt.Sprintf("the change request is meant for %q, the project merges into %q", f.TargetBranch, f.WantBranch))
 	}
+	// A change that conflicts with its branch is asked about before anything about its
+	// commit, and not only before the checks: GitHub runs no checks of a change it cannot
+	// merge, so a gate that reported missing checks would be reporting the absence of
+	// something the host was never going to do — and a gate that waited for a review of
+	// such a change would be asking a person to look at a commit that cannot go in. The
+	// refusal comes with what is to be done about it, and it comes at once (F-110, §7h).
+	if f.Conflicted {
+		return refused(NotFastForward, fmt.Sprintf("the change conflicts with %s, so nothing may be merged into it and CI will not run: rebase the branch onto %s", f.WantBranch, f.WantBranch))
+	}
 	if verdict, no := f.approval(); no {
 		return verdict
 	}
@@ -323,13 +332,6 @@ func Evaluate(f Facts) Verdict {
 	}
 	if verdict, no := f.boundaries(); no {
 		return verdict
-	}
-	// A change that conflicts with its branch is asked about before the checks,
-	// because there are none: GitHub does not run the checks of a change it
-	// cannot merge, and reporting the checks as missing would be a fact about a
-	// commit that was never made.
-	if f.Conflicted {
-		return refused(NotFastForward, fmt.Sprintf("the change conflicts with %s, so nothing may be merged into it and CI will not run: rebase the branch onto %s", f.WantBranch, f.WantBranch))
 	}
 	if verdict, no := f.checks(); no {
 		return verdict

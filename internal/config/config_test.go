@@ -114,6 +114,7 @@ func TestLoadExample(t *testing.T) {
 		{"attention.escalate_after", cfg.Attention.EscalateAfter, "24h"},
 		{"attention.remind_after", cfg.Attention.RemindAfter, "24h"},
 		{"attention.weekly_after", cfg.Attention.WeeklyAfter, "168h"},
+		{"attention.deadline_after", cfg.Attention.DeadlineAfter, "30m"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {
@@ -141,6 +142,7 @@ func TestLoadAttentionThresholds(t *testing.T) {
 		{"attention.escalate_after", cfg.Attention.EscalateAfter, "12h"},
 		{"attention.remind_after", cfg.Attention.RemindAfter, "6h"},
 		{"attention.weekly_after", cfg.Attention.WeeklyAfter, "240h"},
+		{"attention.deadline_after", cfg.Attention.DeadlineAfter, "20m"},
 	}
 	for _, c := range checks {
 		if !reflect.DeepEqual(c.got, c.want) {

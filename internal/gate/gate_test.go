@@ -846,3 +846,37 @@ func TestASummaryOfNothingGathered(t *testing.T) {
 		t.Errorf("the report is %q, want the reason and nothing else", got)
 	}
 }
+
+// TestAConflictedChangeIsRefusedForTheConflictBeforeItsApprovalAndItsChecks: F-110.
+// Изменение, которое нельзя слить с веткой, не имеет ни одобрения, ни проверок, и ворота,
+// которые спрашивают об этом прежде конфликта, отвечают «approval-missing» и
+// «required-check-missing» — то есть «ждёт человека, которого здесь не ждут, и проверок,
+// которых не будет». Конфликт — свойство самого изменения, и он спрашивается первым,
+// вместе с тем, что с ним делать (docs.DESIGN.md §7h, §6a).
+func TestAConflictedChangeIsRefusedForTheConflictBeforeItsApprovalAndItsChecks(t *testing.T) {
+	facts := ready()
+	facts.Conflicted = true
+	facts.MergeState = "DIRTY"
+	facts.Reviews, facts.OwnerAccepts = nil, nil
+	facts.Required, facts.Checks = nil, nil
+
+	verdict := Evaluate(facts)
+
+	if verdict.Ready {
+		t.Fatalf("Evaluate = ready to merge, want a refusal: the change conflicts with its branch")
+	}
+	if verdict.Reason != NotFastForward {
+		t.Errorf("Evaluate = %q (%s), want %q: конфликт спрашивается прежде одобрения и проверок",
+			verdict.Reason, verdict.Detail, NotFastForward)
+	}
+	for _, in := range []string{"conflicts", "rebase"} {
+		if !strings.Contains(verdict.Detail, in) {
+			t.Errorf("the detail %q does not mention %q: отказ говорит, что с ним делать", verdict.Detail, in)
+		}
+	}
+	// И `review -approve` refuses to write a record of an approval of a change that cannot
+	// be merged: одобрение такой головы сдвинется после переноса и не будет считаться.
+	if apart := Apart(facts); apart.Ready {
+		t.Errorf("Apart = ready, want a refusal: одобрение изменения, которое нельзя слить, не пишется")
+	}
+}

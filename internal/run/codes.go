@@ -44,7 +44,10 @@ var reasons = []string{
 	ReasonBlockedSecret,
 	ReasonChangeClosed,
 	ReasonChangeMerged,
+	ReasonChecksRunning,
+	ReasonConflictWithMain,
 	ReasonHumanAuthorization,
+	ReasonNoChecks,
 	ReasonNoProgress,
 	ReasonOutOfScope,
 	ReasonOwnerAcceptance,
@@ -59,6 +62,7 @@ var reasons = []string{
 	ReasonStoppedByHand,
 	ReasonTaskClosed,
 	ReasonTaskMissing,
+	ReasonWaitedTooLong,
 }
 
 // Reasons is the closed list of the reasons of the queue of attention — of a task in the

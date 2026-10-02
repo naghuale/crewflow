@@ -323,6 +323,9 @@ var settings = []Setting{
 	{Key: "attention.escalate_after", Status: Supported, Applies: "cfg.Attention.EscalateAfter"},
 	{Key: "attention.remind_after", Status: Supported, Applies: "cfg.Attention.RemindAfter"},
 	{Key: "attention.weekly_after", Status: Supported, Applies: "cfg.Attention.WeeklyAfter"},
+	// The срок of one wait: how long the queue watches it before it stops saying that
+	// nobody is asked for anything (D-049, §6a).
+	{Key: "attention.deadline_after", Status: Supported, Applies: "cfg.Attention.DeadlineAfter"},
 
 	// [[requirements]] — the tools of the project and how each of them is checked;
 	// doctor asks every one of them and compares what it printed with the minimum

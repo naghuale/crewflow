@@ -344,6 +344,11 @@ type Attention struct {
 	// WeeklyAfter is how long a task may wait before the wait is called a long one and
 	// goes into the weekly slice of the practice journal (#37).
 	WeeklyAfter string `toml:"weekly_after"`
+	// DeadlineAfter is how long one wait may last before the queue stops saying that
+	// nobody is asked for anything and asks for a person instead: по истечении срока
+	// ожидание становится «внимание требуется» с причиной `waited-too-long`, а не
+	// остаётся бесконечным «ждёт» (D-049, §6a).
+	DeadlineAfter string `toml:"deadline_after"`
 }
 
 // Requirements are the tools the project needs, with the command that checks

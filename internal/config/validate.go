@@ -362,6 +362,7 @@ func validateAttention(attention Attention) error {
 		validateDuration("attention.escalate_after", attention.EscalateAfter),
 		validateDuration("attention.remind_after", attention.RemindAfter),
 		validateDuration("attention.weekly_after", attention.WeeklyAfter),
+		validateDuration("attention.deadline_after", attention.DeadlineAfter),
 	)
 	if err != nil {
 		return err
@@ -376,6 +377,11 @@ func validateAttention(attention Attention) error {
 	if weekly < escalate {
 		return fmt.Errorf("attention.weekly_after: must be at least attention.escalate_after (%q), "+
 			"or a wait is called a long one before it is escalated", attention.EscalateAfter)
+	}
+	deadline, _ := time.ParseDuration(attention.DeadlineAfter)
+	if deadline < 0 {
+		return fmt.Errorf("attention.deadline_after: must not be a negative length (%q), "+
+			"or every wait of the project is over its deadline the moment it begins", attention.DeadlineAfter)
 	}
 	return nil
 }

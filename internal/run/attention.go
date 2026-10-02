@@ -179,6 +179,23 @@ const (
 	// и очередь говорит «прервано», а не перечисляет то, что успела прочитать и не
 	// поняла (F-098, §6a).
 	ReasonReadInterrupted = "read-interrupted"
+	// ReasonConflictWithMain is a change request that cannot be merged into the branch it
+	// is meant for as it stands. The wait for its checks is a wait that can never end: a
+	// host runs no checks of a change it cannot merge, so six hours of "the checks are
+	// running" were six hours of waiting for nothing at all (F-110, §6a, §7h).
+	ReasonConflictWithMain = "conflict-with-main"
+	// ReasonNoChecks is a change request whose head has no checks and the host has run
+	// none: nothing is coming on its own, and the person who wants the change in has to
+	// start the checks or find out why they do not run (F-110, §6a).
+	ReasonNoChecks = "no-checks"
+	// ReasonChecksRunning is a change request whose head has checks that have not ended
+	// yet. It is a wait and not a defect, and it lasts as long as the deadline the
+	// project gave it and not longer (F-110, §6a).
+	ReasonChecksRunning = "ci-running"
+	// ReasonWaitedTooLong is a wait that has passed the deadline the project gave it: it
+	// ends the "nobody is waiting, we are watching" answer of the queue, because an
+	// expectation with no end is what F-110 was (D-049, §6a).
+	ReasonWaitedTooLong = "waited-too-long"
 
 	// The reasons of the fact crewflow remembers о прогоне, чья работа кончена. They
 	// are not reasons of a wait — nobody waits for a merged change — but the words of
@@ -222,6 +239,13 @@ const (
 	SubjectOwner = "the decision of the owner"
 	// SubjectResult is the result of a run that opened no change request.
 	SubjectResult = "the result of the run"
+	// SubjectChecks is the checks of the head of a change request: минуты CI, которые
+	// либо идут, либо не придут вовсе (F-110, §6a).
+	SubjectChecks = "the checks of the head"
+	// SubjectMerge is what a change request waits for when the host refuses to merge it:
+	// the branch has to be moved onto the branch it is meant for, and until then nothing
+	// of the change may go in (§7h).
+	SubjectMerge = "the merge into"
 )
 
 // The actors the queue waits for: the orchestrator, the owner, either of them, and nobody
@@ -280,6 +304,10 @@ type Attention struct {
 	// counts seconds and a person reads a time.
 	Since          time.Time `json:"waiting_since"`
 	WaitingSeconds float64   `json:"waiting_seconds"`
+	// Deadline is the moment a wait of this entry may not last past: it is what the
+	// project promised about the wait and not a fact of the host, and it is nothing where
+	// the entry is not a wait — ожидание без срока не отличается от вечного (D-049, §6a).
+	Deadline time.Time `json:"deadline,omitempty"`
 	// LastStep is what the run was doing when it last showed a sign of life. It is what a
 	// person needs for `stands`, where nothing else is known, and it is nothing for every
 	// other state (docs/DESIGN.md §6a, §7a).
@@ -355,6 +383,12 @@ type AttentionEnv struct {
 	// WeeklyAfter is how long a task may wait before the wait is called a long one and
 	// goes into the weekly slice: `[attention] weekly_after`, a week (#37).
 	WeeklyAfter time.Duration
+	// DeadlineAfter is how long one wait may last before the queue stops saying that
+	// nobody is asked for anything and asks for a person instead:
+	// `[attention] deadline_after`, half an hour. It is the срок of the wait itself, and
+	// `EscalateAfter` is a different promise: the deadline is when the expectation ends,
+	// the escalation is when a record of it is left under the task (D-049, §6a).
+	DeadlineAfter time.Duration
 	// AcceptanceLabel is the word a task is marked with to have its result accepted by
 	// the owner before the change may go in: `[acceptance] label` (§7h).
 	AcceptanceLabel string
@@ -429,6 +463,10 @@ type ChangeFacts struct {
 	State  string `json:"state"`
 	// Head is the commit at the head of the change.
 	Head string `json:"head"`
+	// Base is the branch the change is meant for, as the host holds it. It is nothing
+	// where the host names none, и ожидание конфликта тогда говорит, в какую ветку
+	// переносить, словами «ветка по умолчанию», а не пустотой (§7e).
+	Base string `json:"base,omitempty"`
 	// Approved says that a record of a review of the current head of the change is under
 	// it, written by an account that reviews it — not by the executor of a run, and not a
 	// record that was edited afterwards (§7h, §7i). The queue takes it from the gate of
@@ -446,6 +484,63 @@ type ChangeFacts struct {
 	// Last is when the last record of a review or of an acceptance was written, and is
 	// what the waiting of the owner is counted from.
 	Last time.Time `json:"last,omitempty"`
+	// Checks is what the CI of the project says about the head of the change, and is
+	// what tells `conflict-with-main`, `no-checks` and `ci-running` apart from one
+	// another and from a change whose checks are all over (F-110, §6a).
+	Checks ChecksFacts `json:"checks,omitempty"`
+}
+
+// ChecksState is what the checks of the head of a change request stand at, as the queue
+// of attention reads it. It is not a state of a check of [forge.CheckState] and not a
+// verdict of the gate: зелёные и красные — дело ворот (§7h), а очередь отвечает на один
+// вопрос — ждём мы их или нет (F-110, §6a).
+type ChecksState string
+
+const (
+	// ChecksNotAsked says that the CI of the project was not asked about the head of the
+	// change, could not answer, or has not worked out yet whether the change can be
+	// merged at all. It is not an answer and the queue names no reason of a wait out of
+	// it: очередь, которая сказала бы «проверки идут» там, где их не спрашивали, —
+	// это F-110 в другую сторону (F-098, §6a, §7e).
+	ChecksNotAsked ChecksState = ""
+	// ChecksRunning says that at least one check of the head has not ended yet.
+	ChecksRunning ChecksState = "running"
+	// ChecksDone says that every check of the head has ended, however it ended.
+	ChecksDone ChecksState = "done"
+	// ChecksNone says that the head has no checks at all and the host has run none:
+	// ничего не придёт само, и ждать тут нечего (F-110, §6a).
+	ChecksNone ChecksState = "none"
+)
+
+// mergeStateUnknown is what a host says about merging a change while it has not worked
+// the answer out: пока считает, проверок может не быть, а могут быть, и «проверок нет»
+// там, где их не спрашивали, — это враньё о чужом сервисе (§7h, §7e).
+const mergeStateUnknown = "UNKNOWN"
+
+// ChecksFacts is what the CI of the project says about the head of a change request:
+// whether the change can be merged into its branch at all, what the checks of its head
+// stand at, and why they could not be read. It is three answers and not one, because
+// «проверок нет», «проверки идут» и «проверки кончились» — это три разных вещи, и шесть
+// часов ожидания F-110 были ожиданием первого места, где стояло второе (docs.DESIGN.md
+// §6a, §7h).
+type ChecksFacts struct {
+	// Asked says that the CI of the project answered about the head of the change. Where
+	// it did not, nothing below is an answer and the queue says what it does not know
+	// rather than naming the checks as going (F-098, §6a).
+	Asked bool `json:"asked,omitempty"`
+	// Conflicted says that the change cannot be merged into the branch it is meant for as
+	// it stands, and MergeState is the word of the host about merging it: "DIRTY" is the
+	// conflict and "UNKNOWN" is a host that has not worked it out yet. A host that runs
+	// checks only on a change it can merge will not run any for such a change, so a wait
+	// for its checks is a wait that can never end (F-110, §7h).
+	Conflicted bool   `json:"conflicted,omitempty"`
+	MergeState string `json:"merge_state,omitempty"`
+	// State is what the checks of the head stand at: ChecksRunning, ChecksDone or
+	// ChecksNone.
+	State ChecksState `json:"state,omitempty"`
+	// Problem is why the CI could not be read, where it could not: очередь говорит это
+	// в строке записи и не называет ни одной из причин ожидания (§6a, §7h).
+	Problem string `json:"problem,omitempty"`
 }
 
 // open is whether the change is still open, as the host of it says: a change that is merged
@@ -1180,8 +1275,9 @@ func (a *Attention) finished(env AttentionEnv, repo string, state State, last At
 }
 
 // awaiting is a task whose change request is open and which a person is waited for: the
-// orchestrator while no record of a review of the head of the change is under it, and the
-// owner where the result of the task is his to accept (§6a, §7h).
+// orchestrator while no record of a review of the head of the change is under it, the
+// owner where the result of the task is his to accept, and everybody while the change
+// waits for its checks (docs.DESIGN.md §6a, §7h).
 //
 // The refusal of the gate about the records under the change goes into the entry where
 // the queue asks for one of them: a change that waits for a review whose approval was
@@ -1189,6 +1285,20 @@ func (a *Attention) finished(env AttentionEnv, repo string, state State, last At
 // why the first was not counted (F-106, §6a, §7h).
 func (a *Attention) awaiting(env AttentionEnv, state State, last Attempt, facts HostFacts, change *ChangeFacts) bool {
 	a.Refused = change.Refusal
+	if change.Checks.Problem != "" {
+		a.Hint = "the checks of the head could not be read, and crewflow does not say whether they are going: " +
+			change.Checks.Problem
+	}
+	// Приёмка владельца — решение человека, и оно не теряется ни за каким ожиданием:
+	// человек нужен раньше, чем зелёные проверки. Всё остальное — конфликт, отсутствие
+	// проверок и их ход — читается раньше записи ревью, потому что ревью изменения,
+	// которое нельзя слить, не стоит ожидания (F-110, §6a, §7h).
+	ownerWaits := env.AcceptanceLabel != "" && facts.marked(env.AcceptanceLabel) &&
+		change.Approved && !change.Accepted
+	if reason, waited := waitingOfChecks(change.Checks); waited && !(reason == ReasonChecksRunning && ownerWaits) {
+		a.forChecks(reason, state, last, change)
+		return true
+	}
 	if env.AcceptanceLabel != "" && facts.marked(env.AcceptanceLabel) {
 		switch {
 		case change.Accepted:
@@ -1221,6 +1331,79 @@ func (a *Attention) awaiting(env AttentionEnv, state State, last Attempt, facts 
 	return true
 }
 
+// waitingOfChecks is the one function of §6a that says what the checks of the head of a
+// change request mean for the queue: `conflict-with-main`, `no-checks` or `ci-running` —
+// and nothing else, so that the queue of §6a, the list of runs and `crewflow status` name
+// one and the same thing about one change (D-044, docs.DESIGN.md §6a).
+//
+// It is a pure function of what the CI of the project said, and where it said nothing it
+// names nothing: «проверок нет» и «проверки идут» там, где их не спрашивали, — это F-110
+// в обе стороны, и очередь не имеет права угадывать за чужим сервисом (F-098, §7e).
+func waitingOfChecks(facts ChecksFacts) (string, bool) {
+	switch {
+	case !facts.Asked || facts.MergeState == mergeStateUnknown:
+		return "", false
+	case facts.Conflicted:
+		// The conflict comes before the checks, because there are none: a host runs no
+		// checks of a change it cannot merge, so a wait for them never ends (F-110).
+		return ReasonConflictWithMain, true
+	case facts.State == ChecksNone:
+		return ReasonNoChecks, true
+	case facts.State == ChecksRunning:
+		return ReasonChecksRunning, true
+	}
+	return "", false
+}
+
+// forChecks is what the queue says about a change request that waits for its checks: the
+// reason of §6a, the object of the wait, who acts next and what may be done about it.
+//
+// The three reasons are three different things to do and three different people to wait
+// for, and one «ждём CI» на все три — это ровно то, чем шесть часов ожидания F-110 были:
+// конфликт ждёт переноса ветки, отсутствие проверок — решения человека, и только ход
+// проверок не просит о человеке вовсе (docs.DESIGN.md §6a).
+func (a *Attention) forChecks(reason string, state State, last Attempt, change *ChangeFacts) {
+	a.Since = endedAt(last)
+	a.Priority = Normal
+	switch reason {
+	case ReasonConflictWithMain:
+		// Nothing of the change may be merged, and a person has to move the branch: it is
+		// the one of the three waits that asks for a hand right now (F-110, §7h).
+		a.State, a.Priority = AttentionBlocked, High
+		a.Subject = SubjectMerge + " " + changeBase(change) + " of #" + strconv.Itoa(change.Number)
+		a.NextActor, a.Actable = ActorOrchestrator, ActNow
+		a.Next = continueCommand(state.Number) + ` — rebase onto ` + changeBase(change) + ` and push`
+	case ReasonNoChecks:
+		// The checks will not come by themselves, so somebody has to start them or to find
+		// out why they do not run — and the review of the change is where it is said (F-110).
+		a.State, a.Priority = AttentionAwaitsResource, High
+		a.Subject = SubjectChecks + " of #" + strconv.Itoa(change.Number)
+		a.NextActor, a.Actable = ActorOrchestrator, ActNow
+		a.Next = "start the checks of the head, or find out why they did not run: crewflow review " +
+			strconv.Itoa(change.Number)
+	default:
+		// The checks are going (`ci-running`): nobody is asked for anything, and the wait
+		// lasts as long as the deadline the project gave it — `deadline_after`. Причина,
+		// которой очередь ещё не знает, ждёт так же, как ход проверок: ресурс и срок
+		// (§6a, §7e).
+		a.State = AttentionAwaitsResource
+		a.Subject = SubjectChecks + " of #" + strconv.Itoa(change.Number)
+		a.NextActor, a.Actable = ActorNobody, ActWait
+		a.Next = "the checks of the head are going: nothing to do until they end"
+	}
+	a.Reason = reason
+}
+
+// changeBase is the branch a change request is meant for, as a person is told it, and
+// «the default branch» where the host named none: ожидание, у которого нет ветки, ждёт
+// неизвестно чего (§7e).
+func changeBase(change *ChangeFacts) string {
+	if change.Base == "" {
+		return "the default branch"
+	}
+	return change.Base
+}
+
 // measured is what the queue says about the age of an entry and about how loudly it asks.
 // It is worked out here for every state alike, because the thresholds of the project are
 // one thing and the state of the task is another (§6a).
@@ -1228,6 +1411,11 @@ func (a *Attention) measured(env AttentionEnv, now time.Time) {
 	a.Since = atOr(a.Since, now)
 	waited := max(now.Sub(a.Since), 0)
 	a.WaitingSeconds = waited.Seconds()
+	if a.Actable == ActWait {
+		// Срок есть только у ожидания: всё, что и так просит о человеке, срока не ждёт,
+		// а всё, что кончено, ждать не ждёт вовсе (§6a).
+		a.deadlined(env, now)
+	}
 	if env.EscalateAfter > 0 && waited > env.EscalateAfter && a.Reason != ReasonTaskMissing {
 		// The state keeps its place beside the escalation, because an escalation of a task
 		// nobody knows the cause of is an escalation about nothing (AQ-008). A task the
@@ -1240,6 +1428,29 @@ func (a *Attention) measured(env AttentionEnv, now time.Time) {
 		a.LongWaiting = true
 	}
 	a.Promoted = a.Actable == ActNow || (env.TopAfter > 0 && waited > env.TopAfter)
+}
+
+// deadlined is the срок of a wait: the moment it may not last past, and what the entry
+// becomes once that moment has come. A wait the queue watches for ever is an expectation
+// with no end, and F-110 was exactly that — шесть часов «проверки идут» там, где их не было
+// и не могло быть (D-049, docs.DESIGN.md §6a).
+//
+// The reason of the wait is kept beside the new one: запись, у которой сменилась причина, —
+// это новая запись, и без прежней причины никто не поймёт, что именно заждалось (AQ-008, §6a).
+func (a *Attention) deadlined(env AttentionEnv, now time.Time) {
+	if env.DeadlineAfter <= 0 {
+		return
+	}
+	a.Deadline = a.Since.Add(env.DeadlineAfter)
+	if !now.After(a.Deadline) {
+		return
+	}
+	a.Hint = "the wait has been going since " + saidAt(a.Since) + " and it did not end in " +
+		Idle(env.DeadlineAfter) + ": " + a.Reason
+	a.Reason = ReasonWaitedTooLong
+	a.Priority, a.Actable, a.NextActor = High, ActNow, ActorOrchestrator
+	a.Next = "the wait is over the deadline of " + Idle(env.DeadlineAfter) +
+		": find out what is not going on, or start it"
 }
 
 // byUrgency is the order a person reads the queue in (AQ-005): what has to be looked into
@@ -1414,6 +1625,9 @@ func saidOf(one Attention, screen Screen) string {
 // the last step of a run that stands, and what may be done about it.
 func detailOf(one Attention) string {
 	said := []string{"    waiting " + Idle(one.Waited()), "next: " + one.NextActor}
+	if !one.Deadline.IsZero() {
+		said = append(said, "the deadline "+saidAt(one.Deadline))
+	}
 	if one.LastStep != "" {
 		said = append(said, "the last step: "+one.LastStep)
 	}
@@ -1466,6 +1680,9 @@ func NoticeUnder(one Attention) string {
 	}
 	said += fmt.Sprintf(" — it waits for %s, the next one is %s, it has been waiting for %s",
 		orNothing(one.Subject), one.NextActor, Idle(one.Waited()))
+	if !one.Deadline.IsZero() {
+		said += ", the deadline " + saidAt(one.Deadline)
+	}
 	if one.LastStep != "" {
 		said += ", the last step: " + one.LastStep
 	}

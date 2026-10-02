@@ -1568,6 +1568,15 @@ type host struct {
 	// the files the run touched.
 	opened  bool
 	changed string
+	// conflicted and mergeState are what the host says about merging the change request of
+	// the run: «DIRTY» — конфликт с веткой, «UNKNOWN» — хост ещё считает. Изменение, которое
+	// нельзя слить, не имеет проверок вовсе, и очередь внимания говорит об этом своей
+	// причиной, а не «проверки идут» (F-110, §6a).
+	conflicted bool
+	mergeState string
+	// ci is the CI of the project of this host: очередь внимания спрашивает его о проверках
+	// головы изменения, и проект без CI (у большинства тестов) им не является (§7g, §6a).
+	ci forge.CheckLister
 	// repoDir is the folder the worktree was made out of, which is what the
 	// command was told to make it from.
 	repoDir string
@@ -1637,20 +1646,20 @@ func (h *host) use(t *testing.T) {
 	h.git = filepath.Join(t.TempDir(), "git")
 	h.head = theHeadOfTheTest
 	taskRoles = func(config.Config, forge.Env) (forge.Set, error) {
-		return forge.Set{Tracker: h, Forge: h}, nil
+		return h.set(), nil
 	}
 	// The queue of attention asks the host as the orchestrator of the project and not as
 	// the executor of a run, so the roles of the orchestrator are a host of the test as
 	// well: a command that reached the host of a person would read the tracker of a project
 	// that is not the one of the test (docs.DESIGN.md §6a, §7i).
 	reviewRoles = func(config.Config, forge.Env) (forge.Set, error) {
-		return forge.Set{Tracker: h, Forge: h}, nil
+		return h.set(), nil
 	}
 	// The queue is read with the roles of a command that only shows the state, and those
 	// are a host of the test too — and they are asked for by name, so that a test can see
 	// which of the two ways of §7i the command asked the roles in (docs/DESIGN.md §6a, §7i).
 	stateRoles = func(config.Config, forge.Env) (forge.Set, error) {
-		return forge.Set{Tracker: h, Forge: h}, nil
+		return h.set(), nil
 	}
 	taskRunEnv = func(home string) taskrun.Env {
 		return taskrun.Env{
@@ -1812,7 +1821,7 @@ func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest
 	if state, is := h.states[number]; is {
 		return forge.ChangeRequest{
 			Number: number, HeadBranch: "crewflow/43-task", HeadSHA: "9f1c0de",
-			BaseBranch: "main", State: state,
+			BaseBranch: "main", State: state, Conflicted: h.conflicted, MergeState: h.mergeState,
 		}, nil
 	}
 	if !h.opened {
@@ -1829,6 +1838,8 @@ func (h *host) ChangeRequest(_ context.Context, number int) (forge.ChangeRequest
 		HeadSHA:    "9f1c0de",
 		BaseBranch: "main",
 		State:      state,
+		Conflicted: h.conflicted,
+		MergeState: h.mergeState,
 	}, nil
 }
 
@@ -1878,6 +1889,7 @@ var appOfTest = map[string]int64{
 func (h *host) as(app int64) *host {
 	other := host{
 		task: h.task, tasks: h.tasks, noTask: h.noTask, opened: h.opened, changed: h.changed,
+		conflicted: h.conflicted, mergeState: h.mergeState, ci: h.ci,
 		repoDir: h.repoDir, started: h.started, refusal: h.refusal, noIdentity: h.noIdentity,
 		home: h.home, worktrees: h.worktrees, git: h.git, records: h.records, under: h.under,
 		noSubject: h.noSubject, merged: h.merged, states: h.states, app: app,
@@ -1887,6 +1899,13 @@ func (h *host) as(app int64) *host {
 
 // Doctor says nothing: a test of the command has a host of its own already.
 func (h *host) Doctor(context.Context) []forge.Check { return nil }
+
+// set is the roles of the project of this host: the tracker, the host of кода and the CI.
+// A project whose test has no CI of its own gets none at all, and очередь внимания тогда
+// говорит, что о проверках не знает, а не что они идут (F-110, §6a).
+func (h *host) set() forge.Set {
+	return forge.Set{Tracker: h, Forge: h, CI: h.ci}
+}
 
 // ExecutorIdentity is whose name the executor of a run of this host works under, and it
 // is the host that answers it because a host is what knows what accounts of its own an

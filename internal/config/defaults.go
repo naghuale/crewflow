@@ -30,6 +30,9 @@ const (
 	defaultAttentionEscalate = "24h"
 	defaultAttentionRemind   = "24h"
 	defaultAttentionWeekly   = "168h"
+	// The срок of one wait: half an hour of CI is a wait a person agrees to put up with,
+	// and anything longer than that has to be said rather than watched (D-049, §6a).
+	defaultAttentionDeadline = "30m"
 	// The route of a project that says nothing is a straight route, and the two
 	// terms of it are the ones a person would name anyway (§7d).
 	defaultNetworkMode    = "direct"
@@ -166,6 +169,9 @@ func (c *Config) applyDefaults(meta *toml.MetaData) {
 	}
 	if c.Attention.WeeklyAfter == "" {
 		c.Attention.WeeklyAfter = defaultAttentionWeekly
+	}
+	if c.Attention.DeadlineAfter == "" {
+		c.Attention.DeadlineAfter = defaultAttentionDeadline
 	}
 	// A project that says nothing about the network goes straight out to it, and the
 	// two terms of its route are the ones a person would name anyway: how long a check

@@ -1167,7 +1167,7 @@ func after2(at time.Time, key string) State {
 
 // attentionOf is the machine and the file of a project for the queue of attention: the clock,
 // the question whether a run is going, and the thresholds of §6a — the silence of the
-// executor (§7a) and the three of `[attention]`.
+// executor (§7a) and the five of `[attention]`, the срок ожидания among them (D-049).
 func attentionEnvOf(now time.Time, going ...int) AttentionEnv {
 	env := AttentionEnv{ListEnv: listOf(now, going...)}
 	env.StallAfter = 10 * time.Minute
@@ -1175,6 +1175,7 @@ func attentionEnvOf(now time.Time, going ...int) AttentionEnv {
 	env.EscalateAfter = 24 * time.Hour
 	env.RemindAfter = 24 * time.Hour
 	env.WeeklyAfter = 7 * 24 * time.Hour
+	env.DeadlineAfter = 30 * time.Minute
 	env.AcceptanceLabel = "owner-check"
 	return env
 }
@@ -1381,4 +1382,231 @@ type saidUnderTheTask struct {
 func (s *saidUnderTheTask) sayAttention(_ context.Context, one Attention) (bool, string) {
 	s.lines = append(s.lines, NoticeUnder(one))
 	return true, ""
+}
+
+// TestAChangeThatConflictsWithMainIsNotAWaitForItsChecks: F-110 (02.10, #37). PR #129
+// конфликтовал с `main`, GitHub не запустил для него CI вовсе, и шесть часов очередь
+// говорила «проверки идут» там, где их не было и не могло быть. Конфликт называется
+// сразу и им же: изменение, которое нельзя слить, ждёт переноса ветки, а перенос —
+// это рука человека, а не минуты CI (docs/DESIGN.md §6a, §7h).
+func TestAChangeThatConflictsWithMainIsNotAWaitForItsChecks(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "ждёт переноса ветки", &Change{Number: 129},
+		try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+		Number: 129, State: "open", Base: "main", Head: "9f1c0de",
+		Checks: ChecksFacts{Asked: true, Conflicted: true, MergeState: "DIRTY", State: ChecksNone},
+	}}}}
+
+	one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(11*time.Minute)), host)
+
+	if one.Reason != ReasonConflictWithMain {
+		t.Errorf("the reason = %q, want %q: конфликт нельзя назвать ожиданием проверок",
+			one.Reason, ReasonConflictWithMain)
+	}
+	if one.State != AttentionBlocked {
+		t.Errorf("the state = %q, want %q", one.State, AttentionBlocked)
+	}
+	if one.NextActor != ActorOrchestrator || one.Actable != ActNow {
+		t.Errorf("the next one = %q and %q, want %q and %q: ветку переносит человек",
+			one.NextActor, one.Actable, ActorOrchestrator, ActNow)
+	}
+	for _, want := range []string{"main", "rebase"} {
+		if !strings.Contains(one.Subject+one.Next, want) {
+			t.Errorf("the entry says %q and %q, want it to name %q: что делать с конфликтом",
+				one.Subject, one.Next, want)
+		}
+	}
+	if strings.Contains(one.Reason, ReasonChecksRunning) {
+		t.Errorf("the reason = %q, want no waiting for checks of a change that cannot be merged", one.Reason)
+	}
+}
+
+// TestAPrWithoutChecksIsNoChecksAndNotACheckRunning: CL-011. Проверок нет и не будет —
+// хостинг не запустил ни одной на голове, — и ждать тут нечего: в очереди это названо
+// своей причиной, а не «проверки идут» (docs/DESIGN.md §6a, F-110).
+func TestAPrWithoutChecksIsNoChecksAndNotACheckRunning(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "проверок нет", &Change{Number: 129},
+		try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+		Number: 129, State: "open", Base: "main", Head: "9f1c0de",
+		Checks: ChecksFacts{Asked: true, MergeState: "BLOCKED", State: ChecksNone},
+	}}}}
+
+	one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(4*time.Minute)), host)
+
+	if one.Reason != ReasonNoChecks {
+		t.Errorf("the reason = %q, want %q", one.Reason, ReasonNoChecks)
+	}
+	if one.State != AttentionAwaitsResource {
+		t.Errorf("the state = %q, want %q", one.State, AttentionAwaitsResource)
+	}
+	if one.Actable != ActNow || one.NextActor != ActorOrchestrator {
+		t.Errorf("the entry is %q for %q, want it to be actionable by the orchestrator: запустить или выяснить",
+			one.Actable, one.NextActor)
+	}
+	if !strings.Contains(one.Next, "crewflow review 129") {
+		t.Errorf("what may be done = %q, want the review of the change as the place it is said", one.Next)
+	}
+}
+
+// TestChecksThatAreGoingAreAWaitWithADeadline: третья из трёх причин §6a. Проверки идут —
+// это ожидание ресурса, и никто в этот момент не нужен; но у него есть срок, который
+// проект дал ему в `[attention] deadline_after` (docs/DESIGN.md §6a, D-049).
+func TestChecksThatAreGoingAreAWaitWithADeadline(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "проверки идут", &Change{Number: 129},
+		try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+		Number: 129, State: "open", Base: "main", Head: "9f1c0de",
+		Checks: ChecksFacts{Asked: true, MergeState: "BLOCKED", State: ChecksRunning},
+	}}}}
+	env := attentionEnvOf(ended.Add(11 * time.Minute))
+
+	one := attentionOnly(t, home, repo, env, host)
+
+	if one.Reason != ReasonChecksRunning {
+		t.Errorf("the reason = %q, want %q", one.Reason, ReasonChecksRunning)
+	}
+	if one.State != AttentionAwaitsResource || one.Actable != ActWait {
+		t.Errorf("the entry is %q and %q, want %q and %q: идущие проверки не просят о человеке",
+			one.State, one.Actable, AttentionAwaitsResource, ActWait)
+	}
+	if one.NextActor != ActorNobody {
+		t.Errorf("the next one = %q, want %q", one.NextActor, ActorNobody)
+	}
+	if one.Deadline != ended.Add(30*time.Minute) {
+		t.Errorf("the deadline = %s, want %s: у каждого ожидания есть срок",
+			saidAt(one.Deadline), saidAt(ended.Add(30*time.Minute)))
+	}
+	if one.Promoted {
+		t.Errorf("the entry is promoted = %v, want false: идущие проверки не идут наверх сами по себе,"+
+			"они просто ждут до своего срока", one.Promoted)
+	}
+}
+
+// TestTheQueueSaysNothingAboutChecksWhereTheHostDidNotAnswer: F-098 в другую сторону.
+// Там, где CI не ответил или хост ещё считает, можно ли слить изменение, очередь не
+// называет ни одной из трёх причин: «проверок нет» там, где их не спрашивали, — это
+// враньё о чужом сервисе, и ждать нечего ровно настолько же, сколько и при «нет» (docs.DESIGN.md §6a).
+func TestTheQueueSaysNothingAboutChecksWhereTheHostDidNotAnswer(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		checks ChecksFacts
+	}{
+		{name: "CI не спрашивали", checks: ChecksFacts{}},
+		{name: "CI не ответил", checks: ChecksFacts{Problem: "the checks could not be read"}},
+		{name: "хост ещё не сказал, сливается ли изменение", checks: ChecksFacts{Asked: true, MergeState: "UNKNOWN", State: ChecksNone}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, repo := t.TempDir(), "naghuale-crewflow"
+			ended := monday.Add(8 * time.Hour)
+			writeState(t, home, repo, 43, "ждёт ревью", &Change{Number: 129},
+				try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+			host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+				Number: 129, State: "open", Base: "main", Head: "9f1c0de", Checks: tc.checks,
+			}}}}
+
+			one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(4*time.Minute)), host)
+
+			if one.Reason != ReasonReviewRequired {
+				t.Errorf("the reason = %q, want %q: нет данных — «неизвестно», а не догадка",
+					one.Reason, ReasonReviewRequired)
+			}
+			if tc.checks.Problem != "" && !strings.Contains(one.Hint, "could not be read") {
+				t.Errorf("the entry says %q, want it to name why the checks are unknown", one.Hint)
+			}
+		})
+	}
+}
+
+// TestAWaitPastItsDeadlineAsksForAPerson: CL-012, D-049. Ожидание, которое перешло за срок,
+// которое ему дали, перестаёт быть «ждём, никого не нужно»: причиной становится
+// `waited-too-long`, и человек нужен сейчас. F-110 шёл шесть часов в ожидании, у которого
+// не было ни срока, ни конца (docs.DESIGN.md §6a).
+func TestAWaitPastItsDeadlineAsksForAPerson(t *testing.T) {
+	home, repo := t.TempDir(), "naghuale-crewflow"
+	ended := monday.Add(8 * time.Hour)
+	writeState(t, home, repo, 43, "проверки идут третий час", &Change{Number: 129},
+		try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+	host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+		Number: 129, State: "open", Base: "main", Head: "9f1c0de",
+		Checks: ChecksFacts{Asked: true, MergeState: "BLOCKED", State: ChecksRunning},
+	}}}}
+
+	one := attentionOnly(t, home, repo, attentionEnvOf(ended.Add(3*time.Hour)), host)
+
+	if one.Reason != ReasonWaitedTooLong {
+		t.Errorf("the reason = %q, want %q: ожидание дольше срока — это внимание, а не ожидание",
+			one.Reason, ReasonWaitedTooLong)
+	}
+	if one.Actable != ActNow || one.Priority != High {
+		t.Errorf("the entry is %q and %q, want %q and %q: пора звать человека",
+			one.Actable, one.Priority, ActNow, High)
+	}
+	if one.Deadline != ended.Add(30*time.Minute) {
+		t.Errorf("the deadline = %s, want %s", saidAt(one.Deadline), saidAt(ended.Add(30*time.Minute)))
+	}
+	if !strings.Contains(one.Hint, ReasonChecksRunning) {
+		t.Errorf("the entry says %q, want it to keep %q beside: что именно заждалось", one.Hint, ReasonChecksRunning)
+	}
+	if !strings.Contains(one.Next, "deadline") {
+		t.Errorf("what may be done = %q, want it to name the deadline it has passed", one.Next)
+	}
+}
+
+// TestTheWaitOfTheChecksIsTheSameWordInTheBlockAndInTheDocument: D-044. Одна функция
+// называет, что значат проверки головы изменения, и очередь §6a, список прогонов и
+// `crewflow status` говорят об этом одними словами — а слово, которое попало в документ,
+// есть в закрытом перечне §6a (docs.DESIGN.md §6a).
+func TestTheWaitOfTheChecksIsTheSameWordInTheBlockAndInTheDocument(t *testing.T) {
+	for _, tc := range []struct {
+		reason string
+		checks ChecksFacts
+	}{
+		{ReasonConflictWithMain, ChecksFacts{Asked: true, Conflicted: true, MergeState: "DIRTY"}},
+		{ReasonNoChecks, ChecksFacts{Asked: true, MergeState: "BLOCKED", State: ChecksNone}},
+		{ReasonChecksRunning, ChecksFacts{Asked: true, MergeState: "BLOCKED", State: ChecksRunning}},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			home, repo := t.TempDir(), "naghuale-crewflow"
+			ended := monday.Add(8 * time.Hour)
+			writeState(t, home, repo, 43, "ждёт", &Change{Number: 129},
+				try{startedAt: monday.Add(7 * time.Hour), endedAt: ended, outcome: ChangeRequestOpened})
+			host := &hostOfTest{facts: map[int]HostFacts{43: {Change: &ChangeFacts{
+				Number: 129, State: "open", Base: "main", Head: "9f1c0de", Checks: tc.checks,
+			}}}}
+			at := ended.Add(4 * time.Minute)
+			env := attentionEnvOf(at)
+			// Блок внимания печатает то, что идёт наверх, а идут туда те, о ком можно
+			// действовать, и те, кто заждался: здесь важно, что слово причины одно и то же
+			// в строке блока и в записи документа (§6a).
+			env.TopAfter = time.Minute
+
+			queue := queueOf(t, home, repo, env, host)
+
+			one, wanted := queue.Wanted(43)
+			if !wanted {
+				t.Fatalf("the queue holds %v, want the task 43 in it", tasksOfQueue(queue))
+			}
+			var out bytes.Buffer
+			if err := queue.Write(&out, screenAt(at)); err != nil {
+				t.Fatalf("Write returned an error: %v", err)
+			}
+			if !strings.Contains(out.String(), tc.reason) {
+				t.Errorf("the block wrote %q, want %q in it", out.String(), tc.reason)
+			}
+			said := answerAs(t, queue.Document(at))
+			if !strings.Contains(said, `"reason": "`+tc.reason+`"`) {
+				t.Errorf("the document wrote %q, want the reason %q in it", said, tc.reason)
+			}
+			if !KnownReason(one.Reason) {
+				t.Errorf("the reason %q is a code of the queue and the closed list does not know it", one.Reason)
+			}
+		})
+	}
 }

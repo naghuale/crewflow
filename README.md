@@ -272,7 +272,28 @@ and is not asked about again for a day, so a machine that ran a hundred tasks re
 `crewflow task attention` is made for a schedule: it exits non-zero while anything in the queue
 wants a person, and leaves **one record under the task per key** (task, state, priority, reason),
 not repeated for a day. The thresholds are in `[attention]`: `top_after` (30m),
-`escalate_after` (24h), `remind_after` (24h) and `weekly_after` (7d, the weekly slice of #37).
+`escalate_after` (24h), `remind_after` (24h), `weekly_after` (7d, the weekly slice of #37) and
+`deadline_after` (30m) — the last one is the length of **one** wait: past it the queue stops
+saying "nobody is asked for anything" and asks for a person instead.
+
+**Waiting is only for something that can happen.** Three reasons, and none of them is "waiting
+for CI": a change that conflicts with `main` is `conflict-with-main` and waits for the branch to
+be rebased; a change whose head has no checks at all is `no-checks` and waits for somebody to
+start them or to find out why they do not run; checks that are going are `ci-running`, and past
+their `deadline_after` even that becomes `waited-too-long`. On 2026-10-02 PR #129 conflicted with
+`main`, GitHub ran no CI for it, and "no checks" was read as "checks are going" for six hours
+(F-110, #37). Where the CI of the project did not answer, or the host has not worked out yet
+whether the change can be merged, the queue names **none** of the three and says it does not know:
+the absence of an answer is not an answer about the checks. Green and red checks are the gate's
+business (§7h); the queue only says whether anyone is waited for.
+
+```
+ATTENTION REQUIRED
+  #43 · blocked · conflict-with-main · the merge into main of #129
+    waiting 11m · next: orchestrator · crewflow task run 43 -continue "what is left to do" — rebase onto main and push
+  #44 · awaits-resource · ci-running · the checks of the head of #130
+    waiting 3m · next: nobody — we are waiting · the deadline 2026-10-03 12:31
+```
 
 A reason that is known is never "standing": a run at the keychain window *waits* for a person
 (`blocked`, `human-authorization-required`, the channel and the action), and a run whose silence
@@ -332,7 +353,7 @@ task, because the record is written as the orchestrator of a project and the mac
 What that costs is in the same line: a change merged past crewflow stays `finished-unseen` in
 that table until `crewflow task attention` in its own project asks its host and takes it out.
 
-`attention_state` and `reason` are **closed lists** — the eight states and twenty reasons of
+`attention_state` and `reason` are **closed lists** — the eight states and twenty-four reasons of
 §6a of the design — because a program switches on those words. A reason crewflow cannot name
 from the list is not written as a code: it stays in the `subject` of the record for a person to
 read, and the code stays `blocked`, which is what it is. The lines above the table and the
