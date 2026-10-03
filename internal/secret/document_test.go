@@ -149,25 +149,43 @@ func TestTheValueBotOfTheFormatIsNotASecretAndNotALeak(t *testing.T) {
 	}
 }
 
-// TestTheStateOfATaskIsWrittenOverAGapInItsPolicy: the state of a task is a record of what
-// crewflow did, written after the actions of a run, and a field of it that the policy of the
-// document does not name must not cost the run its record: the field is cleaned as free text
-// and the gap is given back to be said as an event (R224-16, D-082, docs/DESIGN.md §7h).
-func TestTheStateOfATaskIsWrittenOverAGapInItsPolicy(t *testing.T) {
+// TestTheStateOfATaskWithAFieldNobodyClassifiedIsNotWrittenAtAll: the state of a task is the
+// record of what crewflow did, kept for ever and read by programs that decide by the words of it.
+// A field of it that the policy of the kind does not name is not cleaned as free text and written
+// all the same: nobody looked at that field, and the state is not written at all. The refusal
+// names the document and the field and no value of a run (D-089, D-082, docs/DESIGN.md §7h).
+func TestTheStateOfATaskWithAFieldNobodyClassifiedIsNotWrittenAtAll(t *testing.T) {
 	out := boundaryOf(Chosen(canaryShort)...)
 
-	document, gaps, err := out.StateDocument(map[string]any{
+	document, err := out.StateDocument(map[string]any{
 		"schema":            1,
 		"task":              43,
 		"branch":            "crewflow/43-the-run-of-a-task",
 		"field_of_tomorrow": "the run asked for " + canaryShort + " and left",
 	})
-	if err != nil {
-		t.Fatalf("the state of a task: %v", err)
-	}
 
-	if len(gaps) != 1 || gaps[0] != "field_of_tomorrow" {
-		t.Errorf("the gaps of the policy of the state are %q, want the one field nobody classified", gaps)
+	if err == nil {
+		t.Fatalf("the state of a task with a field nobody classified is %s, want a refusal", document)
+	}
+	if document != nil {
+		t.Errorf("the state of a task that was not written is %s, want nothing", document)
+	}
+	if !errors.Is(err, ErrRedactionPathUnknown) {
+		t.Fatalf("the refusal of the state of a task is %v, want %v", err, ErrRedactionPathUnknown)
+	}
+	for _, want := range []string{string(DocumentState), "field_of_tomorrow"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal of the state of a task is %q, want it to name %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), canaryShort) {
+		t.Errorf("the refusal of the state of a task is %q, want no value of a run in it", err)
+	}
+	// A state every field of which the policy names is written as it is, so that the refusal
+	// above says something about the field and not about the kind of the document.
+	document, err = out.StateDocument(map[string]any{"schema": 1, "task": 43})
+	if err != nil {
+		t.Fatalf("the state of a task every field of which is named: %v", err)
 	}
 	var read map[string]any
 	if err := json.Unmarshal(document, &read); err != nil {
@@ -176,11 +194,6 @@ func TestTheStateOfATaskIsWrittenOverAGapInItsPolicy(t *testing.T) {
 	if read["task"] != float64(43) {
 		t.Errorf("the task of the state is %v, want 43: the fields the policy names are written as they are",
 			read["task"])
-	}
-	said, _ := read["field_of_tomorrow"].(string)
-	if strings.Contains(said, canaryShort) || !strings.Contains(said, Redacted) {
-		t.Errorf("the field nobody classified is %q, want %q in the place of the value: a gap is not a way out",
-			said, Redacted)
 	}
 }
 

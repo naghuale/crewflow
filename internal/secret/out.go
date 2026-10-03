@@ -189,7 +189,7 @@ func (o *Out) Report(doc Document, value any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	cleaned, err := cleanDocumentOf(doc, tree, "", o.cutting(), nil)
+	cleaned, err := cleanDocumentOf(doc, tree, "", o.cutting())
 	if err != nil {
 		return nil, err
 	}

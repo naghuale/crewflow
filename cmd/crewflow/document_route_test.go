@@ -203,7 +203,7 @@ func putRunWithWordsIntoTheState(t *testing.T, host *host, title string, ended t
 // the check of what stands — never learn the value themselves (D-082, docs/DESIGN.md §7e, §7h).
 func keepsStateThroughTheBoundary(t *testing.T, path string, state taskrun.State, value string) {
 	t.Helper()
-	said, _, err := secret.NewOut(secret.Chosen(value)...).StateDocument(state)
+	said, err := secret.NewOut(secret.Chosen(value)...).StateDocument(state)
 	if err != nil {
 		t.Fatalf("the state of the task through the boundary: %v", err)
 	}
@@ -617,8 +617,7 @@ func theAnswerOfTheStateOfTheTask(t *testing.T) ([]byte, planted) {
 	if err := json.Unmarshal(said, &document); err != nil {
 		t.Fatalf("the state of the task is not a document: %v\n%s", err, said)
 	}
-	published, _, err := secret.NewOut(secret.Chosen(canary)...).
-		StateDocument(document)
+	published, err := secret.NewOut(secret.Chosen(canary)...).StateDocument(document)
 	if err != nil {
 		t.Fatalf("the state of the task through the boundary: %v", err)
 	}

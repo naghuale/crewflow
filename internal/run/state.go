@@ -750,50 +750,20 @@ func LoadState(path string) (State, error) {
 // it is not a code (R5-NEW-8, §6a, §7e).
 func saveState(out *secret.Out, path string, state State) error {
 	state.Schema = Schema
-	data, gaps, err := out.StateDocument(state)
+	return publishState(out, path, state)
+}
+
+// publishState is the record of a task as the boundary publishes it and the file of the task keeps
+// it. The record is published whole or not at all: a field of it the policy of the kind does not
+// name is nobody's field, and the file on the disk stays the last record that was published, byte
+// for byte, while the command is told which field the policy does not know (D-089, D-082,
+// docs/DESIGN.md §7h).
+func publishState(out *secret.Out, path string, record any) error {
+	data, err := out.StateDocument(record)
 	if err != nil {
 		return fmt.Errorf("the state of the task: %w", err)
 	}
-	sayPolicyGaps(state, gaps)
 	return writeFileAtomic(path, append(data, '\n'))
-}
-
-// sayPolicyGaps is what a state says about the fields of it the policy of the document does
-// not name. The gap is a defect of the program and not of the run, and it is said as an event
-// in the journal of the attempt the state is of: a field nobody classified is a field nobody
-// looked at, and it must not stay a secret between the state and the person who reads it. The
-// state is written either way — a record after an action is never lost for the sake of a
-// policy (R224-16, D-082).
-func sayPolicyGaps(state State, gaps []string) {
-	for _, gap := range gaps {
-		path := ""
-		if attempts := state.Attempts; len(attempts) > 0 {
-			path = attempts[len(attempts)-1].Journal
-		}
-		if path != "" && sayEventTo(path, "state-policy-gap", "path="+gap) {
-			continue
-		}
-		sayEvent(os.Stderr, "state-policy-gap", "path="+gap)
-	}
-}
-
-// sayEventTo is one event of a run said into the journal of its attempt, and whether it was
-// said: a journal that cannot be opened is not a reason to keep the event to oneself, the
-// caller says it where it can.
-func sayEventTo(path, event string, facts ...string) bool {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return false
-	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-	if err != nil {
-		return false
-	}
-	// The journal of an attempt is a file of its own and its close says whether the line
-	// reached it: a gap of the policy that nobody could read about is a gap that was not
-	// said, and the caller has to know it (R224-16).
-	defer func() { _ = file.Close() }()
-	sayEvent(file, event, facts...)
-	return true
 }
 
 // UpdateState is what a command writes into the state of a task without taking a record

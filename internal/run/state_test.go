@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -817,13 +818,20 @@ func TestTheReasonOfAnAttemptKeepsItsMarkerWhenTheStateIsWrittenAgain(t *testing
 	}
 }
 
-// TestAGapInThePolicyOfTheStateIsSaidAsAnEventAndTheStateIsWritten: the state of a task is a
-// record of what crewflow did, written after the actions of a run, and a field of it that the
-// policy of the document does not name must not cost the run its record: the field is cleaned
-// as free text, the gap is said as an event of the attempt the state is of, and the state is
-// written whole. An event that could not be said anywhere a journal is said on the standard
-// error of the command, and the state is written either way (R224-16, D-082, §7h).
-func TestAGapInThePolicyOfTheStateIsSaidAsAnEventAndTheStateIsWritten(t *testing.T) {
+// aStateWithAFieldNobodyClassified is the state of a task with a field the policy of the kind does
+// not name: what the record of a task looks like when a field of the format arrives before the
+// policy of it does.
+type aStateWithAFieldNobodyClassified struct {
+	State
+	FieldOfTomorrow string `json:"field_of_tomorrow"`
+}
+
+// TestAFieldNobodyClassifiedKeepsTheStateThatWasWritten: the state of a task is the record of
+// what crewflow did, and a field of it that the policy of the kind does not name is not cleaned
+// as free text and written all the same — the new record is not written, the record on the disk
+// stays the last one that was published byte for byte, and the refusal names the field and no
+// value of a run (D-089, D-082, docs/DESIGN.md §7h).
+func TestAFieldNobodyClassifiedKeepsTheStateThatWasWritten(t *testing.T) {
 	folder := t.TempDir()
 	journals := newJournals(folder, "naghuale-crewflow")
 	state := State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Schema: Schema}
@@ -831,25 +839,38 @@ func TestAGapInThePolicyOfTheStateIsSaidAsAnEventAndTheStateIsWritten(t *testing
 		Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
 		Journal: journals.JournalPath(43, 1),
 	})
-
 	if err := saveState(secret.NewOut(), journals.StatePath(43), state); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
-	written, err := LoadState(journals.StatePath(43))
+	published, err := os.ReadFile(journals.StatePath(43))
 	if err != nil {
 		t.Fatalf("read the state of the task: %v", err)
 	}
-	if written.Number != 43 || len(written.Attempts) != 1 {
-		t.Fatalf("the state of the task is %+v, want the record of the attempt of the run", written)
-	}
-
-	sayPolicyGaps(written, []string{"attempts[].field_of_tomorrow"})
-
-	said, err := os.ReadFile(journals.JournalPath(43, 1))
+	written, err := LoadState(journals.StatePath(43))
 	if err != nil {
-		t.Fatalf("read the journal of the attempt: %v", err)
+		t.Fatalf("read the state of the task as a state: %v", err)
 	}
-	if !strings.Contains(string(said), "crewflow: event state-policy-gap path=attempts[].field_of_tomorrow") {
-		t.Errorf("the journal of the attempt is %q, want the gap of the policy said as an event in it", said)
+
+	err = publishState(secret.NewOut(), journals.StatePath(43), aStateWithAFieldNobodyClassified{
+		State:           written,
+		FieldOfTomorrow: "the run asked for " + secret.Redacted + " and left",
+	})
+
+	if err == nil {
+		t.Fatalf("the state of a task with a field nobody classified was written: %s", published)
+	}
+	if !errors.Is(err, secret.ErrRedactionPathUnknown) {
+		t.Fatalf("the refusal of the state of a task is %v, want %v", err, secret.ErrRedactionPathUnknown)
+	}
+	if !strings.Contains(err.Error(), "field_of_tomorrow") {
+		t.Errorf("the refusal of the state of a task is %q, want it to name the field nobody classified", err)
+	}
+	kept, err := os.ReadFile(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("read the state of the task after the refusal: %v", err)
+	}
+	if string(kept) != string(published) {
+		t.Errorf("the state of the task is\n%s\nwant the record that was published before it\n%s",
+			kept, published)
 	}
 }

@@ -268,37 +268,34 @@ func Documents() []Document {
 // What it did not change it hands back as it was, and the answer of the caller is never
 // touched: the answer is written as a document, and the tree of that document is what is read
 // back, cut and written again (R5-NEW-6, R5-NEW-7, R224-013, §7e).
-func cleanDocumentOf(doc Document, node any, path string, cut func(string) string, gaps *[]string) (any, error) {
+func cleanDocumentOf(doc Document, node any, path string, cut func(string) string) (any, error) {
 	rows, known := policies[doc]
 	if !known {
 		return nil, missingPolicy(doc)
 	}
-	return fieldOfDocument(doc, rows, node, path, cut, gaps)
+	return fieldOfDocument(doc, rows, node, path, cut)
 }
 
 // fieldOfDocument is one field of a document, at the path it stands at, held to what the
 // policy of the document says of it.
 func fieldOfDocument(doc Document, rows map[string]rule, node any, path string,
-	cut func(string) string, gaps *[]string) (any, error) {
+	cut func(string) string) (any, error) {
 	if node == nil {
 		// Nothing is in the field, and what is not in it cannot be cut and cannot be wrong.
 		return nil, nil
 	}
 	what, classified := rows[path]
 	if !classified {
-		if gaps != nil {
-			// A field the policy of the document does not name is cleaned as free text and
-			// the gap is said as an event: this is the state of a task, a record written
-			// after the actions of a run, and a record is never lost for the sake of a
-			// policy (R224-16, D-082).
-			*gaps = append(*gaps, path)
-			return cut(node.(string)), nil
-		}
+		// Nobody looked at this field, and a field nobody looked at is a field nobody can
+		// say is free of the words of a run. The document is not published at all — and
+		// the state of a task with it: the record that stays is the last one that was
+		// published, byte for byte, and the command says which field it did not know
+		// (D-089, D-082, docs/DESIGN.md §7e, §7h).
 		return nil, unknownPath(doc, path)
 	}
 	switch what.class {
 	case container:
-		return containerOfDocument(doc, rows, node, path, cut, gaps)
+		return containerOfDocument(doc, rows, node, path, cut)
 	case text:
 		said, is := node.(string)
 		if !is {
@@ -355,7 +352,7 @@ func pathOf(path, name string) string {
 // in every case — a document is read by its names, and a name with a cut in it is a document
 // nobody can read by it (R224-001, D-082).
 func containerOfDocument(doc Document, rows map[string]rule, node any, path string,
-	cut func(string) string, gaps *[]string) (any, error) {
+	cut func(string) string) (any, error) {
 	switch held := node.(type) {
 	case map[string]any:
 		cleaned := make(map[string]any, len(held))
@@ -370,7 +367,7 @@ func containerOfDocument(doc Document, rows map[string]rule, node any, path stri
 					under = any
 				}
 			}
-			field, err := fieldOfDocument(doc, rows, value, under, cut, gaps)
+			field, err := fieldOfDocument(doc, rows, value, under, cut)
 			if err != nil {
 				return nil, err
 			}
@@ -380,7 +377,7 @@ func containerOfDocument(doc Document, rows map[string]rule, node any, path stri
 	case []any:
 		cleaned := make([]any, len(held))
 		for at, value := range held {
-			field, err := fieldOfDocument(doc, rows, value, path+"[]", cut, gaps)
+			field, err := fieldOfDocument(doc, rows, value, path+"[]", cut)
 			if err != nil {
 				return nil, err
 			}
@@ -430,31 +427,27 @@ func wrongKind(doc Document, path string) error {
 // being the document the format describes (D-082, docs/DESIGN.md §7e).
 var ErrJSONSchemaInvalid = errors.New("output-json-schema-invalid")
 
-// StateDocument is the state of a task as it may be written down in the file of it: every
-// field of it classified by the policy of [DocumentState], and a field the policy does not name
-// cleaned as free text and named in the gaps instead of stopping the write. A state is a record
-// of what crewflow did, written after the actions of a run; losing it for the sake of a policy
-// loses the recovery of the run with it, and the gap is said as an event rather than paid for
-// with the record (R224-16, D-082, docs/DESIGN.md §7h).
-func (o *Out) StateDocument(value any) ([]byte, []string, error) {
+// StateDocument is the state of a task as it may be written down in the file of it: every field
+// of it held to the policy of [DocumentState], like any other document, and a field the policy
+// does not name stopping the write whole. The state is the record of what crewflow did, kept for
+// ever and read by programs that decide by the words of it, so a field nobody classified is not
+// cleaned as if it were free text and written all the same: the record that stays on the disk is
+// the last one that was published, byte for byte, and the caller is told which field of the kind
+// the policy does not know (D-089, D-082, docs.DESIGN.md §7e, §7h).
+func (o *Out) StateDocument(value any) ([]byte, error) {
 	document, err := json.Marshal(value)
 	if err != nil {
-		return nil, nil, fmt.Errorf("the state of a task as a document: %w", err)
+		return nil, fmt.Errorf("the state of a task as a document: %w", err)
 	}
 	tree, err := treeOfDocument(document)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	var gaps []string
-	cleaned, err := cleanDocumentOf(DocumentState, tree, "", o.cutting(), &gaps)
+	cleaned, err := cleanDocumentOf(DocumentState, tree, "", o.cutting())
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	published, err := asDocument(cleaned)
-	if err != nil {
-		return nil, nil, err
-	}
-	return published, gaps, nil
+	return asDocument(cleaned)
 }
 
 // treeOfDocument is the tree of a document of an answer: the objects, the lists and the leaves
