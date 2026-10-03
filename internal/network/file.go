@@ -264,8 +264,13 @@ func (s *section) set(key, value string) {
 
 // headerOf is the name of a table written on a line of the file, and whether the line
 // is one at all: a key, a comment and a blank line are not.
+//
+// The comment after a header is read the way TOML reads it, and a header nobody
+// recognised is a table nobody edited: the command wrote a table of its own, and the
+// loader of every other command then refused the file of the project with «Key 'network'
+// has already been defined» (docs/DESIGN.md §7d).
 func headerOf(line string) (string, bool) {
-	trimmed := strings.TrimSpace(line)
+	trimmed := withoutComment(strings.TrimSpace(line))
 	if len(trimmed) < 2 || trimmed[0] != '[' || trimmed[len(trimmed)-1] != ']' {
 		return "", false
 	}
@@ -275,6 +280,26 @@ func headerOf(line string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// withoutComment is the text of a line up to the comment in it. A `#` outside a quoted
+// name begins a comment, and inside one it is a character of the name — `[ "a # b" ]` is
+// a table of a name with a hash in it, and there is nothing to cut out of it.
+func withoutComment(line string) string {
+	var quoted byte
+	for i := range len(line) {
+		switch c := line[i]; {
+		case quoted != 0:
+			if c == quoted {
+				quoted = 0
+			}
+		case c == '"' || c == '\'':
+			quoted = c
+		case c == '#':
+			return strings.TrimRight(line[:i], " \t")
+		}
+	}
+	return line
 }
 
 // keyOf is the key a line writes, and whether the line writes one.

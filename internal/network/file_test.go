@@ -382,6 +382,96 @@ func TestAProfileThatIsNotThereCannotBeUsedOrRemoved(t *testing.T) {
 	}
 }
 
+// TestTheHeaderOfATableIsFoundWithACommentAfterIt: TOML lets the header of a table be
+// followed by spaces and a comment, and a file that says so is a file that loads. An editor
+// that did not see such a header as a header wrote a table of its own, and every command of
+// the network of the project then refused the file — a person who only wanted to switch the
+// route was told «Key 'network' has already been defined» (docs/DESIGN.md §7d).
+func TestTheHeaderOfATableIsFoundWithACommentAfterIt(t *testing.T) {
+	cases := []struct {
+		what    string
+		headers [][2]string
+	}{
+		{"a comment right after the header of the section", [][2]string{
+			{"[network]", "[network] # the route of every run of the project"}}},
+		{"spaces and a comment after the header of the section", [][2]string{
+			{"[network]", "[network] \t # the route  "}}},
+		{"a comment with no space before it", [][2]string{
+			{"[network]", "[network]# the route"}}},
+		{"a comment after the header of a profile", [][2]string{
+			{"[network.proxies.home]", "[network.proxies.home] # at home"}}},
+		{"a comment after every header of the file", [][2]string{
+			{"[network]", "[network] # the route"},
+			{"[network.proxies.home]", "[network.proxies.home] # at home"},
+			{"[network.proxies.work]", "[network.proxies.work] # at work"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.what, func(t *testing.T) {
+			path := withHeaders(t, tc.headers)
+
+			if err := Use(path, "home"); err != nil {
+				t.Fatalf("use the profile home in a file whose header carries a comment: %v", err)
+			}
+			if err := Mode(path, "proxy"); err != nil {
+				t.Fatalf("switch the mode of a file whose header carries a comment: %v", err)
+			}
+			cfg, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("the file of the project does not load after the changes: %v", err)
+			}
+			if cfg.Network.ActiveProxy != "home" || cfg.Network.Mode != "proxy" {
+				t.Errorf("the route came out as the mode %q through %q, want proxy through home",
+					cfg.Network.Mode, cfg.Network.ActiveProxy)
+			}
+			edited := read(t, path)
+			if got := strings.Count(edited, "[network]"); got != 1 {
+				t.Errorf("the file of the project holds %d headers of [network], want one:\n%s", got, edited)
+			}
+			if got := strings.Count(edited, "[network.proxies.home]"); got != 1 {
+				t.Errorf("the file of the project holds %d headers of the table of home, want one:\n%s", got, edited)
+			}
+			if strings.Contains(edited, "network.proxies.home.active_proxy") {
+				t.Errorf("the key of the route was written into the table of a profile:\n%s", edited)
+			}
+		})
+	}
+}
+
+// TestAHeaderIsAHeaderAndNothingElseIs: what the editor reads off a line before it decides
+// that the line opens a table — a comment after a header is not part of the name, a `#` in
+// a quoted name is, and an array of tables is not a table this editor writes into.
+func TestAHeaderIsAHeaderAndNothingElseIs(t *testing.T) {
+	cases := []struct {
+		line string
+		want string
+	}{
+		{"[network]", "network"},
+		{"  [network.proxies.home]  # at home", "network.proxies.home"},
+		{`["network"] # the route`, "network"},
+		{`['network']`, "network"},
+		{`["a # b"]`, ""},
+		{"[[network]] # an array of tables", ""},
+		{"[network", ""},
+		{"mode = \"direct\" # the route", ""},
+		{"# [network]", ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.line, func(t *testing.T) {
+			got, found := headerOf(tc.line)
+			if tc.want == "" {
+				if found {
+					t.Errorf("headerOf(%q) = %q, found — want no header", tc.line, got)
+				}
+				return
+			}
+			if !found || got != tc.want {
+				t.Errorf("headerOf(%q) = %q, %v, want %q, true", tc.line, got, found, tc.want)
+			}
+		})
+	}
+}
+
 // read is the file of a project as it stands on disk, which is what a person edits and
 // what the next command reads.
 func read(t *testing.T, path string) string {

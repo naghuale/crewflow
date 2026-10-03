@@ -68,6 +68,26 @@ func keysOf(pairs ...string) string {
 	return lines.String()
 }
 
+// withHeaders is the file of a project with the headers a case names in place of the ones
+// of the file above, in a folder of the test that is gone when the case is over. It is read
+// by the loader every command reads: a header of a table that no command could read would
+// make the case prove nothing.
+func withHeaders(t *testing.T, headers [][2]string) string {
+	t.Helper()
+	text := fmt.Sprintf(baseFile, keysOf("mode", `"direct"`))
+	for _, header := range headers {
+		text = strings.Replace(text, header[0], header[1], 1)
+	}
+	path := filepath.Join(t.TempDir(), "crewflow.toml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatalf("write the file of the project: %v", err)
+	}
+	if _, err := config.Load(path); err != nil {
+		t.Fatalf("the file of the project with the headers of the case does not load: %v\n%s", err, text)
+	}
+	return path
+}
+
 // TestCFNET001AStraightRouteHandsNothingToAChildProcess is the first rule of the order of
 // the route (02.10.2026): the mode `direct` sends a request out as it is, and a variable
 // left over from the shell of a person is a route nobody chose. Nothing is added to the
