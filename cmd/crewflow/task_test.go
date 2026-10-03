@@ -1387,9 +1387,7 @@ func putRunThatStands(t *testing.T, h *host) time.Time {
 		Process:      proc.Process{Pid: 4242, StartedAt: started},
 		Identity:     taskrun.Identity{Mode: "owner", Description: "owner — the login gh naghuale (shared rights)"},
 	})
-	if err := taskrun.SaveState(journals.StatePath(43), state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
-	}
+	keepsState(t, journals.StatePath(43), state)
 	return started
 }
 

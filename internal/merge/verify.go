@@ -243,15 +243,21 @@ func (d *deps) verified(task int, at time.Time) error {
 		return nil
 	}
 	path := taskrun.JournalsOf(d.Home, d.Repo).StatePath(task)
-	state, err := taskrun.LoadState(path)
+	_, err := taskrun.LoadState(path)
 	if isNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("write the moment of the check into the state of task %d: %w", task, err)
 	}
-	state.VerifiedAt = &at
-	if err := taskrun.SaveState(path, state); err != nil {
+	// The moment of the check is written as a change of the state and not as a state of it:
+	// a check after the merge is a command of a person or of a schedule beside a run that
+	// is going, and a whole write of the state this check read a moment ago would take the
+	// attempt of that run away (D-068 FINDING-4, §7h).
+	if _, err := taskrun.UpdateState(path, func(state taskrun.State) (taskrun.State, error) {
+		state.VerifiedAt = &at
+		return state, nil
+	}); err != nil {
 		return fmt.Errorf("write the state of task %d: %w", task, err)
 	}
 	return nil

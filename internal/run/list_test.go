@@ -537,12 +537,18 @@ func TestListDoesNotTouchTheStateOfATask(t *testing.T) {
 	if !bytes.Equal(before, after) {
 		t.Errorf("the state of the task is\n%s\nwant it left as it was:\n%s", after, before)
 	}
+	// What the folder of the state holds after the list: the state of the task and the lock
+	// beside it, which the state was written under and which no reader counts as a task.
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil {
 		t.Fatalf("read the folder of the state: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("the folder of the state holds %d files, want only the state of the task", len(entries))
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	if !slices.Equal(names, []string{"43.json", "43.json.lock"}) {
+		t.Errorf("the folder of the state holds %v, want the state of the task and its lock and nothing else", names)
 	}
 }
 
@@ -993,9 +999,7 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 			state = state.Alive(attempt.lastAt, attempt.lastStep, attempt.reason)
 		}
 	}
-	if err := SaveState(journals.StatePath(number), state); err != nil {
-		t.Fatalf("write the state of the task %d: %v", number, err)
-	}
+	keeps(t, journals.StatePath(number), state)
 }
 
 // descriptionOf is the one line a report of a run under that name shows, and nothing

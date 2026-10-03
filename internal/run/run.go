@@ -752,7 +752,9 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 		}
 		return nil
 	}
-	return SaveState(path, kept)
+	// The bytes are written by `saveState` under the lock held above: a state of a task that
+	// is there is changed, and this run changes it by taking one attempt out of it (D-044).
+	return saveState(path, kept)
 }
 
 // aliveStep is a sign of life of the run at a step of crewflow together with whose name

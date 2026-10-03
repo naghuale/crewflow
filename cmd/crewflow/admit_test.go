@@ -250,9 +250,7 @@ func goingOfTest(t *testing.T, h *host, number int) {
 	if err := os.MkdirAll(state.Worktree, 0o700); err != nil {
 		t.Fatalf("make the worktree of the task %d: %v", number, err)
 	}
-	if err := taskrun.SaveState(journals.StatePath(number), state); err != nil {
-		t.Fatalf("write the state of the task %d: %v", number, err)
-	}
+	keepsState(t, journals.StatePath(number), state)
 }
 
 // admitted is `crewflow task admit` with every criterion a person may enter a `pass`, for a

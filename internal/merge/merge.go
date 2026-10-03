@@ -425,7 +425,7 @@ func (d *deps) after(ctx context.Context, result Result, journal *Journal, left 
 // the runs of the project says the task is merged at (docs/DESIGN.md §7h).
 func (d *deps) remember(result Result) error {
 	path := taskrun.JournalsOf(d.Home, d.Repo).StatePath(result.Task)
-	state, err := taskrun.LoadState(path)
+	_, err := taskrun.LoadState(path)
 	if isNotExist(err) {
 		// A change merged on another machine has no state here, and a merge does not
 		// invent one: there is nothing of a run of this machine to add to.
@@ -434,8 +434,14 @@ func (d *deps) remember(result Result) error {
 	if err != nil {
 		return fmt.Errorf("write the commit %s into the state of task %d: %w", short(result.MergedSHA), result.Task, err)
 	}
-	state.MergedSHA = result.MergedSHA
-	if err := taskrun.SaveState(path, state); err != nil {
+	// The commit is written as a change of the state and not as a state of it: a merge is
+	// a command of a person beside a schedule of an orchestrator and a run that is going,
+	// and a whole write of the state this merge read a moment ago would take the attempt of
+	// a run or the memory of the queue away (D-068 FINDING-4, §7h).
+	if _, err := taskrun.UpdateState(path, func(state taskrun.State) (taskrun.State, error) {
+		state.MergedSHA = result.MergedSHA
+		return state, nil
+	}); err != nil {
 		return fmt.Errorf("write the state of task %d: %w", result.Task, err)
 	}
 	return nil

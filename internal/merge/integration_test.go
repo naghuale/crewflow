@@ -15,6 +15,7 @@ import (
 	"github.com/naghuale/crewflow/internal/doctor"
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/gate"
+	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 )
 
@@ -960,8 +961,18 @@ func (s *scenario) keepState(t *testing.T) {
 		Change:   &taskrun.Change{Number: changeNumber, URL: s.change.URL},
 		Attempts: []taskrun.Attempt{{Number: 1, Outcome: taskrun.ChangeRequestOpened}},
 	}
-	if err := taskrun.SaveState(s.state, state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
+	keepsState(t, s.state, state)
+}
+
+// keepsState is the state a test has made for a task, written the way a command writes one:
+// as a change, under the lock of the task. A fixture stands for a machine whose state is what
+// the test says, and it goes through `UpdateState` all the same — that is the one road into a
+// state of a task, and a second one is how a record of one command gets lost by another
+// (D-044: одна дорога).
+func keepsState(t *testing.T, path string, state taskrun.State) {
+	t.Helper()
+	if _, err := taskrun.UpdateState(path, func(taskrun.State) (taskrun.State, error) { return state, nil }); err != nil {
+		t.Fatalf("write the state of the task into %s: %v", path, err)
 	}
 }
 
@@ -1236,6 +1247,196 @@ func TestTheMergeRecordsTheCommitInTheStateOfTheTask(t *testing.T) {
 	if state.MergedSHA != s.change.HeadSHA {
 		t.Errorf("the state holds the merged commit %q, want %q", state.MergedSHA, s.change.HeadSHA)
 	}
+}
+
+// TestTheMergeAndTheQueueKeepBothRecordsOfOneState: the merge and the queue of attention write
+// the state of one task at the same time, and both records are in the file.
+//
+// The queue read the state of the task, went to the host to ask what came of the change of the
+// run that ended, and is waiting for the answer. While it waits, the merge records the commit
+// that went in and the check after the merge records when it looked; the answer comes, the queue
+// remembers that the change is merged, and the state holds all three. A whole write of the state
+// that one of them read a moment ago would take the other two away — and one of them is exactly
+// what keeps a queue from walking the network about a finished run every minute again
+// (F-061, F-105, D-068 FINDING-4, §6a, §7h).
+func TestTheMergeAndTheQueueKeepBothRecordsOfOneState(t *testing.T) {
+	home, at := t.TempDir(), time.Date(2026, time.October, 3, 10, 0, 0, 0, time.UTC)
+	path := taskrun.JournalsOf(home, repoName).StatePath(43)
+	d := (&deps{Deps{Home: home, Repo: repoName}}).whole()
+	keepsState(t, path, endedRunOfTheQueue(at))
+
+	// The queue is at the host with the state it read a moment ago, and the host of the test
+	// answers only when the test has let the merge and the check write.
+	asked, answered := make(chan struct{}), make(chan struct{})
+	queue := make(chan taskrun.Queue, 1)
+	go func() {
+		read, err := taskrun.CheckAttention(t.Context(), home, repoName, attentionEnvOf(at.Add(time.Hour)),
+			&hostOfTheQueue{asked: asked, answered: answered,
+				facts: taskrun.HostFacts{
+					Asked:  true,
+					Change: &taskrun.ChangeFacts{Number: changeNumber, State: "merged", Head: headCommit},
+				}}, nil)
+		if err != nil {
+			t.Errorf("CheckAttention returned an error: %v", err)
+		}
+		queue <- read
+	}()
+	<-asked
+
+	if err := d.remember(Result{Task: 43, Change: changeNumber, MergedSHA: headCommit}); err != nil {
+		t.Fatalf("remember the commit of the merge: %v", err)
+	}
+	if err := d.verified(43, at.Add(2*time.Hour)); err != nil {
+		t.Fatalf("write the moment of the check: %v", err)
+	}
+	close(answered)
+	if read := <-queue; len(read.Entries) != 0 {
+		t.Errorf("the queue holds %v, want nothing: a merged change takes the run out of it", read.Entries)
+	}
+
+	state, err := taskrun.LoadState(path)
+	if err != nil {
+		t.Fatalf("read the state of the task: %v", err)
+	}
+	if state.MergedSHA != headCommit {
+		t.Errorf("the state holds the commit %q, want the one that went in: a write of the state the queue "+
+			"read took it away", state.MergedSHA)
+	}
+	if state.VerifiedAt == nil || !state.VerifiedAt.Equal(at.Add(2*time.Hour)) {
+		t.Errorf("the state holds the moment of the check %v, want %s: a write of the state the merge read "+
+			"took it away", state.VerifiedAt, at.Add(2*time.Hour))
+	}
+	if state.Settled == nil || state.Settled.By != taskrun.ReasonChangeMerged {
+		t.Errorf("the state remembers %+v, want that the change is merged: a write of the state the merge "+
+			"read took it away", state.Settled)
+	}
+	if len(state.Attempts) != 1 {
+		t.Errorf("the state holds %d attempts, want the one of the run that ended", len(state.Attempts))
+	}
+}
+
+// TestTheMergeAndTheCheckKeepBothRecordsOfOneState: the two writes of a merge and of the check
+// after it, twenty times over at the same moment, and both records are in the file every time.
+//
+// This is the same race seen from the other side: a whole write of the state one of them read a
+// moment ago keeps the commit of the merge and loses the moment of the check, or the other way
+// round, and a check after the merge that is not in the state is a check a list of runs cannot
+// show (§7h, D-068 FINDING-4).
+func TestTheMergeAndTheCheckKeepBothRecordsOfOneState(t *testing.T) {
+	const rounds = 20
+	checked := time.Date(2026, time.October, 3, 12, 0, 0, 0, time.UTC)
+	home, at := t.TempDir(), time.Date(2026, time.October, 3, 10, 0, 0, 0, time.UTC)
+	path := taskrun.JournalsOf(home, repoName).StatePath(43)
+	d := (&deps{Deps{Home: home, Repo: repoName}}).whole()
+
+	for round := range rounds {
+		keepsState(t, path, endedRunOfTheQueue(at))
+
+		start, problems := make(chan struct{}), make(chan error, 2)
+		go func() {
+			<-start
+			problems <- d.remember(Result{Task: 43, Change: changeNumber, MergedSHA: headCommit})
+		}()
+		go func() {
+			<-start
+			problems <- d.verified(43, checked)
+		}()
+		close(start)
+		for range 2 {
+			if err := <-problems; err != nil {
+				t.Fatalf("round %d: a writer returned an error: %v", round, err)
+			}
+		}
+
+		state, err := taskrun.LoadState(path)
+		if err != nil {
+			t.Fatalf("round %d: read the state of the task: %v", round, err)
+		}
+		if state.MergedSHA != headCommit {
+			t.Errorf("round %d: the state holds the commit %q, want the one that went in", round, state.MergedSHA)
+		}
+		if state.VerifiedAt == nil || !state.VerifiedAt.Equal(checked) {
+			t.Errorf("round %d: the state holds the moment of the check %v, want %s: the other writer wrote "+
+				"over it", round, state.VerifiedAt, checked)
+		}
+	}
+}
+
+// endedRunOfTheQueue is the state a merge of a test finds: one attempt that opened a change
+// request and stopped, and nothing else written down about the task yet.
+func endedRunOfTheQueue(at time.Time) taskrun.State {
+	return taskrun.State{
+		Number:  43,
+		Title:   "a merge of a task",
+		Branch:  "change",
+		Profile: "opencode",
+		Change: &taskrun.Change{
+			Number: changeNumber,
+			URL:    "https://github.com/naghuale/crewflow/pull/" + strconv.Itoa(changeNumber),
+		},
+		Attempts: []taskrun.Attempt{{
+			Number: 1, StartedAt: at, EndedAt: at.Add(42 * time.Minute),
+			Journal: "journal", ErrorJournal: "way-out",
+			Outcome: taskrun.ChangeRequestOpened,
+		}},
+	}
+}
+
+// The commit that went into the default branch of a test, as the state of the task and the host
+// both name it (docs/DESIGN.md §7h).
+const headCommit = "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7e"
+
+// attentionEnvOf is the machine and the file of a project for the queue of attention: the
+// clock, the question whether a run is still going, and the thresholds of §6a — the silence of
+// the executor (§7a) and the five of `[attention]` (D-049).
+func attentionEnvOf(now time.Time) taskrun.AttentionEnv {
+	return taskrun.AttentionEnv{
+		ListEnv: taskrun.ListEnv{
+			Now:        func() time.Time { return now },
+			Running:    func(proc.Process) bool { return false },
+			Timeout:    time.Hour,
+			StallAfter: 10 * time.Minute,
+		},
+		TopAfter:        30 * time.Minute,
+		EscalateAfter:   24 * time.Hour,
+		RemindAfter:     24 * time.Hour,
+		WeeklyAfter:     7 * 24 * time.Hour,
+		DeadlineAfter:   30 * time.Minute,
+		AcceptanceLabel: ownerCheckLabel,
+	}
+}
+
+// hostOfTheQueue is the host of a project in a test of the queue: what it says about the one
+// task whose state is in the folder of the test, and nothing about any other (§6a).
+type hostOfTheQueue struct {
+	// asked is closed when the host is asked the first time, and answered is released by
+	// the test to let the answer through — that is how a test puts the write of a merge
+	// between the reading of the queue and the writing of it.
+	asked    chan struct{}
+	answered chan struct{}
+	// facts is what the host says about the change of that task.
+	facts taskrun.HostFacts
+}
+
+// FactsOf is what the host of the test says about a task, once the test has let it. The queue
+// asks in a goroutine of its own and may ask more than one question, so the closing of `asked`
+// is done by the first question and not by the rest.
+func (h *hostOfTheQueue) FactsOf(ctx context.Context, _, _ int) (taskrun.HostFacts, error) {
+	if h.asked != nil {
+		select {
+		case <-h.asked:
+		default:
+			close(h.asked)
+		}
+	}
+	if h.answered != nil {
+		select {
+		case <-h.answered:
+		case <-ctx.Done():
+			return taskrun.HostFacts{}, ctx.Err()
+		}
+	}
+	return h.facts, nil
 }
 
 // pushedOnTopOfTheChange is a change that was merged and got a commit pushed to its

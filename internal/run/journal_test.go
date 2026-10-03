@@ -578,9 +578,7 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 	if errorJournal != "" {
 		write(t, last.ErrorJournal, errorJournal)
 	}
-	if err := SaveState(journals.StatePath(number), state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
-	}
+	keeps(t, journals.StatePath(number), state)
 	return state
 }
 

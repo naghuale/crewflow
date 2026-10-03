@@ -593,13 +593,10 @@ func TestAChangeOfTheReasonIsANewRecord(t *testing.T) {
 	}
 	// The run is continued, and the continuation is a refusal of the executor: the state
 	// of the queue is another one, and it has its own line under the task.
-	state, err := LoadState(newJournals(home, repo).StatePath(43))
-	if err != nil {
-		t.Fatalf("load the state of the task: %v", err)
-	}
-	state = state.NextAttempt(StartOf{Started: late, Step: stepBegan})
-	state = state.Ended(late.Add(time.Hour), BlockedPermission)
-	if err := SaveState(newJournals(home, repo).StatePath(43), state); err != nil {
+	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(current State) (State, error) {
+		return current.NextAttempt(StartOf{Started: late, Step: stepBegan}).
+			Ended(late.Add(time.Hour), BlockedPermission), nil
+	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 
@@ -929,7 +926,9 @@ func TestTheStateOfATaskRemembersTheRecordThatWasLeft(t *testing.T) {
 	writeState(t, home, repo, 43, "the run of a task", nil,
 		try{startedAt: monday, endedAt: monday.Add(time.Hour), outcome: TimedOut})
 	key := (&Attention{Task: 43, State: AttentionEscalated, Priority: Critical, Reason: ReasonRunTimeout}).Key()
-	if err := SaveState(newJournals(home, repo).StatePath(43), after2(monday, key)); err != nil {
+	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(current State) (State, error) {
+		return current.Noticed(monday, key), nil
+	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	kept, err := LoadState(newJournals(home, repo).StatePath(43))
@@ -1106,20 +1105,18 @@ func TestTheQueueOfAProjectThatIsOverHasNoEntryInIt(t *testing.T) {
 	ended := monday.Add(8 * time.Hour)
 	writeState(t, home, repo, 43, "merged", &Change{Number: 113},
 		try{startedAt: monday, endedAt: ended, outcome: ChangeRequestOpened})
-	merged, err := LoadState(newJournals(home, repo).StatePath(43))
-	if err != nil {
-		t.Fatalf("load the state of the task: %v", err)
-	}
-	if err := SaveState(newJournals(home, repo).StatePath(43),
-		merged.Ended(ended.Add(time.Minute), ChangeRequestOpened)); err != nil {
+	// The run of the task goes on for a minute after it has ended, and the change is
+	// merged by crewflow itself: what a queue waits for is a reaction of a person, and a
+	// merge is one (§6a, §7h).
+	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(state State) (State, error) {
+		return state.Ended(ended.Add(time.Minute), ChangeRequestOpened), nil
+	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
-	state, err := LoadState(newJournals(home, repo).StatePath(43))
-	if err != nil {
-		t.Fatalf("load the state of the task: %v", err)
-	}
-	state.MergedSHA = "abc123"
-	if err := SaveState(newJournals(home, repo).StatePath(43), state); err != nil {
+	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(state State) (State, error) {
+		state.MergedSHA = "abc123"
+		return state, nil
+	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 
@@ -1152,17 +1149,6 @@ func TestTheBlockOfTheQueueSaysNothingWhereNobodyWaits(t *testing.T) {
 	if strings.Contains(out.String(), "ATTENTION REQUIRED") {
 		t.Errorf("the list wrote\n%s\nwant no block of a queue where nobody waits", out.String())
 	}
-}
-
-// after2 is the state of a task with the notice of a record written into it, for the test
-// of what the state holds and what it does not.
-func after2(at time.Time, key string) State {
-	var state State
-	state.Number = 43
-	state.Title = "the run of a task"
-	state = state.NextAttempt(StartOf{Started: at, Step: stepBegan})
-	state = state.Ended(at.Add(time.Hour), TimedOut)
-	return state.Noticed(at, key)
 }
 
 // attentionOf is the machine and the file of a project for the queue of attention: the clock,

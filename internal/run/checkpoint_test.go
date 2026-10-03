@@ -425,8 +425,12 @@ func (a *atTheWindow) spoilThePoint(t *testing.T, spoil func(point *Checkpoint))
 	if state.Checkpoint == nil {
 		t.Fatal("the state of task 43 holds no checkpoint, want the point the run stands at")
 	}
-	spoil(state.Checkpoint)
-	if err := SaveState(path, state); err != nil {
+	spoiled := *state.Checkpoint
+	spoil(&spoiled)
+	if _, err := UpdateState(path, func(current State) (State, error) {
+		current.Checkpoint = &spoiled
+		return current, nil
+	}); err != nil {
 		t.Fatalf("write the state of task 43 back: %v", err)
 	}
 }

@@ -641,9 +641,7 @@ func going(t *testing.T, m *machine, number int, worktree string) {
 			ProcessStartedAt: &process.StartedAt,
 		}},
 	}
-	if err := SaveState(journals.StatePath(number), state); err != nil {
-		t.Fatalf("write the state of the task %d: %v", number, err)
-	}
+	keeps(t, journals.StatePath(number), state)
 }
 
 // enteredAllPass is what a person enters for the seven criteria crewflow cannot work out

@@ -687,9 +687,7 @@ func stateOfTask(t *testing.T, task, change int) {
 			Identity:  taskrun.Identity{Mode: "owner"},
 		}},
 	}
-	if err := taskrun.SaveState(statePathOfTask(task), state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
-	}
+	keepsState(t, statePathOfTask(task), state)
 }
 
 // keepStateOfTask leaves the state of the task of a test behind, as a run of it would.

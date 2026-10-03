@@ -799,11 +799,9 @@ func TestCheckStalledSaysARunOnceAnEpisode(t *testing.T) {
 	// And the run of that second episode is over rather than working again: the end of a
 	// silence of a run that has finished says how it came out (§6).
 	ended := quiet.Add(time.Minute)
-	kept, err := LoadState(newJournals(home, repo).StatePath(43))
-	if err != nil {
-		t.Fatalf("load the state of the task: %v", err)
-	}
-	if err := SaveState(newJournals(home, repo).StatePath(43), kept.Ended(ended, ChangeRequestOpened)); err != nil {
+	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(current State) (State, error) {
+		return current.Ended(ended, ChangeRequestOpened), nil
+	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	last := checkOf(t, home, repo, ended.Add(time.Minute), 4242, record)

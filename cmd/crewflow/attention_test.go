@@ -557,9 +557,7 @@ func putRunThatEndedWithoutAChange(t *testing.T, h *host, ended time.Time) time.
 		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the person who runs crewflow"},
 	})
 	state = state.Ended(ended, taskrun.TimedOut)
-	if err := taskrun.SaveState(journals.StatePath(43), state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
-	}
+	keepsState(t, journals.StatePath(43), state)
 	return ended
 }
 
@@ -933,9 +931,7 @@ func putRunsOfFourTasks(t *testing.T, h *host, ended time.Time) {
 		default:
 			state = state.Ended(ended, taskrun.ChangeRequestOpened)
 		}
-		if err := taskrun.SaveState(journals.StatePath(one.number), state); err != nil {
-			t.Fatalf("write the state of the task %d: %v", one.number, err)
-		}
+		keepsState(t, journals.StatePath(one.number), state)
 	}
 	taskMachine = proc.Env{Ask: func(_ string, args []string) (string, error) {
 		if !slices.Contains(args, "-p") {
@@ -1193,10 +1189,20 @@ func putRunThatEnded(t *testing.T, h *host, ended time.Time) time.Time {
 		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the person who runs crewflow"},
 	})
 	state = state.Ended(ended, taskrun.ChangeRequestOpened)
-	if err := taskrun.SaveState(journals.StatePath(43), state); err != nil {
-		t.Fatalf("write the state of the task: %v", err)
-	}
+	keepsState(t, journals.StatePath(43), state)
 	return ended
+}
+
+// keepsState is the state a test has made for a task, written the way a command writes one:
+// as a change, under the lock of the task. A fixture stands for a machine whose state is what
+// the test says, and it goes through `UpdateState` all the same — that is the one road into a
+// state, and a second one is how a record of one command gets lost by another (D-044: одна
+// дорога).
+func keepsState(t *testing.T, path string, state taskrun.State) {
+	t.Helper()
+	if _, err := taskrun.UpdateState(path, func(taskrun.State) (taskrun.State, error) { return state, nil }); err != nil {
+		t.Fatalf("write the state of the task into %s: %v", path, err)
+	}
 }
 
 // ciOfTheTest is the CI of a project of a test: the checks of the head of a change request

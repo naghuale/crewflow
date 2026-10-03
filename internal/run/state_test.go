@@ -139,9 +139,7 @@ func TestStateRoundTrip(t *testing.T) {
 	})
 	attempt = attempt.Ended(ended, TimedOut)
 	path := journals.StatePath(43)
-	if err := SaveState(path, attempt); err != nil {
-		t.Fatalf("SaveState returned an error: %v", err)
-	}
+	keeps(t, path, attempt)
 
 	read, err := LoadState(path)
 	if err != nil {
@@ -172,17 +170,20 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSaveStateLeavesOneFile: the state is written through a file of its own and
-// moved over, so that nothing of it stays behind for a person to trip over.
-func TestSaveStateLeavesOneFile(t *testing.T) {
+// TestTheStateLeavesOneFile: the bytes of a state are written through a file of its own and
+// moved over, so that nothing of it stays behind for a person to trip over and a reader sees
+// either the whole state or the one before it. This is the one place where the whole of a state
+// reaches the disk, and it is written under the lock of the task — which is why this test writes
+// twice through it and no caller of the package can (docs/DESIGN.md §7).
+func TestTheStateLeavesOneFile(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
 
-	if err := SaveState(path, State{Number: 43}); err != nil {
-		t.Fatalf("SaveState returned an error: %v", err)
+	if err := saveState(path, State{Number: 43}); err != nil {
+		t.Fatalf("saveState returned an error: %v", err)
 	}
-	if err := SaveState(path, State{Number: 43, Branch: "crewflow/43-task"}); err != nil {
-		t.Fatalf("SaveState of a second run returned an error: %v", err)
+	if err := saveState(path, State{Number: 43, Branch: "crewflow/43-task"}); err != nil {
+		t.Fatalf("saveState of a second run returned an error: %v", err)
 	}
 
 	entries, err := os.ReadDir(filepath.Dir(path))
@@ -246,9 +247,7 @@ func TestStateKeepsTheProcessOfTheRun(t *testing.T) {
 		Ended(started.Add(42*time.Minute), ChangeRequestOpened)
 	state.Change = &Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"}
 	path := journals.StatePath(43)
-	if err := SaveState(path, state); err != nil {
-		t.Fatalf("SaveState returned an error: %v", err)
-	}
+	keeps(t, path, state)
 
 	read, err := LoadState(path)
 	if err != nil {
@@ -302,6 +301,18 @@ func TestStateOfARunThatKeptNoProcess(t *testing.T) {
 	}
 	if state.Change != nil {
 		t.Errorf("a state of before the change request was kept holds %+v, want none", state.Change)
+	}
+}
+
+// keeps is the state a test has made for a task, written the way a command writes one: as a
+// change, under the lock of the task. A fixture of a test writes a whole state of a task on
+// purpose — it stands for a machine whose state is what the test says — and it goes through
+// `UpdateState` all the same, because that is the one road into a state and a second road is
+// how a record of one command gets lost by another (D-044: одна дорога).
+func keeps(t *testing.T, path string, state State) {
+	t.Helper()
+	if _, err := UpdateState(path, func(State) (State, error) { return state, nil }); err != nil {
+		t.Fatalf("write the state of the task into %s: %v", path, err)
 	}
 }
 
@@ -370,17 +381,18 @@ func TestAStateOfBeforeIsReadAsItIs(t *testing.T) {
 	// The next run that goes on with the task writes the file in the format of
 	// today: the attempts before it are kept as they were, and the new one has the
 	// mode, the agent and the session of its own.
-	next := state.NextAttempt(StartOf{
-		Started:      attempt.EndedAt.Add(time.Hour),
-		Journal:      "/home/p/.crewflow/runs/naghuale-crewflow/43-2.jsonl",
-		ErrorJournal: "/home/p/.crewflow/runs/naghuale-crewflow/43-2.err",
-		Executor:     "opencode",
-		Session:      "ses_7fKq2",
-		Continued:    true,
-		Identity:     Identity{Mode: "bot"},
-	}).Ended(attempt.EndedAt.Add(time.Hour).Add(20*time.Minute), ChangeRequestOpened)
-	if err := SaveState(path, next); err != nil {
-		t.Fatalf("SaveState returned an error: %v", err)
+	if _, err := UpdateState(path, func(current State) (State, error) {
+		return current.NextAttempt(StartOf{
+			Started:      attempt.EndedAt.Add(time.Hour),
+			Journal:      "/home/p/.crewflow/runs/naghuale-crewflow/43-2.jsonl",
+			ErrorJournal: "/home/p/.crewflow/runs/naghuale-crewflow/43-2.err",
+			Executor:     "opencode",
+			Session:      "ses_7fKq2",
+			Continued:    true,
+			Identity:     Identity{Mode: "bot"},
+		}).Ended(attempt.EndedAt.Add(time.Hour).Add(20*time.Minute), ChangeRequestOpened), nil
+	}); err != nil {
+		t.Fatalf("UpdateState returned an error: %v", err)
 	}
 
 	written := read(t, path)
@@ -471,9 +483,7 @@ func TestAStateOfATaskUnderRacingWriters(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
 	started := monday.Add(8 * time.Hour)
-	if err := SaveState(path, State{Number: 43, Title: "the run of a task"}); err != nil {
-		t.Fatalf("SaveState returned an error: %v", err)
-	}
+	keeps(t, path, State{Number: 43, Title: "the run of a task"})
 
 	var group sync.WaitGroup
 	written := make(chan error, writers)

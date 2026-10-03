@@ -632,16 +632,18 @@ func LoadState(path string) (State, error) {
 	return state, nil
 }
 
-// SaveState writes the state of a task, in the current format of it whatever the one
-// it was read in: a state of before is a state of a task of before, and the run that
-// goes on with it writes what it knows today. It is written whole or not at all: a
-// file cut in half by an interruption is a file that says the wrong thing about a
-// run, and a state that is wrong is worse than none.
+// saveState writes the state of a task in the current format of it whatever the one it was
+// read in: a state of before is a state of a task of before, and the run that goes on with it
+// writes what it knows today. It is written whole or not at all — a file cut in half by an
+// interruption is a file that says the wrong thing about a run, and a state that is wrong is
+// worse than none — and it is the one place where the bytes of a state are written.
 //
-// It is for the writer that holds the whole state: a command that leaves a record of
-// its own in a state it read earlier writes it with `UpdateState`, which keeps the
-// records of the writers that went beside it (D-068 FINDING-4).
-func SaveState(path string, state State) error {
+// It is unexported and called with the lock of the task held: by `UpdateState`, which makes the
+// change the caller has, and by the run that takes its own attempt back out of the state. A
+// caller that has not taken the lock cannot reach it, and that is the whole point: a state of a
+// task is changed and never written whole, so that no command can take a record of another one
+// away (D-068 FINDING-4, D-044: одна дорога).
+func saveState(path string, state State) error {
 	state.Schema = Schema
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
@@ -665,9 +667,10 @@ func SaveState(path string, state State) error {
 //
 // Therefore the write is a change and not a state: the lock of the task is taken, the
 // state is read again as it is there now, the change is made on that and the whole is
-// written — whole or not at all, as `SaveState` writes it. A writer that cannot take the
-// lock is refused and says so: a record lost without a word about it is worse than a
-// record that was not written.
+// written — whole or not at all, as `saveState` writes it under that lock. It is the only
+// road into a state of a task that is already there, and a writer that cannot take the lock
+// is refused and says so: a record lost without a word about it is worse than a record that
+// was not written (D-044: одна дорога).
 func UpdateState(path string, change func(State) (State, error)) (State, error) {
 	release, err := lockState(path)
 	if err != nil {
@@ -689,7 +692,7 @@ func UpdateState(path string, change func(State) (State, error)) (State, error) 
 	if err != nil {
 		return State{}, err
 	}
-	if err := SaveState(path, changed); err != nil {
+	if err := saveState(path, changed); err != nil {
 		return State{}, err
 	}
 	return changed, nil
