@@ -549,14 +549,14 @@ func putRunThatEndedWithoutAChange(t *testing.T, h *host, ended time.Time) time.
 	state := taskrun.State{
 		Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Profile: "opencode",
 	}
-	state = state.NextAttempt(taskrun.StartOf{
+	state = state.NextAttempt(state.NextNumber(), taskrun.StartOf{
 		Started:  ended.Add(-42 * time.Minute),
 		Step:     "the executor of the run",
 		Journal:  journals.JournalPath(43, 1),
 		Executor: "opencode",
 		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the person who runs crewflow"},
 	})
-	state = state.Ended(ended, taskrun.TimedOut)
+	state = state.Ended(1, ended, taskrun.TimedOut)
 	keepsState(t, journals.StatePath(43), state)
 	return ended
 }
@@ -917,7 +917,7 @@ func putRunsOfFourTasks(t *testing.T, h *host, ended time.Time) {
 			Change: one.change,
 		}
 		started := ended.Add(-42 * time.Minute)
-		state = state.NextAttempt(taskrun.StartOf{
+		state = state.NextAttempt(state.NextNumber(), taskrun.StartOf{
 			Started: started, Step: "the executor of the run",
 			Journal: journals.JournalPath(one.number, 1), Executor: "opencode",
 			Identity: taskrun.Identity{Mode: "owner", Description: "owner"},
@@ -925,11 +925,11 @@ func putRunsOfFourTasks(t *testing.T, h *host, ended time.Time) {
 		switch {
 		case one.standing:
 			// Стоящий прогон: процесс есть, знака жизни одиннадцать минут назад.
-			state = state.Alive(ended.Add(-11*time.Minute), "go test ./...", "")
+			state = state.Alive(1, ended.Add(-11*time.Minute), "go test ./...", "")
 			state.Attempts[0].PID, startedAt = 4242, ended.Add(-12*time.Minute)
 			state.Attempts[0].ProcessStartedAt = &startedAt
 		default:
-			state = state.Ended(ended, taskrun.ChangeRequestOpened)
+			state = state.Ended(1, ended, taskrun.ChangeRequestOpened)
 		}
 		keepsState(t, journals.StatePath(one.number), state)
 	}
@@ -1181,14 +1181,14 @@ func putRunThatEnded(t *testing.T, h *host, ended time.Time) time.Time {
 		Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Profile: "opencode",
 		Change: &taskrun.Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"},
 	}
-	state = state.NextAttempt(taskrun.StartOf{
+	state = state.NextAttempt(state.NextNumber(), taskrun.StartOf{
 		Started:  ended.Add(-42 * time.Minute),
 		Step:     "the executor of the run",
 		Journal:  journals.JournalPath(43, 1),
 		Executor: "opencode",
 		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the person who runs crewflow"},
 	})
-	state = state.Ended(ended, taskrun.ChangeRequestOpened)
+	state = state.Ended(1, ended, taskrun.ChangeRequestOpened)
 	keepsState(t, journals.StatePath(43), state)
 	return ended
 }

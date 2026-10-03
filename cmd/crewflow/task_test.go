@@ -1378,7 +1378,7 @@ func putRunThatStands(t *testing.T, h *host) time.Time {
 	}}
 	journals := taskrun.JournalsOf(h.home, "naghuale-crewflow")
 	state := taskrun.State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Profile: "opencode"}
-	state = state.NextAttempt(taskrun.StartOf{
+	state = state.NextAttempt(state.NextNumber(), taskrun.StartOf{
 		Started:      started,
 		Step:         "the executor of the run",
 		Journal:      journals.JournalPath(43, 1),

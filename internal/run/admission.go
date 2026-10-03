@@ -438,11 +438,11 @@ func goingTasks(folder string, alive Liveness) ([]int, error) {
 		if err != nil || len(state.Attempts) == 0 {
 			continue
 		}
+		// What "going" is, is one question for the whole package: the state says the last
+		// attempt is running, and where it names the process of the run, that process has
+		// to be there (`goingRun`, §7).
 		last := state.Attempts[len(state.Attempts)-1]
-		if last.Outcome != Running {
-			continue
-		}
-		if process, named := last.Process(); named && alive != nil && !alive(process) {
+		if !goingRun(last, alive) {
 			continue
 		}
 		going = append(going, state.Number)

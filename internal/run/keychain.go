@@ -16,24 +16,6 @@ import (
 // the name has told them where to look (docs/DESIGN.md §7i).
 const reasonApproval = "keychain-approval"
 
-// nextAttempt is the number the attempt crewflow is about to make gets in the state of
-// the task, which is what the names of the two files of the attempt are made of. The
-// state is not written yet — whose name the run goes under has to be in it — so the
-// number is worked out of the state that is on the machine, and the journal of the
-// attempt is opened before crewflow goes to the store of secrets for the key of the App:
-// that call can make macOS ask the owner in a window of the system, and a run that stands
-// in front of that window has to be writing its journal while it waits (§7i).
-func (r *runner) nextAttempt() (int, error) {
-	state, err := LoadState(r.journals.StatePath(r.task.Number))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 1, nil
-		}
-		return 0, err
-	}
-	return len(state.Attempts) + 1, nil
-}
-
 // blockedOnApproval is what a run does when it stood in front of the window of the
 // keychain of macOS and nobody answered it. The executor was never started and the work
 // of the task is untouched, but the run happened: it waited, it is over, and a task
@@ -63,7 +45,7 @@ func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err
 		_ = files.takeAway()
 		return Result{}, loadErr
 	}
-	attempt := r.ended(state)
+	attempt := r.own(state)
 	// What the run is asking for, and the point to go on from, are said before the state
 	// is written: both are what the journal of the attempt holds and what a continuation
 	// is checked against, and a run that cannot say the head of its branch writes no
@@ -77,13 +59,15 @@ func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err
 		point.sayEvent(files.Out, EventAuthorizationTimeout)
 	}
 	// What the attempt ended with is written onto the state as it is there now, under the
-	// lock of the task: what another command wrote while this run stood in front of the
-	// window of the system is not this run's to take away (D-068 FINDING-4).
+	// lock of the task and into the attempt of this run by its number: what another command
+	// wrote while this run stood in front of the window of the system is not this run's to
+	// take away, and the end of this attempt is not to be written into the attempt of
+	// another run (D-068 FINDING-4, D-068 RECHECK-FINDING-4).
 	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
 		// The name of the run is the mode of the file of the project: a run that was
 		// refused the key of the App is a run of the mode of the bot, and the state says
 		// so wherever the wait ended (§7i).
-		current = current.Identified(Identity{Mode: r.cfg.Identity.Mode}).Ended(at, Blocked)
+		current = current.Identified(r.attempt, Identity{Mode: r.cfg.Identity.Mode}).Ended(r.attempt, at, Blocked)
 		if r.point != nil {
 			current.Checkpoint = r.point
 		}
@@ -122,13 +106,14 @@ func (r *runner) deniedOnAuthorization(files *AttemptFiles, err error) (Result, 
 		_ = files.takeAway()
 		return Result{}, loadErr
 	}
-	attempt := r.ended(state)
+	attempt := r.own(state)
 	r.pointedAt(r.point, WaitDenied)
 	r.point.sayEvent(files.Out, EventAuthorizationDenied)
 	// The outcome of the attempt and the refusal of the person are written onto the state
-	// as it is there now, under the lock of the task (D-068 FINDING-4).
+	// as it is there now, under the lock of the task and into the attempt of this run by
+	// its number (D-068 FINDING-4, D-068 RECHECK-FINDING-4).
 	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
-		current = current.Ended(at, Blocked)
+		current = current.Ended(r.attempt, at, Blocked)
 		if r.point != nil {
 			current.Checkpoint = r.point
 		}

@@ -557,7 +557,7 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 	// A task that was run more than once holds the attempts before this one, and
 	// each of them has ended.
 	for before := 1; before <= attempt; before++ {
-		state = state.NextAttempt(StartOf{
+		state = state.NextAttempt(state.NextNumber(), StartOf{
 			Started:      started.Add(time.Duration(before) * time.Minute),
 			Journal:      journals.JournalPath(number, before),
 			ErrorJournal: journals.errorJournalPath(number, before),
@@ -565,11 +565,11 @@ func attemptOf(t *testing.T, journals Journals, number, attempt int, journal, er
 			Identity:     identity,
 		})
 		if before < attempt {
-			state = state.Ended(started.Add(time.Duration(before+1)*time.Minute), ChangeRequestOpened)
+			state = state.Ended(before, started.Add(time.Duration(before+1)*time.Minute), ChangeRequestOpened)
 		}
 	}
 	if ended != Running {
-		state = state.Ended(started.Add(42*time.Minute), ended)
+		state = state.Ended(attempt, started.Add(42*time.Minute), ended)
 	}
 	last := state.Attempts[len(state.Attempts)-1]
 	if journal != "" {

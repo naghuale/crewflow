@@ -271,6 +271,13 @@ func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Req
 	if err := r.readTask(ctx); err != nil {
 		return Result{}, err
 	}
+	// One task is run by one run at a time, and the question is asked before anything of
+	// the run is made: a second run of a task whose run is going would take a number of an
+	// attempt of its own beside the one that is going, and the two runs would write what
+	// came of one of them into the state of the other (D-068 RECHECK-FINDING-4, §7).
+	if err := r.alone(); err != nil {
+		return Result{}, err
+	}
 	// A second run of one project does not begin without a record of the admission of the
 	// pair, and the check is here rather than in the memory of an orchestrator: the rule was
 	// written down twice and did not hold the action twice (F-135, F-146). It is applied
@@ -388,6 +395,12 @@ type runner struct {
 	// habit crewflow knows is the one thing a run answers by itself (docs.DESIGN.md
 	// §7a).
 	auto string
+	// attempt is the number this run's attempt got in the state of the task, and
+	// every change that attempt goes on to be written under is addressed by it: the
+	// state of a task is written by whoever holds the lock of it, and the attempt that
+	// happens to be the last one at the moment of a write is not necessarily the
+	// attempt of this run (docs.DESIGN.md §7).
+	attempt int
 	// by is who told the attempt that is going on to go on: crewflow by itself, or an
 	// orchestrator of the project. It is said in the journal of the attempt, because a
 	// run that was answered by itself is not a run two people had (docs.DESIGN.md §7a).
@@ -684,23 +697,67 @@ func (r *runner) started(ctx context.Context, name string, args []string, dir st
 	return r.env.Command(ctx, name, args, dir, r.route)
 }
 
-// stateOf is what crewflow keeps of the task with one attempt more in it, out of the
-// state the task was in before this run began: a first run of a task starts a state of
-// its own, and every run after it is the next attempt of the same task. The attempt is
-// told which process the run is happening in, before the executor is started, because
-// that is all that is left of a run that crewflow is killed in the middle of
-// (docs/DESIGN.md §7).
+// reserve is the attempt of this run: the number it gets, the two files it writes into and
+// the record that it is going are all one change of the state of the task, made under the
+// lock of that state and against the state as it is there now. It is the one place where a
+// run of a task takes a number of an attempt, and therefore the one place where a task whose
+// run is going is refused: a task does not run beside itself, and no second attempt of a task
+// may be begun while the attempt before it is going (docs/DESIGN.md §7, §7c).
 //
-// The attempt is the one with that number, and the number is worked out before the
-// journal of it was opened: the two files of an attempt are named after it, and a state
-// that holds one attempt and points at the journal of another is a state a person reads
-// and cannot follow (docs/DESIGN.md §7).
+// The number is worked out here and not before the lock was taken: two runs of one task that
+// read the state before either of them wrote were given the same number, and the second of
+// them opened the journal of the attempt that was going over it (D-068 RECHECK-FINDING-4).
 //
-// The sign of life of the run is what it is at this moment: crewflow is either beginning
-// the run of the task or standing in front of the window of the keychain of the machine,
-// and a run that is waiting for a person says so where a list of runs and a schedule of
-// an orchestrator read it (§6, §7a, §7i).
-func (r *runner) stateOf(before State, attempt int, started time.Time, step, reason string) State {
+// What the reservation holds is [reservation.was]: a run that turns out never to have started
+// puts the state of the task back as it was, and the state of a task that had none is taken
+// away instead of left behind empty (F-048, docs/DESIGN.md §7i).
+func (r *runner) reserve(started time.Time, step, reason string) (reservation, error) {
+	var mine reservation
+	state, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+		// The question of one task and one run at a time is asked under the lock and not
+		// only before it: a run that has passed the question outside may arrive here while
+		// the run it is about to double is still writing, and this is the answer that
+		// holds (§7, D-068 RECHECK-FINDING-4).
+		if attempt, is := goingAttempt(current, r.env.Alive); is {
+			return State{}, goingRefusal(r.task.Number, attempt)
+		}
+		reserved, number := r.stateOf(current, started, step, reason)
+		mine = reservation{state: reserved, attempt: number, was: len(current.Attempts) > 0}
+		return reserved, nil
+	})
+	if err != nil {
+		return reservation{}, err
+	}
+	mine.state = state
+	return mine, nil
+}
+
+// reservation is what a run has taken in the state of its task before it started anything:
+// the state as it was written with that attempt in it, the number of the attempt, and whether
+// the task had a state before this run wrote one (docs.DESIGN.md §7, §7i).
+type reservation struct {
+	state   State
+	attempt int
+	was     bool
+}
+
+// stateOf is what crewflow keeps of the task with one attempt more in it, out of the state
+// the task was in before this run began: a first run of a task starts a state of its own, and
+// every run after it is the next attempt of the same task. The attempt is told which process
+// the run is happening in, before the executor is started, because that is all that is left
+// of a run that crewflow is killed in the middle of (docs.DESIGN.md §7).
+//
+// The attempt is the one with the number the state says comes next, and the two files of it
+// are named after that number: a state that holds one attempt and points at the journal of
+// another is a state a person reads and cannot follow, and two attempts under one number are
+// two runs writing into one journal (docs/DESIGN.md §7).
+//
+// The sign of life of the run is what it is at this moment: crewflow is either beginning the
+// run of the task or standing in front of the window of the keychain of the machine, and a
+// run that is waiting for a person says so where a list of runs and a schedule of an
+// orchestrator read it (§6, §7a, §7i).
+func (r *runner) stateOf(before State, started time.Time, step, reason string) (State, int) {
+	number := before.NextNumber()
 	state := before
 	state.Number, state.Title = r.task.Number, r.task.Title
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
@@ -711,12 +768,12 @@ func (r *runner) stateOf(before State, attempt int, started time.Time, step, rea
 	// and a continuation goes on in the one before. The session of a first run is
 	// not known before the executor is started, and it is written into the attempt
 	// when the run is over (§7h).
-	return state.NextAttempt(StartOf{
+	return state.NextAttempt(number, StartOf{
 		Started:      started,
 		Step:         step,
 		Reason:       reason,
-		Journal:      r.journals.JournalPath(r.task.Number, attempt),
-		ErrorJournal: r.journals.errorJournalPath(r.task.Number, attempt),
+		Journal:      r.journals.JournalPath(r.task.Number, number),
+		ErrorJournal: r.journals.errorJournalPath(r.task.Number, number),
 		Executor:     r.profile.Name(),
 		Session:      r.session,
 		Continued:    r.req.Continue != "",
@@ -724,21 +781,7 @@ func (r *runner) stateOf(before State, attempt int, started time.Time, step, rea
 		AutoResumed:  r.auto,
 		Process:      process,
 		Identity:     Identity{Mode: r.cfg.Identity.Mode, Description: r.identity.Description},
-	})
-}
-
-// stateBefore is what the state of the task was before this run wrote its attempt into
-// it, and whether there was a state at all. A run that turns out never to have started
-// puts it back as it was: the state of the task is written before crewflow asks the
-// machine for the key of an App, so that a run that stands in front of the window of
-// the keychain is visible while it stands there, and a run that was refused that key
-// leaves no attempt behind either way (F-039, F-048, docs/DESIGN.md §7i).
-func (r *runner) stateBefore() (State, bool) {
-	state, err := LoadState(r.journals.StatePath(r.task.Number))
-	if err != nil {
-		return State{}, false
-	}
-	return state, true
+	}), number
 }
 
 // putStateBack is the state of the task without the attempt of this run, and nothing at
@@ -786,7 +829,9 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 // Both are written under the lock of the task and onto the state as it is there now: the
 // queue of attention of a schedule and the check of the runs that stand write that state
 // too, while the executor of this run works, and a write of the state this run holds in
-// its hands would take their records away (D-068 FINDING-4).
+// its hands would take their records away (D-068 FINDING-4). They are written into the
+// attempt of this run by its number and not into the last attempt of the state: what is
+// written here belongs to the run that is writing it (D-068 RECHECK-FINDING-4).
 //
 // A state that cannot be written is said on the way out of the run and the run goes on:
 // the first state of a run that cannot be written stops the run before its executor is
@@ -797,10 +842,10 @@ func (r *runner) aliveStep(state State, step, reason string, identity Identity) 
 	now := r.env.Now()
 	r.alive.show(now, step, reason)
 	written, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
-		return current.Identified(identity).Alive(now, step, reason), nil
+		return current.Identified(r.attempt, identity).Alive(r.attempt, now, step, reason), nil
 	})
 	if err != nil {
-		r.note(state.Attempts[len(state.Attempts)-1].ErrorJournal, err)
+		r.note(r.own(state).ErrorJournal, err)
 		return state
 	}
 	return written
@@ -840,22 +885,11 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// The journal of the attempt is opened before the state of the task is written, and
-	// the state is written before crewflow goes to the machine for the key of the App.
-	// That call can make macOS ask the owner in a window of the system, and a run that
-	// stands in front of that window has to say what it waits for where the run of the
-	// task is written and not only in the terminal of the person who started it (§7i).
-	number, err := r.nextAttempt()
-	if err != nil {
-		return Result{}, err
-	}
-	files, err := r.journals.Begin(r.task.Number, number)
-	if err != nil {
-		return Result{}, err
-	}
-	listening := r.env.Notices.Listening(files.Out)
-	defer listening()
-
+	// The attempt of this run is taken in the state of the task before anything else of
+	// it, under the lock of that state: the number it gets and the two files it writes into
+	// are one change, and a task whose run is going is refused there (§7, D-068
+	// RECHECK-FINDING-4).
+	//
 	// The state of the task is written before the identity of the run is worked out,
 	// because the run is already a run at that moment and the identity is the one thing
 	// about it that can make macOS ask the owner in a window of the system. What the run
@@ -873,25 +907,32 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		step, reason = stepIdentity, reasonApproval
 	}
 	r.alive.show(started, step, reason)
-	// Whatever the state of the task was before this run began is kept, so that a run
-	// that turns out never to have started can put it back as it was (§7i).
-	_, kept := r.stateBefore()
-	// The attempt is written under the lock of the task and onto the state as it is there
-	// now: a command of a schedule may have written something into that state while this
-	// run was reading it, and writing the whole of what this run read would take it away
-	// (D-068 FINDING-4).
-	state, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
-		return r.stateOf(current, number, started, step, reason), nil
-	})
+	taken, err := r.reserve(started, step, reason)
 	if err != nil {
-		_ = files.takeAway()
 		return Result{}, err
 	}
+	state, number := taken.state, taken.attempt
+	r.attempt = number
+	// The journal of the attempt is opened after the reservation and not before it: the two
+	// files are named after the number the attempt got, and a journal opened before that
+	// number is known is the journal of an attempt nobody holds (§7).
+	//
+	// A journal that could not be opened is a run that did not begin, and it leaves
+	// nothing behind: the attempt is taken out of the state of the task again, and what
+	// another command wrote in the state of that task while this run was trying stays
+	// (F-048, §7i).
+	files, err := r.journals.Begin(r.task.Number, number)
+	if err != nil {
+		return Result{}, errors.Join(err, r.putStateBack(number, started, taken.was))
+	}
+	listening := r.env.Notices.Listening(files.Out)
+	defer listening()
+
 	// The watch of the silence of the run is started here and not when the executor is:
 	// everything from here to the executor is crewflow waiting for something, and that is
 	// exactly what a run that nobody is watching is (§6, §7a).
-	stopWatch := r.watch(ctx, state.Attempts[len(state.Attempts)-1], files, stallAfter,
-		r.mayGoOnAfterStanding(state.Attempts))
+	mine, _ := state.Attempt(number)
+	stopWatch := r.watch(ctx, mine, files, stallAfter, r.mayGoOnAfterStanding(state))
 	defer stopWatch()
 
 	// Whose name the executor of this run works under is worked out before the executor
@@ -923,7 +964,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		// not leave an attempt behind (F-039 put the state there first, and F-048 keeps
 		// the truth of it).
 		stopWatch()
-		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(number, started, kept), r.takeRunAway(ctx))
+		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(number, started, taken.was), r.takeRunAway(ctx))
 	}
 	// The key of the app of the host was read and a token is signed with it, so a
 	// request the run was stopped at came through. The state of the task says so and
@@ -944,8 +985,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// here on (§7i).
 	identity := Identity{Mode: r.identity.Mode, Description: r.identity.Description}
 	state = r.aliveStep(state, stepPreparing, "", identity)
-	last := len(state.Attempts) - 1
-	attempt := state.Attempts[last]
+	attempt, _ := state.Attempt(number)
 	if err := r.scratch(ctx); err != nil {
 		stopWatch()
 		_ = files.Close()
@@ -1080,13 +1120,14 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 // the attempt ends here, and the state of the task says so. An attempt left running
 // would be a run that goes on in every watch of the task, and there is none.
 //
-// The outcome is written onto the state as it is there now, under the lock of the task:
-// the attempt of this run is the last one, and what another command wrote beside it is
-// kept (D-068 FINDING-4).
+// The outcome is written onto the state as it is there now, under the lock of the task and
+// into the attempt of this run by its number: what another command wrote beside it is kept,
+// and the attempt of another run is not where the end of this one belongs
+// (D-068 FINDING-4, D-068 RECHECK-FINDING-4).
 func (r *runner) stopBeforeStart(err error) (Result, error) {
 	ended := r.env.Now()
 	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
-		return state.Ended(ended, ExecutorFailed), nil
+		return state.Ended(r.attempt, ended, ExecutorFailed), nil
 	}); keepErr != nil {
 		return Result{}, errors.Join(err, keepErr)
 	}
@@ -1194,15 +1235,19 @@ func (r *runner) endOf(caller, run context.Context) Kind {
 // Every one of these is a change of the state of the task and not a state of it: it is
 // made under the lock of the task and onto the state as it is there now, so that what the
 // queue of attention or the check of the runs that stand wrote while the executor was
-// working is in the file beside what this run has to say (D-068 FINDING-4).
+// working is in the file beside what this run has to say (D-068 FINDING-4). Every one of
+// them is made in the attempt of this run by its number and not in the last attempt
+// whatever it is now: this run ending while the attempt of another run was added before it
+// is what put the outcome of one of them into the state of the other (D-068
+// RECHECK-FINDING-4).
 func (r *runner) keep(ending ended, result Result, judgeErr error) error {
 	if _, err := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
-		state = state.Ended(result.EndedAt, result.Outcome)
+		state = state.Ended(r.attempt, result.EndedAt, result.Outcome)
 		if ending.reason != "" {
-			state = state.Reason(ending.reason)
+			state = state.Reason(r.attempt, ending.reason)
 		}
 		if ending.marked != "" {
-			state = state.Provider(ending.marked)
+			state = state.Provider(r.attempt, ending.marked)
 		}
 		if r.point != nil {
 			// The point of the task is kept on the run itself, and the state holds what
@@ -1216,9 +1261,7 @@ func (r *runner) keep(ending ended, result Result, judgeErr error) error {
 			// The session of a run belongs to the attempt it went in, and not only to
 			// the task: every attempt of a task has its own session, and a continuation
 			// goes on in the one of the attempt it follows (docs.DESIGN.md §7h).
-			if last := len(state.Attempts) - 1; last >= 0 {
-				state.Attempts[last].Session = result.Session
-			}
+			state = state.InSession(r.attempt, result.Session)
 		}
 		if change := result.ChangeRequest; change != nil {
 			state.Change = &Change{Number: change.Number, URL: change.URL}

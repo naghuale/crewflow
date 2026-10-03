@@ -984,7 +984,7 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 		if under == "" {
 			under = mode
 		}
-		state = state.NextAttempt(StartOf{
+		state = state.NextAttempt(state.NextNumber(), StartOf{
 			Started:      attempt.startedAt,
 			Journal:      journals.JournalPath(number, i+1),
 			ErrorJournal: journals.errorJournalPath(number, i+1),
@@ -993,10 +993,10 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 			Identity:     Identity{Mode: under, Description: descriptionOf(under)},
 		})
 		if attempt.outcome != Running {
-			state = state.Ended(attempt.endedAt, attempt.outcome)
+			state = state.Ended(state.NextNumber()-1, attempt.endedAt, attempt.outcome)
 		}
 		if !attempt.lastAt.IsZero() || attempt.lastStep != "" || attempt.reason != "" {
-			state = state.Alive(attempt.lastAt, attempt.lastStep, attempt.reason)
+			state = state.Alive(state.NextNumber()-1, attempt.lastAt, attempt.lastStep, attempt.reason)
 		}
 	}
 	keeps(t, journals.StatePath(number), state)

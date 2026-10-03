@@ -800,7 +800,7 @@ func TestCheckStalledSaysARunOnceAnEpisode(t *testing.T) {
 	// silence of a run that has finished says how it came out (§6).
 	ended := quiet.Add(time.Minute)
 	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(current State) (State, error) {
-		return current.Ended(ended, ChangeRequestOpened), nil
+		return current.Ended(current.NextNumber()-1, ended, ChangeRequestOpened), nil
 	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
@@ -934,17 +934,24 @@ func stateWhileItWaits(t *testing.T, m *machine) State {
 	t.Helper()
 	var state State
 	// The run of the test is on its own goroutine, and the state of the task is written
-	// before it goes to the keychain: it is there as soon as the run has begun.
+	// before it goes to the keychain: it is there as soon as the run has begun. The
+	// journal of the attempt is opened right after the state says the attempt is there —
+	// the number of the attempt is taken under the lock of the task and the two files are
+	// named after it — so a test that reads the journal of a run waits for the file the
+	// state names and not only for the state (docs/DESIGN.md §6, §7).
 	for range 1000 {
 		loaded, err := LoadState(newJournals(m.home, "naghuale-crewflow").StatePath(43))
 		if err == nil && len(loaded.Attempts) > 0 {
-			state = loaded
-			break
+			if _, err := os.Stat(loaded.Attempts[len(loaded.Attempts)-1].Journal); err == nil {
+				state = loaded
+				break
+			}
 		}
 		time.Sleep(time.Millisecond)
 	}
 	if len(state.Attempts) == 0 {
-		t.Fatal("the state of the task holds no attempt while the run stands in front of the window of the keychain")
+		t.Fatal("the state of the task holds no attempt, and no journal with it, while the run stands " +
+			"in front of the window of the keychain")
 	}
 	return state
 }

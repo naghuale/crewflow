@@ -594,8 +594,9 @@ func TestAChangeOfTheReasonIsANewRecord(t *testing.T) {
 	// The run is continued, and the continuation is a refusal of the executor: the state
 	// of the queue is another one, and it has its own line under the task.
 	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(current State) (State, error) {
-		return current.NextAttempt(StartOf{Started: late, Step: stepBegan}).
-			Ended(late.Add(time.Hour), BlockedPermission), nil
+		number := current.NextNumber()
+		return current.NextAttempt(number, StartOf{Started: late, Step: stepBegan}).
+			Ended(number, late.Add(time.Hour), BlockedPermission), nil
 	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
@@ -1109,7 +1110,7 @@ func TestTheQueueOfAProjectThatIsOverHasNoEntryInIt(t *testing.T) {
 	// merged by crewflow itself: what a queue waits for is a reaction of a person, and a
 	// merge is one (§6a, §7h).
 	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(state State) (State, error) {
-		return state.Ended(ended.Add(time.Minute), ChangeRequestOpened), nil
+		return state.Ended(state.NextNumber()-1, ended.Add(time.Minute), ChangeRequestOpened), nil
 	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}

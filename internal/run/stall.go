@@ -401,14 +401,12 @@ func (r *runner) watch(ctx context.Context, attempt Attempt, files *AttemptFiles
 //   - the attempt before this one stopped for reaching a secret: nothing crewflow does on
 //     its own follows a run that read a key, and what a person has to say about that comes
 //     before anything crewflow would do (§7a.1, §8).
-func (r *runner) mayGoOnAfterStanding(attempts []Attempt) bool {
+func (r *runner) mayGoOnAfterStanding(state State) bool {
 	if !r.cfg.Executor.ResumeStands {
 		return false
 	}
-	if len(attempts) < 2 {
-		return true
-	}
-	return attempts[len(attempts)-2].Outcome != BlockedSecret
+	before, was := r.before(state)
+	return !was || before.Outcome != BlockedSecret
 }
 
 // look is one turn of the watch: the silence of the run as the run itself knows it, and

@@ -257,6 +257,24 @@ a model provider that refused and may be asked again — starts a new *attempt* 
 same task, the same worktree, the same session, one `crewflow` process. It is not a second run of the
 project, so there is no second pair and the record is not read a second time.
 
+## One run of a task at a time
+
+A task does not run beside itself, and a second run of a task whose run is going is refused:
+`task run N`, `task run N -continue` and `task resume N` all say `task-run-going` — with the number
+of the attempt that is going, when it began and which journal it writes — before anything is made
+for it: no worktree, no attempt, no journal, no window of the system.
+
+The attempt takes its number and the paths of its two files under the lock of the state of the
+task, in one change: two runs of one task that read the state before either of them wrote were
+given the same number, and the second opened the journal of the attempt that was going over it.
+Everything a run writes about itself — its outcome, its reason, its session, its sign of life —
+goes into its own attempt by that number and not into "the last attempt" of the state, which while
+a run works is not necessarily its own.
+
+A run that says `running` while the machine says the process of its `crewflow` is gone is a run
+crewflow was killed in the middle of, and it does not refuse the next run of that task: the
+question "is it going?" is asked of the machine, not of the file alone.
+
 ## A run that stands
 
 A run goes on working and gets quiet — a window of the keychain nobody answered, an executor

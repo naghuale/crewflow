@@ -130,14 +130,14 @@ func TestStateRoundTrip(t *testing.T) {
 		Profile:  "opencode",
 		Session:  "ses_7fKq2",
 	}
-	attempt := state.NextAttempt(StartOf{
+	attempt := state.NextAttempt(state.NextNumber(), StartOf{
 		Started:      started,
 		Journal:      journals.JournalPath(43, 1),
 		ErrorJournal: journals.errorJournalPath(43, 1),
 		Process:      proc.Process{Pid: 4242, StartedAt: started},
 		Identity:     Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"},
 	})
-	attempt = attempt.Ended(ended, TimedOut)
+	attempt = attempt.Ended(1, ended, TimedOut)
 	path := journals.StatePath(43)
 	keeps(t, path, attempt)
 
@@ -237,14 +237,14 @@ func TestStateKeepsTheProcessOfTheRun(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 
 	state := State{Number: 43, Title: "the run of a task"}.
-		NextAttempt(StartOf{
+		NextAttempt(1, StartOf{
 			Started:      started,
 			Journal:      journals.JournalPath(43, 1),
 			ErrorJournal: journals.errorJournalPath(43, 1),
 			Process:      process,
 			Identity:     Identity{Mode: "bot", Description: "bot — GitHub App crewflow-executor (installation 12345)"},
 		}).
-		Ended(started.Add(42*time.Minute), ChangeRequestOpened)
+		Ended(1, started.Add(42*time.Minute), ChangeRequestOpened)
 	state.Change = &Change{Number: 44, URL: "https://github.com/naghuale/crewflow/pull/44"}
 	path := journals.StatePath(43)
 	keeps(t, path, state)
@@ -382,7 +382,7 @@ func TestAStateOfBeforeIsReadAsItIs(t *testing.T) {
 	// today: the attempts before it are kept as they were, and the new one has the
 	// mode, the agent and the session of its own.
 	if _, err := UpdateState(path, func(current State) (State, error) {
-		return current.NextAttempt(StartOf{
+		return current.NextAttempt(current.NextNumber(), StartOf{
 			Started:      attempt.EndedAt.Add(time.Hour),
 			Journal:      "/home/p/.crewflow/runs/naghuale-crewflow/43-2.jsonl",
 			ErrorJournal: "/home/p/.crewflow/runs/naghuale-crewflow/43-2.err",
@@ -390,7 +390,7 @@ func TestAStateOfBeforeIsReadAsItIs(t *testing.T) {
 			Session:      "ses_7fKq2",
 			Continued:    true,
 			Identity:     Identity{Mode: "bot"},
-		}).Ended(attempt.EndedAt.Add(time.Hour).Add(20*time.Minute), ChangeRequestOpened), nil
+		}).Ended(2, attempt.EndedAt.Add(time.Hour).Add(20*time.Minute), ChangeRequestOpened), nil
 	}); err != nil {
 		t.Fatalf("UpdateState returned an error: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestAStateOfATaskUnderRacingWriters(t *testing.T) {
 		go func() {
 			defer group.Done()
 			_, err := UpdateState(path, func(state State) (State, error) {
-				return state.NextAttempt(StartOf{
+				return state.NextAttempt(state.NextNumber(), StartOf{
 					Started:      started.Add(time.Duration(at) * time.Minute),
 					Step:         stepExecutor,
 					Journal:      fmt.Sprintf("journal-of-the-writer-%d.jsonl", at),

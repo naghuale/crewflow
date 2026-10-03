@@ -256,12 +256,29 @@ func (a Attempt) Process() (proc.Process, bool) {
 
 // Attempt returns the attempt with the number, and whether there is one.
 func (s State) Attempt(number int) (Attempt, bool) {
-	for _, attempt := range s.Attempts {
-		if attempt.Number == number {
-			return attempt, true
+	at, found := s.placeOf(number)
+	if !found {
+		return Attempt{}, false
+	}
+	return s.Attempts[at], true
+}
+
+// placeOf is where the attempt with that number stands in the list of them, and whether
+// there is one.
+//
+// Every change of an attempt of this state is made by its number and not on the last one:
+// the state of a task is written by whoever holds the lock of it, and the attempt that
+// happens to be the last one at the moment of a write is not necessarily the attempt of
+// the writer — one run ending while the attempt of another run was added before it is
+// what put the outcome of the first into the state of the second
+// (D-068 RECHECK-FINDING-4, docs.DESIGN.md §7).
+func (s State) placeOf(number int) (int, bool) {
+	for at := range s.Attempts {
+		if s.Attempts[at].Number == number {
+			return at, true
 		}
 	}
-	return Attempt{}, false
+	return 0, false
 }
 
 // StartOf is one start of the executor: when it was, which agent ran it, in which
@@ -305,14 +322,30 @@ type StartOf struct {
 	Identity Identity
 }
 
-// NextAttempt is the number the next start of the executor of this task gets, and
-// the state with that attempt added and not written anywhere yet. The attempt is
-// running from the moment it is added: it is what the state of a task says while the
-// executor works, and what a run that is cut short leaves behind.
-func (s State) NextAttempt(start StartOf) State {
-	next := len(s.Attempts) + 1
+// NextNumber is the number the attempt after the last one of this task gets. The attempts of
+// a task are numbered one after another without a gap, and every number is one pair of files
+// — the journal of what the attempt wrote and the way out of it — so two attempts may never
+// be given one number: a second run of a task that took the number of an attempt that is
+// going would open its journal over it, and the two runs would write what came of one of
+// them into the state of the other (D-068 RECHECK-FINDING-4, docs/DESIGN.md §7).
+//
+// It is worked out of the state that is there under the lock of the task, and read again
+// there before the number is used: a number worked out of a state read before the lock was
+// taken is a number another writer may have taken since (docs/DESIGN.md §7).
+func (s State) NextNumber() int {
+	return len(s.Attempts) + 1
+}
+
+// NextAttempt is the state with the attempt numbered `number` added and not written anywhere
+// yet. The attempt is running from the moment it is added: it is what the state of a task says
+// while the executor works, and what a run that is cut short leaves behind.
+//
+// The number is given to it and not worked out here, because that number is what the two files
+// of the attempt are named after and what every change of the attempt is addressed by
+// afterwards (docs/DESIGN.md §7).
+func (s State) NextAttempt(number int, start StartOf) State {
 	attempt := Attempt{
-		Number:       next,
+		Number:       number,
 		StartedAt:    start.Started,
 		LastAt:       start.Started,
 		LastStep:     start.Step,
@@ -335,55 +368,74 @@ func (s State) NextAttempt(start StartOf) State {
 	return s
 }
 
-// Ended records how the last attempt of the task ended, and when.
-func (s State) Ended(ended time.Time, outcome Kind) State {
-	if len(s.Attempts) == 0 {
+// Ended records how the attempt with that number ended, and when.
+//
+// An attempt that is not in the state is not ended by it: the state of a task is written by
+// whoever holds the lock of it, and the attempt of this writer may be gone by the time it
+// writes — a run that was cut off takes its own attempt out — and a run that says how it ended
+// in the attempt of another run says it in the wrong place (docs.DESIGN.md §7).
+func (s State) Ended(number int, ended time.Time, outcome Kind) State {
+	at, found := s.placeOf(number)
+	if !found {
 		return s
 	}
-	last := len(s.Attempts) - 1
-	s.Attempts[last].EndedAt = ended
-	s.Attempts[last].Outcome = outcome
+	s.Attempts[at].EndedAt = ended
+	s.Attempts[at].Outcome = outcome
 	return s
 }
 
-// Reason is the reason the attempt that has just ended is to be read with, and it is
-// written into that attempt while it is still the one that ended: the state of a task is
-// where the queue of attention and a list of runs read why a run stopped, and a run that
-// repeated a habit crewflow had already answered says so in the state and not only in
-// the journal it is over (docs/DESIGN.md §7a.1, §6a).
-func (s State) Reason(reason string) State {
-	if len(s.Attempts) == 0 {
+// Reason is the reason the attempt with that number is to be read with, and it is written into
+// that attempt: the state of a task is where the queue of attention and a list of runs read why
+// a run stopped, and a run that repeated a habit crewflow had already answered says so in the
+// state and not only in the journal it is over (docs.DESIGN.md §7a.1, §6a).
+func (s State) Reason(number int, reason string) State {
+	at, found := s.placeOf(number)
+	if !found {
 		return s
 	}
-	s.Attempts[len(s.Attempts)-1].Reason = reason
+	s.Attempts[at].Reason = reason
 	return s
 }
 
-// Provider is the state of a task with what the model provider of the attempt said about
-// the failure it stopped it for written into that attempt: `retryable` where the provider
-// itself says the refusal may be repeated and `unknown` where it said nothing that makes
-// the failure temporary. It is written into the attempt that has just ended, beside its
+// Provider is the state of a task with what the model provider of the attempt with that number
+// said about the failure it stopped it for written into that attempt: `retryable` where the
+// provider itself says the refusal may be repeated and `unknown` where it said nothing that
+// makes the failure temporary. It is written into the attempt that has just ended, beside its
 // reason, and it is what the queue of attention names the repeatability of the wait by
-// (F-119, docs/DESIGN.md §6a).
-func (s State) Provider(marked string) State {
-	if len(s.Attempts) == 0 {
+// (F-119, docs.DESIGN.md §6a).
+func (s State) Provider(number int, marked string) State {
+	at, found := s.placeOf(number)
+	if !found {
 		return s
 	}
-	s.Attempts[len(s.Attempts)-1].Provider = marked
+	s.Attempts[at].Provider = marked
 	return s
 }
 
-// Alive is a sign of life of the attempt that is going: when crewflow last did
-// something of its own for the run, what that was, and what the run stands at where
-// crewflow knows it. A run whose executor writes is alive whatever crewflow writes into
-// the state, and the sign of life of such a run is the last line of its journal
-// (docs/DESIGN.md §6, §7a).
-func (s State) Alive(at time.Time, step, reason string) State {
-	if len(s.Attempts) == 0 {
+// InSession is the state of a task with the session of the attempt with that number written into
+// it. The session of a run belongs to the attempt it went in and not to the task: every attempt
+// of a task has its own session, and a continuation goes on in the one of the attempt it
+// follows (docs.DESIGN.md §7h).
+func (s State) InSession(number int, session string) State {
+	at, found := s.placeOf(number)
+	if !found {
 		return s
 	}
-	last := len(s.Attempts) - 1
-	s.Attempts[last].LastAt, s.Attempts[last].LastStep, s.Attempts[last].Reason = at, step, reason
+	s.Attempts[at].Session = session
+	return s
+}
+
+// Alive is a sign of life of the attempt with that number, which is going: when crewflow last
+// did something of its own for the run, what that was, and what the run stands at where
+// crewflow knows it. A run whose executor writes is alive whatever crewflow writes into the
+// state, and the sign of life of such a run is the last line of its journal
+// (docs.DESIGN.md §6, §7a).
+func (s State) Alive(number int, at time.Time, step, reason string) State {
+	place, found := s.placeOf(number)
+	if !found {
+		return s
+	}
+	s.Attempts[place].LastAt, s.Attempts[place].LastStep, s.Attempts[place].Reason = at, step, reason
 	return s
 }
 
@@ -414,14 +466,15 @@ func (s State) NoLongerReportedIn(number int) State {
 	return s
 }
 
-// Identified is the state of the task with whose name the attempt that is going worked
+// Identified is the state of the task with whose name the attempt with that number worked
 // under written into it: the mode of the file of the project and the one line a report
-// of the run shows (docs/DESIGN.md §7h, §7i).
-func (s State) Identified(identity Identity) State {
-	if len(s.Attempts) == 0 {
+// of the run shows (docs.DESIGN.md §7h, §7i).
+func (s State) Identified(number int, identity Identity) State {
+	at, found := s.placeOf(number)
+	if !found {
 		return s
 	}
-	s.Attempts[len(s.Attempts)-1].Identity = identity
+	s.Attempts[at].Identity = identity
 	return s
 }
 

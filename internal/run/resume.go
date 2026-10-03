@@ -298,7 +298,7 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 	// not answer twice. The refusal says so in the report and in the state, with the
 	// habit that was answered in it: what is to be looked into is the habit and not a
 	// run that has been told (docs/DESIGN.md §7a.1, §7j).
-	if before := r.ended(state); before.AutoResumed == string(next.reason) {
+	if before := r.own(state); before.AutoResumed == string(next.reason) {
 		result.Reason = reasonRepeated + ": " + string(next.reason)
 		return resume{}, ended{reason: result.Reason}
 	}
@@ -388,25 +388,26 @@ func (r *runner) oneHabitOf(rejections []string, calls []profile.Call) (resume, 
 	return resume{habit: one, place: place}, true
 }
 
-// ended is the attempt of the run that has just ended, which is the last one in the
-// state: it is the attempt crewflow is about to go on from, and its own mark says
-// whether this run is the one that answered it.
-func (r *runner) ended(state State) Attempt {
-	if len(state.Attempts) == 0 {
-		return Attempt{}
-	}
-	return state.Attempts[len(state.Attempts)-1]
+// own is the attempt of this run as the state of the task holds it, read by its number: it
+// is the attempt crewflow is about to go on from, and its own mark says whether this run is
+// the one that answered it. It is read out of the state by the number the run was given and
+// not as the last attempt in it: a state of a task is written by whoever holds the lock of it,
+// and "the last attempt" is the attempt of another run as soon as one of the two goes on
+// (docs.DESIGN.md §7).
+func (r *runner) own(state State) Attempt {
+	attempt, _ := state.Attempt(r.attempt)
+	return attempt
 }
 
-// before is the attempt before the one that has just ended, and whether a task has one:
-// a first attempt has nothing before it, and what ended the attempt before it is a fact
-// crewflow kept — the state of a run that is over is what a next run is read from
-// (docs/DESIGN.md §7).
+// before is the attempt before the one of this run, and whether a task has one: a first
+// attempt has nothing before it, and what ended the attempt before it is a fact crewflow
+// kept — the state of a run that is over is what a next run is read from
+// (docs.DESIGN.md §7).
 func (r *runner) before(state State) (Attempt, bool) {
-	if len(state.Attempts) < 2 {
+	if r.attempt < 2 {
 		return Attempt{}, false
 	}
-	return state.Attempts[len(state.Attempts)-2], true
+	return state.Attempt(r.attempt - 1)
 }
 
 // habitOf is the habit one refusal of a run is about and the file of the worktree the
