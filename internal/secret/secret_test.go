@@ -156,6 +156,39 @@ func TestRedactorHoldsBackWhatMayStillGrowIntoASecret(t *testing.T) {
 	}
 }
 
+// TestACutOfAValueIsNeverCutAgain: the marker of a cut says that a value was there and is not
+// shown, and a text of a run goes through the boundary more than once — the reason of an
+// attempt is published again every time the state of the task is written, a report of a
+// command is printed on the terminal after it was printed as a document. A password of one
+// sign a person really chose (`r`, `d`, `a`) is inside the marker itself, and the second pass
+// cut the marker as if it were the words of the program: `[redacted]` became
+// `[[redacted]edacted]`, which is not what the boundary said happened and is not something a
+// person can read (R224-9, docs/DESIGN.md §7e).
+func TestACutOfAValueIsNeverCutAgain(t *testing.T) {
+	for _, password := range []string{"a", "c", "d", "e", "r", "t", "ac", "red", "redacted", "abc",
+		"ghs_16C7e42F292c6912E7710c838347Ae178B4a"} {
+		t.Run(password, func(t *testing.T) {
+			said := "the proxy asked for " + password + " and left, and the proxy asked for " + password
+			once := Redact(said, Chosen(password)...)
+
+			twice := Redact(once, Chosen(password)...)
+			if twice != once {
+				t.Errorf("cleaning a cleaned text = %q, want %q: a value a person chose is inside the marker of a cut, "+
+					"and the second pass cut the marker", twice, once)
+			}
+			// Every bracket of the cleaned text opens a whole marker of a cut: a marker cut
+			// in the middle is a marker with a marker inside it, and a person cannot read
+			// what happened out of one.
+			if cuts, opened := strings.Count(once, Redacted), strings.Count(once, "["); cuts != opened {
+				t.Errorf("the cleaned text is %q, want %d whole %q in it and %d cuts of one", once, cuts, Redacted, cuts)
+			}
+			if strings.Contains(once, "[redacted"+Redacted) {
+				t.Errorf("the cleaned text is %q, want no marker inside a marker of a cut", once)
+			}
+		})
+	}
+}
+
 // TestRedactorFlushesWhatWasHeldBack: a journal whose last line nothing closed is
 // still a line, and the end of a run of an agent is where its environment is. What
 // was written before the flush is a beginning of a line, and a beginning of a value

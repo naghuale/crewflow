@@ -771,3 +771,48 @@ func theReport(t *testing.T, out *secret.Out, answer any) (document []byte, fall
 	}
 	return document, nil
 }
+
+// TestTheReasonOfAnAttemptKeepsItsMarkerWhenTheStateIsWrittenAgain: every write of the state of
+// a task publishes the reason of every attempt in it again — the reason in the file is the
+// reason of the last write, already cleaned, and the next write cleans it a second time. A
+// password of one sign a person really chose is inside the marker of a cut, and the second pass
+// cut the marker: a state file kept for ever grew `[[redacted]edacted]` in the reason of a run,
+// which is neither what the boundary said happened nor something a person can read
+// (R224-9, docs.DESIGN.md §7e).
+func TestTheReasonOfAnAttemptKeepsItsMarkerWhenTheStateIsWrittenAgain(t *testing.T) {
+	const password = "d"
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	begun := func(current State) (State, error) {
+		started := current
+		started.Number, started.Title, started.Branch = 43, "the run of a task", "crewflow/43-task"
+		return started.NextAttempt(started.NextNumber(), StartOf{
+			Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+			Journal: journals.JournalPath(43, 1),
+		}).Reason(1, "the run stopped itself: it could not reach "+password), nil
+	}
+	touched := func(current State) (State, error) {
+		current.Title = "the run of a task, once more"
+		return current, nil
+	}
+	out := secret.NewOut(secret.Chosen(password)...)
+
+	if _, err := UpdateStateThrough(out, journals.StatePath(43), begun); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	// The password is one sign long, so it is a part of every third word of the reason, and
+	// each of those places is cut as well — what must not happen is a cut inside a cut: the
+	// reason of the second write is the reason of the first one, whole.
+	want := "the run stoppe" + secret.Redacted + " itself: it coul" + secret.Redacted + " not reach " + secret.Redacted
+	for write := range 3 {
+		if _, err := UpdateStateThrough(out, journals.StatePath(43), touched); err != nil {
+			t.Fatalf("write %d of the state of the task again: %v", write, err)
+		}
+		written, err := LoadState(journals.StatePath(43))
+		if err != nil {
+			t.Fatalf("read the state of the task after write %d: %v", write, err)
+		}
+		if reason := written.Attempts[0].Reason; reason != want {
+			t.Errorf("the reason in the state of the task after write %d is %q, want %q", write, reason, want)
+		}
+	}
+}

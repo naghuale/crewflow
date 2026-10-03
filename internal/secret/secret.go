@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -301,9 +302,40 @@ func inside(encoded string) string {
 // is big, and making a string of every write of it is a copy of it for nothing. What
 // it is given is the spellings of the values and not the values themselves — see
 // [Out.Writer], which is the one place crewflow cleans what a program wrote.
+//
+// The markers of the cuts already in the text are whole before and after: a text of a run goes
+// through the boundary more than once — the reason of an attempt is published again every time
+// the state of the task is written — and the marker says "a value was here" in letters that a
+// password of a person may be made of. A password of one sign (`d`, `r`, `a` — a proxy that
+// takes it really takes it) is inside `[redacted]`, and a plain replacement cut the marker on
+// the second pass: `[redacted]` became `[[redacted]edacted]`, and what a person reads in a
+// state file kept for ever is then neither what the boundary said happened nor readable
+// (R224-9, docs/DESIGN.md §7e). Therefore the text is cut apart by the markers and each piece
+// apart from the others is cut in its own right, and the markers are put back as they were.
 func redact(text []byte, secrets []string) []byte {
 	for _, secret := range secrets {
-		text = bytes.ReplaceAll(text, []byte(secret), []byte(Redacted))
+		if !overlaps(secret, Redacted) {
+			text = bytes.ReplaceAll(text, []byte(secret), []byte(Redacted))
+			continue
+		}
+		pieces := bytes.Split(text, []byte(Redacted))
+		for at := range pieces {
+			pieces[at] = bytes.ReplaceAll(pieces[at], []byte(secret), []byte(Redacted))
+		}
+		text = bytes.Join(pieces, []byte(Redacted))
 	}
 	return text
+}
+
+// overlaps is whether a value has a sign of the marker in it: only then can a cut of the value
+// land inside a marker of an earlier cut, and only then is the text cut apart to keep the
+// markers whole. A value with no such sign is cut the whole text at once, and the journal of a
+// run pays nothing for the markers it already has.
+func overlaps(value, marker string) bool {
+	for _, sign := range value {
+		if strings.ContainsRune(marker, sign) {
+			return true
+		}
+	}
+	return false
 }

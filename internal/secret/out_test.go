@@ -436,6 +436,50 @@ func TestTheReportOfACommandKeepsTheTypesOfTheAnswerInTheDocument(t *testing.T) 
 	}
 }
 
+// TestTheReportOfACommandKeepsTheExactNumberAndLeavesTheAnswerAsItWas: the identifiers of
+// the host are numbers, and a number that happens to be bigger than 2^53 loses its last signs
+// on the way through a float64 — a repository id that reads back as another repository id is a
+// document a program acts on wrongly. And the answer of a command is the value of the caller:
+// the boundary writes a document and does not change what it was given (R224-010, R224-013,
+// docs/DESIGN.md §7e).
+func TestTheReportOfACommandKeepsTheExactNumberAndLeavesTheAnswerAsItWas(t *testing.T) {
+	type answerOfACommand struct {
+		Repository int64   `json:"repository_id"`
+		Attempts   int     `json:"attempts"`
+		Waiting    float64 `json:"waiting_seconds"`
+		Detail     string  `json:"detail"`
+	}
+	answer := answerOfACommand{
+		Repository: 9007199254740993, // 2^53+1: the last sign is lost in a float64
+		Attempts:   42,
+		Waiting:    1080.5,
+		Detail:     "the proxy asked for " + canaryShort + " and left",
+	}
+	whole := answer
+	out := boundaryOf(theCanaries()...)
+
+	document, fallen := theDocument(t, out, answer)
+	if fallen != nil {
+		t.Fatalf("the report of an answer with a big number fell over: %v", fallen)
+	}
+
+	var read answerOfACommand
+	if err := json.Unmarshal(document, &read); err != nil {
+		t.Fatalf("the document of the answer is not a document: %v\n%s", err, document)
+	}
+	if read.Repository != whole.Repository {
+		t.Errorf("the repository of the answer is %d, want %d: a number of a report keeps its exact value",
+			read.Repository, whole.Repository)
+	}
+	if read.Attempts != whole.Attempts || read.Waiting != whole.Waiting {
+		t.Errorf("the numbers of the answer are %d and %g, want %d and %g",
+			read.Attempts, read.Waiting, whole.Attempts, whole.Waiting)
+	}
+	if answer != whole {
+		t.Errorf("the answer of the caller is %+v, want it as it was: %+v", answer, whole)
+	}
+}
+
 // TestAClosedValueOfTheFormatIsNotCutOutOfTheReportOfACommand: a program reads a report to
 // decide what a run did, and the words it decides by are out of the closed lists of the
 // format: the outcome of a run, the profile of an executor, a state of the queue, the code of
