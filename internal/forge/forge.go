@@ -650,6 +650,18 @@ type Env struct {
 	// through a program of the system — gh, glab — has no use for it and leaves it
 	// nil.
 	HTTP *http.Client
+	// RouteSecrets are the values of the credentials of the route of the project that the
+	// programs of this adapter are started with: a role adds the route to the environment
+	// of every program it starts, and a program that was given the address of a proxy with
+	// a login in it prints that address when the host refuses it — in a line that would
+	// otherwise become a line of the terminal of the person who started the command and of
+	// a state of a task. What such a program said goes through them before it leaves an
+	// adapter (docs/DESIGN.md §7d, §7e).
+	//
+	// They are empty for a project that goes out straight and for an adapter that was
+	// given a machine which did not read them, and a value of a person is looked for
+	// whatever its length is: a password of three signs is a password a proxy takes.
+	RouteSecrets []secret.Value
 	// Now is the clock of the machine. A token of a run is signed with it and lives
 	// an hour, so a role that mints tokens needs to know what time it is.
 	Now func() time.Time

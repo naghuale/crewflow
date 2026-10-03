@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // The commands the adapter is promised to run, written out here rather than
@@ -140,6 +141,42 @@ func TestCommentTaskThatFailed(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), standingOfARun) {
 		t.Errorf("the error %q holds the record, want the command that failed", err)
+	}
+}
+
+// TestTheErrorOfAGhThatNamedTheRouteHoldsNoCredentialOfIt: every program of a project is
+// started with the route of that project in its environment, and a program that was given the
+// address of a proxy with a login in it prints that address when the host refuses it. What gh
+// said goes into the error of the command, which is printed to the terminal of the person who
+// started it and, through the state of a task, into files an orchestrator reads and pastes into
+// issues (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e, §7i).
+func TestTheErrorOfAGhThatNamedTheRouteHoldsNoCredentialOfIt(t *testing.T) {
+	// Two spellings of one password of a person: the pair as the store keeps it and the
+	// password as the address of the profile writes it. The second one is not even eight signs
+	// long, and it is looked for all the same: how long a secret is says nothing about whether
+	// it is one (docs/DESIGN.md §7e).
+	m := newMachine().fails("pr list", "HTTP 403: Resource not accessible by integration, "+
+		"the route socks5://u:abc@proxy.example.com:1080 asked for pa%20ss and refused\n")
+	env := m.env(t)
+	env.RouteSecrets = secret.Chosen("u:abc", "pa%20ss")
+	a := New(repo, "", env)
+
+	_, _, err := a.FindChangeRequest(t.Context(), "crewflow/43-the-run")
+
+	if err == nil {
+		t.Fatal("FindChangeRequest of a branch whose host refused it returned no error, want one")
+	}
+	if !strings.Contains(err.Error(), "HTTP 403") {
+		t.Errorf("the error %q does not say what gh said", err)
+	}
+	if !strings.Contains(err.Error(), secret.Redacted) {
+		t.Errorf("the error %q holds no %q, want the credentials of the route taken out of it",
+			err, secret.Redacted)
+	}
+	for _, value := range []string{"u:abc", "pa%20ss"} {
+		if strings.Contains(err.Error(), value) {
+			t.Errorf("the error %q holds the value %q of a credential of the route", err, value)
+		}
 	}
 }
 

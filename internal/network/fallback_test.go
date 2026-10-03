@@ -3,6 +3,7 @@ package network
 import (
 	"bytes"
 	"errors"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -397,6 +398,75 @@ func TestTheEventsOfTheRouteCarryNoCredentialOfAProfile(t *testing.T) {
 	}
 	if !r.has(EventFallbackFailed, secret.Redacted) {
 		t.Errorf("the failure of the second attempt says nothing of what the proxy wrote: %q", r.said.String())
+	}
+}
+
+// TestTheEventsOfTheRouteCarryNoAddressOfTheProfileInIt: a program of a run is started with
+// the address of the profile in its environment, and what it says about a failure is put into
+// an event as one line — so a program that prints the address it was given prints the
+// credentials of the profile into a file kept for ever. Both spellings of them are secrets
+// and both are cut out: the value of the store, and the address that writes the password
+// percent-encoded — with the login in front of it and without. And a password of three signs
+// is a password a proxy takes: the number of signs a value has to have to be worth looking
+// for is the rule of the values a machine wrote, and a person chose this one
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestTheEventsOfTheRouteCarryNoAddressOfTheProfileInIt(t *testing.T) {
+	cases := []struct{ name, pair string }{
+		{name: "a password of three signs", pair: "u:abc"},
+		{name: "a password the address writes another way", pair: "u:pa ss/word"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg := withFile(t, keysOf("mode", `"fallback"`, "active_proxy", `"work"`))
+			route, err := Choose(cfg, "")
+			if err != nil {
+				t.Fatalf("the route of the project: %v", err)
+			}
+			through, err := Through(cfg, "work")
+			if err != nil {
+				t.Fatalf("the route through the profile: %v", err)
+			}
+			address, err := through.Address(tc.pair)
+			if err != nil {
+				t.Fatalf("the address of the profile: %v", err)
+			}
+			parsed, err := url.Parse(address)
+			if err != nil {
+				t.Fatalf("the address of the profile is not an address: %v", err)
+			}
+			// The address as a machine writes it, percent-encoded, and the password as it is
+			// written in it: a program that prints the address prints that spelling.
+			_, encoded, _ := strings.Cut(parsed.User.String(), ":")
+			_, password, _ := strings.Cut(tc.pair, ":")
+			// What a program that was given that address says about it: the address whole, the
+			// password in the spelling of that address, and the pair as the store keeps it.
+			refused := "dial tcp 192.0.2.10:1080: connect: connection refused through " + address +
+				" as " + encoded + " (" + tc.pair + ")"
+			store := &storeOfTheTest{values: map[string]string{
+				secret.Service + "/" + secret.ProxyKey("work"): tc.pair,
+			}}
+			r := &recorder{clock: time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC), secrets: store}
+
+			r.fallback(cfg, route).Once(t.Context(), r.do(map[string]answer{
+				"direct": {stderr: noSuchHost, code: 1},
+				"work":   {stderr: refused, code: 1},
+			}))
+
+			for _, value := range []string{tc.pair, password, encoded} {
+				if strings.Contains(r.said.String(), value) {
+					t.Errorf("the journal of the route holds the value %q of a credential: %q", value, r.said.String())
+				}
+			}
+			// The words are still there: only what of them is a secret is gone.
+			if !r.has(EventFallbackFailed, secret.Redacted) {
+				t.Errorf("the failure of the second attempt says nothing of what the proxy wrote: %q", r.said.String())
+			}
+			// The address of the profile stays, or a person cannot see where the traffic of a
+			// project goes (docs/DESIGN.md §7d, §7e).
+			if !strings.Contains(r.said.String(), "proxy.example.com:1080") {
+				t.Errorf("the journal of the route does not name the address of the profile: %q", r.said.String())
+			}
+		})
 	}
 }
 

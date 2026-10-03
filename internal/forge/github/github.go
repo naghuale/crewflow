@@ -22,6 +22,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github/app"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // program is the tool of this adapter: the official client of GitHub, which
@@ -165,7 +166,7 @@ func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) err
 		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
 	case code != 0:
 		return fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+			strings.Join(arguments[:5], " "), code, a.redacted(firstLine(stderr)))
 	}
 	return nil
 }
@@ -185,7 +186,7 @@ func (a *Adapter) CommentTask(ctx context.Context, number int, body string) erro
 		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
 	case code != 0:
 		return fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+			strings.Join(arguments[:5], " "), code, a.redacted(firstLine(stderr)))
 	}
 	return nil
 }
@@ -692,12 +693,20 @@ func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([
 	}
 	if code != 0 {
 		return nil, fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(command, " "), code, firstLine(stderr, stdout))
+			strings.Join(command, " "), code, a.redacted(firstLine(stderr, stdout)))
 	}
 	if len(strings.TrimSpace(string(stdout))) == 0 {
 		return nil, fmt.Errorf("gh %s: no JSON in the answer, gh wrote nothing", strings.Join(command, " "))
 	}
 	return stdout, nil
+}
+
+// redacted is what a program of the machine said with the credentials of the route of the
+// project taken out of it: gh is started with that route in its environment, and a proxy that
+// names itself in a refusal is not rare — and what gh said goes into the error a command prints
+// to the terminal of the person who started it (docs.DESIGN.md §7e, §7i).
+func (a *Adapter) redacted(words string) string {
+	return secret.Redact(words, a.env.RouteSecrets...)
 }
 
 // environment is what the project adds to the environment of gh: its own server, and

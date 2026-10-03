@@ -18,6 +18,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge/github"
 	"github.com/naghuale/crewflow/internal/forge/github/app"
 	"github.com/naghuale/crewflow/internal/network"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // New returns the roles the settings of the project ask for, or an error that
@@ -215,12 +216,19 @@ func withoutSecrets(env forge.Env) forge.Env {
 // A route that cannot be worked out is not a route the roles can be built on: gh would
 // then go out the way the shell of the machine happened to leave it, and a report would
 // say the project cannot be read while the answer would be a proxy of somebody else.
+//
+// The roles are also given what the credentials of that route are, and an adapter puts
+// what its programs said through it before the words become an error of a command: gh was
+// started with the address of the profile in its environment, and a proxy that names itself
+// in a refusal would otherwise put the password of a person into a terminal and into a state
+// of a task (docs/DESIGN.md §7e).
 func throughRoute(cfg config.Config, env forge.Env) forge.Env {
-	route, err := firstRoute(cfg, env)
+	route, credentials, err := firstRoute(cfg, env)
 	if err != nil {
 		env.RouteError = err
 		return env
 	}
+	env.RouteSecrets = secret.Chosen(route.Secrets(credentials)...)
 	machine := network.Fallback{
 		Config:  cfg,
 		Route:   route,
@@ -247,20 +255,24 @@ func throughRoute(cfg config.Config, env forge.Env) forge.Env {
 // credentials of a profile that are not in the store of the machine or are not a login and a
 // password in it. It is worked out before the first program of the roles is started, because a
 // refusal a person has to act on belongs before a task starts and not in the middle of one
-// (docs/DESIGN.md §7d, §7e).
-func firstRoute(cfg config.Config, env forge.Env) (network.Route, error) {
+// (docs.DESIGN.md §7d, §7e).
+//
+// The credentials it read are returned with the route: they are in the environment of every
+// program the roles start, and [throughRoute] needs the same list of values to hold the
+// credentials of the route out of what those programs say (§7e).
+func firstRoute(cfg config.Config, env forge.Env) (network.Route, string, error) {
 	route, err := network.Choose(cfg, "")
 	if err != nil {
-		return network.Route{}, err
+		return network.Route{}, "", err
 	}
 	credentials, err := network.Credentials(env.Secrets, route)
 	if err != nil {
-		return network.Route{}, err
+		return network.Route{}, "", err
 	}
 	if _, err := route.Environment(cfg.Network.NoProxy, credentials); err != nil {
-		return network.Route{}, err
+		return network.Route{}, "", err
 	}
-	return route, nil
+	return route, credentials, nil
 }
 
 // orchestratorOf is the App of the orchestrator of the project, and nothing where the

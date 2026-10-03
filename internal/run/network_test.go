@@ -1,12 +1,19 @@
 package run
 
 import (
+	"bytes"
+	"context"
 	"fmt"
+	"net/url"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/naghuale/crewflow/internal/config"
+	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/network"
 	"github.com/naghuale/crewflow/internal/secret"
 )
@@ -223,6 +230,342 @@ func TestARunKeepsTheCredentialsOfTheRouteOutOfItsFiles(t *testing.T) {
 	if got := read(t, result.Journal); !strings.Contains(got, "proxy.example.com:1080") {
 		t.Errorf("the journal holds %q, want the address of the profile of the route in it", got)
 	}
+}
+
+// TestTheErrorOfAGitOfARunCarriesNoCredentialOfItsRoute: the git of a run goes out through
+// the route of the project like the executor does, and what git says about a failure goes
+// into the error the command prints and into the way out of the run. A git that was given a
+// proxy with a login in it names that proxy in its complaint — `fatal: unable to access
+// 'https://…': Could not resolve proxy`, the address in it — and the error of a run is a
+// line of a terminal and of a file a person is sent to (D-068 RECHECK-FINDING-5,
+// docs/DESIGN.md §7e, §7i).
+func TestTheErrorOfAGitOfARunCarriesNoCredentialOfItsRoute(t *testing.T) {
+	m := newMachine(t)
+	cfg := projectOf(t, m.worktrees, "")
+	cfg.Network = aRouteThatTakesItsCredentials()
+	address := theAddressOfTheRoute(t, cfg.Network)
+	env := m.env()
+	env.Secrets = storeWithTheRoute{}
+	r := &runner{env: env, cfg: cfg}
+	if err := r.throughRoute(); err != nil {
+		t.Fatalf("work out the route of the run: %v", err)
+	}
+	// git says what a proxy said to it, and the way out of the run is the file the command
+	// tells the person to open.
+	path := filepath.Join(t.TempDir(), "43-1.err")
+	write(t, path, "crewflow: the executor may write: nowhere\n")
+	m.answers["git fetch"] = answer{
+		stderr: "fatal: unable to access 'https://github.com/naghuale/crewflow': " +
+			"Could not resolve proxy: " + address + "\n",
+		code: 128,
+	}
+
+	err := r.git(t.Context(), m.repo, "fetch", "origin", "main")
+	r.note(path, err)
+
+	if err == nil {
+		t.Fatal("the git of a run that failed returned no error, want one with what git said in it")
+	}
+	for _, want := range []string{"git fetch origin main", "128"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error %q does not mention %q", err, want)
+		}
+	}
+	nothingOfTheCredentials(t, "the error of the git of the run", err.Error(), theFormsOfTheCredentials(t, address, theCredentialsOfTheRoute))
+	nothingOfTheCredentials(t, "the way out of the run", read(t, path), theFormsOfTheCredentials(t, address, theCredentialsOfTheRoute))
+}
+
+// nothingOfTheCredentials is that no value of the list is in the text, and which one is:
+// the list of a run is the values crewflow read and never wrote down, and every one of them
+// has to be out of every file and every line (docs/DESIGN.md §7e).
+func nothingOfTheCredentials(t *testing.T, where, said string, values []string) {
+	t.Helper()
+	for _, value := range values {
+		if value != "" && strings.Contains(said, value) {
+			t.Errorf("%s holds the value %q of a credential:\n%s", where, value, said)
+		}
+	}
+}
+
+// The two pairs a proxy really takes, and both of them are the password of a person: one of
+// three signs, which is a password somebody may have chosen, and one the address of the
+// profile has to write another way (percent-encoded), which is the spelling a program is
+// given and the only one that can come back out of a file of a run.
+var theCredentialsOfACase = []string{"u:abc", "u:pa ss/word"}
+
+// TestTheJournalTheWayOutAndTheStateOfARunHoldNoCredentialOfItsRoute is the guard of the
+// three files a run leaves behind: the journal of the attempt, the way out of it and the
+// state of the task. An executor that prints its own environment and stops by itself is the
+// ordinary way the credentials of a route get into them — the environment of the executor
+// holds the address of the profile with the pair in it, and the reason of a run goes into
+// the state of the task, which an orchestrator reads and pastes into issues
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e, §7i).
+func TestTheJournalTheWayOutAndTheStateOfARunHoldNoCredentialOfItsRoute(t *testing.T) {
+	for _, pair := range theCredentialsOfACase {
+		t.Run(pair, func(t *testing.T) {
+			m := newMachine(t)
+			c := aRunOnARouteWithCredentials(t, m, "proxy", pair, saidOfGh{})
+			// The executor prints the route it was given and stops by itself, the way an
+			// agent that cannot reach its provider does.
+			m.answers["opencode"] = answer{
+				stdout: `{"type":"text","sessionID":"ses_7fKq2","part":{"type":"text","text":"BLOCKED: ` +
+					`I cannot reach ` + c.address + `"}}` + "\n",
+				stderr: "curl: (97) cannot connect to " + c.address + "\n",
+			}
+			m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+			m.answers["gh pr list"] = answer{stdout: "[]\n"}
+			env := m.env()
+			env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+			env.Notices = c.notices
+
+			result, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+			// The route was really given to the programs of the run: a test that proves the
+			// hiding of a value nobody was given proves nothing (docs/DESIGN.md §7d).
+			if want := "HTTPS_PROXY=" + c.address; !contains(m.envOf(), want) {
+				t.Fatalf("the executor was started without %q: %q", want, m.envOf())
+			}
+			if !strings.Contains(result.Reason, secret.Redacted) {
+				t.Errorf("the reason of the run is %q, want the credentials of the route taken out of it", result.Reason)
+			}
+			for _, where := range []struct{ name, said string }{
+				{"the journal of the attempt", read(t, result.Journal)},
+				{"the way out of the run", read(t, result.ErrorJournal)},
+				{"the state of the task", read(t, c.statePath(m))},
+				{"the reason of the run", result.Reason},
+			} {
+				nothingOfTheCredentials(t, where.name, where.said, c.forms)
+			}
+		})
+	}
+}
+
+// TestTheErrorOfTheHostOfTheProjectHoldsNoCredentialOfItsRoute: gh is started with the route
+// of the project in its environment like every other program of a run, and what it says about
+// a refusal goes into the error the command prints to the terminal of the person who started
+// it. A gh that reached the host through a proxy names that proxy when the host refuses it —
+// and the words of a refusal are the one part of a program nobody wrote
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestTheErrorOfTheHostOfTheProjectHoldsNoCredentialOfItsRoute(t *testing.T) {
+	for _, pair := range theCredentialsOfACase {
+		t.Run(pair, func(t *testing.T) {
+			m := newMachine(t)
+			c := aRunOnARouteWithCredentials(t, m, "proxy", pair, saidOfGh{
+				through: "HTTP 403: Resource not accessible by integration",
+			})
+			m.answers["opencode"] = answer{stdout: theRun}
+			m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+			env := m.env()
+			env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+			env.Notices = c.notices
+
+			_, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+			if err == nil {
+				t.Fatal("a run whose host refused it returned no error, want one")
+			}
+			// The refusal of the host is still there: only what of it is a secret is gone.
+			if !strings.Contains(err.Error(), "HTTP 403") {
+				t.Errorf("the error %q does not say what gh said", err)
+			}
+			if !strings.Contains(err.Error(), secret.Redacted) {
+				t.Errorf("the error %q holds no %q, want the credentials of the route taken out of it",
+					err, secret.Redacted)
+			}
+			nothingOfTheCredentials(t, "the error the command prints", err.Error(), c.forms)
+		})
+	}
+}
+
+// TestTheEventsOfTheRouteOfARunHoldNoCredentialOfTheProfileItWentThrough: in the mode
+// `fallback` the one request that could not reach the network is made again through the
+// active profile, and what each of the two attempts said is put into an event of the route —
+// which goes into the journal of the attempt and into the terminal of the person who started
+// the command. The credentials of that profile are in the environment of the second attempt
+// and nowhere else, so this is the one place where they can be in a file of a run in the
+// spelling the address writes them and not in the spelling of the store
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7d, §7e).
+func TestTheEventsOfTheRouteOfARunHoldNoCredentialOfTheProfileItWentThrough(t *testing.T) {
+	for _, pair := range theCredentialsOfACase {
+		t.Run(pair, func(t *testing.T) {
+			m := newMachine(t)
+			// Both attempts of the one request fail: the host is not there through either
+			// road, and what the second one said names the profile it went out by.
+			c := aRunOnARouteWithCredentials(t, m, "fallback", pair, saidOfGh{
+				straight: "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host",
+				through:  "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host",
+			})
+			m.answers["opencode"] = answer{stdout: theRun}
+			m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+			env := m.env()
+			env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+			env.Notices = c.notices
+
+			result, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+			if err != nil {
+				t.Fatalf("Run returned an error: %v", err)
+			}
+			for _, want := range []string{
+				network.EventRouteFailed, network.EventFallbackStarted, network.EventFallbackFailed,
+			} {
+				if !strings.Contains(c.events.String(), want) {
+					t.Errorf("the events of the route hold no %s: %q", want, c.events.String())
+				}
+			}
+			for _, where := range []struct{ name, said string }{
+				{"the events of the route", c.events.String()},
+				{"the journal of the attempt", read(t, result.Journal)},
+				{"the way out of the run", read(t, result.ErrorJournal)},
+				{"the state of the task", read(t, c.statePath(m))},
+			} {
+				nothingOfTheCredentials(t, where.name, where.said, c.forms)
+			}
+		})
+	}
+}
+
+// A run of a test on a project whose traffic goes through a profile of the owner, built the
+// way a command builds it: the roles of the project are real, so every program they start
+// goes out through the route of the project, the credentials of the profile are read where a
+// connection through it is really made, and the events of the route are said to the notices
+// (docs/DESIGN.md §7d, §7e).
+type aRunOnARoute struct {
+	cfg     config.Config
+	set     forge.Set
+	notices *secret.Notices
+	// events is where the events of the route are said, apart from the journal of the
+	// attempt they are added to as well.
+	events *bytes.Buffer
+	// address is what the programs of the run are given, and forms is every spelling of the
+	// credentials of the profile that may come back out of a program.
+	address string
+	forms   []string
+}
+
+// saidOfGh is what gh says about the change request of the branch of a run, and it is said
+// apart for the two roads: straight is what a gh that went out without a proxy says, and
+// through is what a gh that went through the profile of the project says. What crewflow does
+// with the two is not the same — the host answering and refusing ends the run where it is, and
+// a proven failure of the network is the one failure the mode `fallback` answers with a second
+// attempt (docs.DESIGN.md §7d, §7e).
+type saidOfGh struct{ straight, through string }
+
+// aRunOnARouteWithCredentials is that run with the given pair of the given mode: the store of
+// the machine of the test holds the credentials of the profile, and nothing of it is the
+// keychain of the person who runs the tests (§7e, §7i).
+//
+// gh is the program the roles of the project start, and it is a program of the machine of the
+// test like any other: it answers what it was told, and it tells the route it went out by —
+// the credentials of a profile are in the environment of the attempt through it and in no
+// other, so only that attempt may name the profile in what it says (§7d, §7e).
+func aRunOnARouteWithCredentials(t *testing.T, m *machine, mode, pair string, said saidOfGh) aRunOnARoute {
+	t.Helper()
+	cfg := projectOf(t, m.worktrees, "")
+	cfg.Forge.Kind, cfg.Tracker.Kind, cfg.CI.Kind = "github", "forge", "forge"
+	cfg.Network = config.Network{
+		Mode:        mode,
+		ActiveProxy: "work",
+		Proxies: map[string]config.Proxy{
+			"work": {Type: "socks5", Host: "proxy.example.com", Port: 1080, Credentials: "secret-store"},
+		},
+	}
+	through, err := network.Through(cfg, "work")
+	if err != nil {
+		t.Fatalf("the route through the profile of the project: %v", err)
+	}
+	address, err := through.Address(pair)
+	if err != nil {
+		t.Fatalf("the address of the profile: %v", err)
+	}
+	// The complaint of the attempt through the profile names the profile it went out by: a
+	// proxy that gives its own login away in a complaint is not rare, and the journal of a
+	// run keeps for ever what it says. The straight attempt cannot name it — it was never
+	// given the credentials — and says nothing but the network of the machine.
+	said.through += ", through " + address + " as " + pair
+	run := func(ctx context.Context, name string, args []string, dir string, extraEnv []string) ([]byte, []byte, int, error) {
+		if filepath.Base(name) != "gh" || len(args) == 0 || args[0] != "pr" {
+			return m.exec(ctx, name, args, dir, extraEnv)
+		}
+		m.started("gh", args, dir)
+		m.wasGiven(extraEnv)
+		complaint := said.straight
+		if said.through != "" && slices.ContainsFunc(extraEnv, func(name string) bool {
+			return strings.HasPrefix(name, "ALL_PROXY=")
+		}) {
+			complaint = said.through
+		}
+		return nil, []byte(complaint), 1, nil
+	}
+	events := &bytes.Buffer{}
+	notices := secret.NewNotices(events)
+	set, err := roles.New(cfg, forge.Env{
+		LookPath:   func(name string) (string, error) { return filepath.Join(m.userHome, name), nil },
+		Run:        run,
+		ConfigPath: filepath.Join(t.TempDir(), "crewflow.toml"),
+		Secrets:    storeOfTheCredentialsOfTheProfile{pair: pair},
+		Now:        m.now,
+		Events:     notices,
+	})
+	if err != nil {
+		t.Fatalf("the roles of the project: %v", err)
+	}
+	return aRunOnARoute{
+		cfg:     cfg,
+		set:     set,
+		notices: notices,
+		events:  events,
+		address: address,
+		forms:   theFormsOfTheCredentials(t, address, pair),
+	}
+}
+
+// theFormsOfTheCredentials are every spelling of the credentials of a profile that may reach
+// a file of a run: the pair as the store keeps it, the password on its own, and the pair and
+// the password as the address of the profile writes them. A value that is taken out of a text
+// in one spelling and stands in it in another is a secret in every file a program writes
+// (docs/DESIGN.md §7e).
+func theFormsOfTheCredentials(t *testing.T, address, pair string) []string {
+	t.Helper()
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("the address of the profile is not an address: %v", err)
+	}
+	_, password, _ := strings.Cut(pair, ":")
+	written := parsed.User.String()
+	_, encoded, _ := strings.Cut(written, ":")
+	return []string{pair, password, written, encoded}
+}
+
+// statePath is the file the state of the task of a test is in, read as it was written: the
+// whole of what a person and an orchestrator read after the run is over.
+func (c aRunOnARoute) statePath(m *machine) string {
+	return newJournals(m.home, "naghuale-crewflow").StatePath(43)
+}
+
+// storeOfTheCredentialsOfTheProfile is the store of a machine that holds the credentials of
+// the profile a run goes out through, whatever they are in this case, and nothing else.
+type storeOfTheCredentialsOfTheProfile struct{ pair string }
+
+func (s storeOfTheCredentialsOfTheProfile) Get(service, account string) ([]byte, error) {
+	if service == secret.Service && account == secret.ProxyKey("work") {
+		return []byte(s.pair), nil
+	}
+	return nil, secret.ErrNotFound
+}
+
+func (storeOfTheCredentialsOfTheProfile) Set(string, string, []byte) error { return nil }
+
+// theIssueOfTheTask is the answer of "gh issue view" for the task of a test, in the shape gh
+// writes it: the task of a project is read through the route of the project like any other
+// program is started, and a run that reads it has to get the whole of it (docs/DESIGN.md §7g).
+func theIssueOfTheTask(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf(`{"number":43,"title":"the run of a task","body":%s,"labels":[],`+
+		`"state":"open","url":"https://github.com/naghuale/crewflow/issues/43"}`, strconv.Quote(wholeTask))
 }
 
 // TestTheErrorsOfARunGoThroughTheSecretsOfItsRoute: a line crewflow writes about a run is

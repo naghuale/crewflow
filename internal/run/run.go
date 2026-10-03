@@ -419,7 +419,7 @@ type runner struct {
 	// file of the run: they are in the environment of every program this run starts, and
 	// an executor that prints its own environment is one line of a journal that is kept
 	// for ever and pasted into issues (docs/DESIGN.md §7d, §7e).
-	routeSecrets []string
+	routeSecrets []secret.Value
 	// admission is the record of the pair that let this run start beside another run of
 	// the project. It is worked out before the worktree of the task is made, and it is said
 	// in the journal of the attempt and in the report of the run: a run that went beside
@@ -484,7 +484,7 @@ func (r *runner) throughRoute() error {
 		return err
 	}
 	r.route = environment
-	r.routeSecrets = route.Secrets(credentials)
+	r.routeSecrets = secret.Chosen(route.Secrets(credentials)...)
 	return nil
 }
 
@@ -494,8 +494,20 @@ func (r *runner) throughRoute() error {
 // environment, so an agent that prints its own environment prints them both, and a value
 // that is taken out of one file of a run and not of another is a secret kept for ever in
 // the one and nothing at all in the other (docs/DESIGN.md §7e, §7i).
-func (r *runner) secrets() []string {
-	return slices.Concat(r.identity.Secrets, r.routeSecrets)
+//
+// Each value carries the rule of its own kind: a token of an hour is long and is looked
+// for from the eighth sign on, and a password of a proxy is as long as its owner made it
+// and is looked for whatever it is (docs/DESIGN.md §7e).
+func (r *runner) secrets() []secret.Value {
+	return slices.Concat(secret.Generated(r.identity.Secrets...), r.routeSecrets)
+}
+
+// quiet is what a program of this run wrote with the secrets of the run taken out of it:
+// what git and gh say about a failure goes into the error the command prints and into the
+// way out of the run, and both of them were given the route of the project in their
+// environment (docs/DESIGN.md §7e, §7i).
+func (r *runner) quiet(words string) string {
+	return secret.Redact(words, r.secrets()...)
 }
 
 // readings is the policy of the run: the folders the file of the project named, the
@@ -633,26 +645,34 @@ func (r *runner) repoDir() string {
 // the environment of the route is added to the environment of the process and to nothing
 // else, so a git that fetches goes through the profile the owner named, and a run in the
 // mode `direct` leaves git as it was (docs/DESIGN.md §7d).
+//
+// What git said about the failure goes through [runner.quiet]: git was given the address of
+// the profile with the credentials in it, and a git that could not reach the host names that
+// profile — and the error of a run is a line of the terminal of the person who started the
+// command and of the way out of the run (D-068 RECHECK-FINDING-5, §7e, §7i).
 func (r *runner) git(ctx context.Context, dir string, args ...string) error {
 	_, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
 		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	case code != 0:
-		return fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, firstLine(stderr))
+		return fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, r.quiet(firstLine(stderr)))
 	}
 	return nil
 }
 
 // output runs one command of git in dir and returns what it wrote, for the one
-// command whose answer crewflow reads: the files the run changed.
+// command whose answer crewflow reads: the files the run changed. What git said about a
+// failure goes through [runner.quiet] here as well: the words of a program of the machine
+// are read as they are in every case (docs/DESIGN.md §7e, §7i).
 func (r *runner) output(ctx context.Context, dir string, args ...string) (string, error) {
 	stdout, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	case code != 0:
-		return "", fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, firstLine(stderr))
+		return "", fmt.Errorf("git %s: exited with %d: %s",
+			strings.Join(args, " "), code, r.quiet(firstLine(stderr)))
 	}
 	return string(stdout), nil
 }

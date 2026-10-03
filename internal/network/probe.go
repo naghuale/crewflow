@@ -372,8 +372,9 @@ func (m Machine) ask(ctx context.Context, capability string, route Route, enviro
 	if credentials != "" {
 		// Nothing of a credential of the profile is in what a person reads, whatever the
 		// program that answered wrote: the values of the route go through the redactor of
-		// the secrets of the machine (docs.DESIGN.md §7e).
-		state.Detail = secret.Redact(state.Detail, route.Secrets(credentials)...)
+		// the secrets of the machine, in every spelling the address of the profile writes
+		// them and whatever their length is (docs/DESIGN.md §7e).
+		state.Detail = secret.Redact(state.Detail, secret.Chosen(route.Secrets(credentials)...)...)
 	}
 	if m.Now().Sub(started) > m.ValidFor {
 		state.Result = StateStale

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
@@ -56,10 +58,48 @@ var startProgram = doctor.Command
 // settings of git that point it at the helper of the credentials of crewflow: the push
 // of a merge is made as the account of the app, and a checkout of a person is never
 // written to make it so (docs/DESIGN.md §7a, §7h, §7i).
+//
+// What a command of it complained about goes through the editor of the route first: the
+// address of the profile is in that environment, a git that could not reach the host names
+// that profile in what it says, and what it says becomes the error a review or a merge is
+// refused with — on the terminal of the person who started the command and in the journal of
+// the merge (D-068 RECHECK-FINDING-5, §7e, §7i). What it answered is left as it is: that is
+// what `git cat-file` and `git ls-remote` are read by, and a value taken out of an answer is
+// a value no program can read back (§7e).
 func gitIn(environment []string) merge.Runner {
+	values := valuesOfRoute(environment)
 	return func(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
-		return startProgram(ctx, name, args, dir, environment)
+		stdout, stderr, exitCode, err := startProgram(ctx, name, args, dir, environment)
+		return stdout, []byte(secret.Redact(string(stderr), values...)), exitCode, err
 	}
+}
+
+// valuesOfRoute are the credentials of the profile as the environment of a program of a
+// review or of a merge writes them: the pair and the password, both as the store keeps them
+// and as the address of the profile writes them — percent-encoded, which is the spelling a
+// program prints. They are worked out of the environment and not out of the store of the
+// machine: the store is asked once, where a connection through the profile is really made,
+// and this is only the list of what a program is given and may print back (docs/DESIGN.md §7e).
+func valuesOfRoute(environment []string) []secret.Value {
+	var values []string
+	for _, name := range environment {
+		address, isRoute := strings.CutPrefix(name, "HTTPS_PROXY=")
+		if !isRoute {
+			continue
+		}
+		parsed, err := url.Parse(address)
+		if err != nil || parsed.User == nil {
+			continue
+		}
+		password, given := parsed.User.Password()
+		if !given {
+			continue
+		}
+		written := parsed.User.String()
+		_, encoded, _ := strings.Cut(written, ":")
+		values = append(values, password, written, encoded)
+	}
+	return secret.Chosen(values...)
 }
 
 // orchestratorOf is whose name the review and the merge of this project work under, and

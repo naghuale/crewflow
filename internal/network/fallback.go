@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/config"
@@ -237,6 +236,14 @@ func (f Fallback) Once(ctx context.Context, do Attempt) Answer {
 // do for every other connection crewflow makes through a route (docs/DESIGN.md §7d, §7e). The
 // credentials of the profile of the second attempt are read here and not earlier, because this
 // is where a connection through it is really made (§7e).
+//
+// What the program said about the failure goes through the editor of that route before it is
+// handed to anybody: the address of the profile is in its environment, and a program that
+// prints what it was given — or a proxy that names itself in its complaint — is a copy of the
+// password of a person in an event of the route, in an error of gh and in a file kept for ever.
+// Only what the program wrote to its second stream: the first one is an answer crewflow reads
+// (the JSON of gh, the protocol of the executor), and a value cut out of it is a value no
+// program can read back (D-068 RECHECK-FINDING-5, §7e, §7i).
 func (f Fallback) made(do Attempt, route Route) (tried, error) {
 	credentials, err := Credentials(f.Secrets, route)
 	if err != nil {
@@ -247,8 +254,15 @@ func (f Fallback) made(do Attempt, route Route) (tried, error) {
 		return tried{}, err
 	}
 	stdout, stderr, code, err := do(route, environment)
+	secrets := secret.Chosen(route.Secrets(credentials)...)
 	return tried{
-		answer:      Answer{Stdout: stdout, Stderr: stderr, Code: code, Err: err},
+		answer: Answer{
+			Stdout: stdout,
+			Stderr: secret.Redact(stderr, secrets...),
+			Code:   code,
+			Err:    err,
+		},
+		route:       route,
 		credentials: credentials,
 	}, nil
 }
@@ -263,12 +277,18 @@ func (f Fallback) say(event string, facts ...string) {
 	SayEvent(f.Events, event, facts...)
 }
 
-// tried is one attempt of one operation together with the credentials it was made with: the
-// two belong to each other, because what the program wrote goes through the redactor with the
-// value that was read for it — a proxy that answers with the password of its own profile must
-// not have that password in a journal (docs/DESIGN.md §7e, §7i).
+// tried is one attempt of one operation together with the route it was made by and the
+// credentials it was made with: the three belong to each other, because what the program
+// wrote goes through the redactor with the values of that route — a proxy that answers with
+// the password of its own profile must not have that password in a journal, and only the
+// route and the value that was read for it say which spellings of it a program can print
+// (docs/DESIGN.md §7e, §7i).
 type tried struct {
-	answer      Answer
+	answer Answer
+	route  Route
+	// credentials is what was read out of the store for this attempt and went into the
+	// environment of the program: a route does not hold them, and they are read where a
+	// connection through it is really made (docs.DESIGN.md §7e).
 	credentials string
 }
 
@@ -292,17 +312,12 @@ func (t tried) exited() string {
 	return "exit=" + strconv.Itoa(t.answer.Code)
 }
 
-// secrets are the values that must not reach a journal out of the credentials of the profile:
-// the pair itself and its password, which a program may print on its own (§7e).
-func (t tried) secrets() []string {
-	if t.credentials == "" {
-		return nil
-	}
-	values := []string{t.credentials}
-	if _, password, found := strings.Cut(t.credentials, ":"); found {
-		values = append(values, password)
-	}
-	return values
+// secrets are the values of the route of this attempt that must not reach a journal: the pair
+// and the password of the profile as the store keeps them, and the pair and the password as
+// the address of the profile writes them — percent-encoded, which is the spelling a program is
+// given and the only one it can print (docs/DESIGN.md §7e).
+func (t tried) secrets() []secret.Value {
+	return secret.Chosen(t.route.Secrets(t.credentials)...)
 }
 
 // Failure is the reason of a failure of the network in what one operation of a program of

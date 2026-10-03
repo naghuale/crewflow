@@ -101,11 +101,67 @@ func ProxyKey(name string) string {
 // and is not shown, which a report needs and a blank would not say.
 const Redacted = "[redacted]"
 
-// shortest is the length a value has to have to be worth looking for in a text. A
-// token of GitHub and a key of an App are long, and a value shorter than this would
-// be replaced wherever it appears — in every word of a journal — and a journal that
-// says nothing of what happened is worse than one that shows a value of a secret
-// nobody can use.
+// A Value is one value a run must not write down, and the rule that says whether it is
+// worth looking for in a text at all. There are two kinds of them, and the difference is who
+// wrote the value down:
+//
+//   - a value a machine wrote — a token of an hour, a key of an App — is long by the way a
+//     machine writes it, and a value shorter than [shortest] would be taken out of every word
+//     of a journal: a journal that says nothing of what happened is worse than one that shows
+//     a value nobody can use. Those are the values of [Generated];
+//   - a value a person chose — the login and the password of a proxy of a project — is as long
+//     as that person made it, and how long a secret is says nothing about whether it is one.
+//     Those are the values of [Chosen], and the length of a value does not decide for them.
+//
+// Both kinds are taken out of a text the same way; the kind of a value says only whether a
+// short one is looked for (docs/DESIGN.md §7e).
+type Value struct {
+	// text is the value as it is written down, looked for in a text whole.
+	text string
+	// always says that the value is worth looking for whatever its length is.
+	always bool
+}
+
+// Generated is the list of the values a machine wrote for itself: the token of an hour and the
+// key of an App. They are long by the way a machine writes them, and a value of another length
+// than that is not looked for in a text at all (§7e).
+func Generated(values ...string) []Value {
+	return listOf(false, values)
+}
+
+// Chosen is the list of the values a person chose: the credentials of a proxy of a project.
+// They are as long as that person made them — three signs is a password a proxy takes — and
+// they are taken out of every text whatever their length is, because the run that skipped a
+// password for being short would write it into a file kept for ever (§7e).
+func Chosen(values ...string) []Value {
+	return listOf(true, values)
+}
+
+// listOf is the values of one kind, without the empty ones: a value nobody wrote down is not a
+// secret of anything, and an empty value in a list would be taken out of every character of a
+// text and leave of it nothing at all.
+func listOf(always bool, values []string) []Value {
+	list := make([]Value, 0, len(values))
+	for _, value := range values {
+		if value != "" {
+			list = append(list, Value{text: value, always: always})
+		}
+	}
+	return list
+}
+
+// worthLookingFor is whether a value is looked for in a text at all: a value a person chose
+// whatever its length is, and a value a machine wrote from the eighth sign on.
+func worthLookingFor(value Value) bool {
+	return value.always || len(value.text) >= shortest
+}
+
+// shortest is the length a value a machine wrote has to have to be worth looking for in a
+// text. A token of GitHub and a key of an App are long, and a value shorter than this would
+// be replaced wherever it appears — in every word of a journal — and a journal that says
+// nothing of what happened is worse than one that shows a value of a secret nobody can use.
+// It is the rule of those values alone: what a person chose is not measured by it, and a proxy
+// that accepts a password of three signs is a proxy a person really uses (docs/DESIGN.md §7e).
 const shortest = 8
 
 // Notices is where crewflow says that it is waiting for the owner of a machine, and
@@ -174,12 +230,12 @@ func (n *Notices) Say(text string) {
 // writes after a run: the value of a token is in the environment of the executor, and
 // an agent that prints its own environment is a line of a journal that would carry a
 // token of an hour into a file kept for ever.
-func Redact(text string, values ...string) string {
+func Redact(text string, values ...Value) string {
 	for _, value := range values {
-		if len(value) < shortest {
+		if !worthLookingFor(value) {
 			continue
 		}
-		text = string(bytes.ReplaceAll([]byte(text), []byte(value), []byte(Redacted)))
+		text = string(bytes.ReplaceAll([]byte(text), []byte(value.text), []byte(Redacted)))
 	}
 	return text
 }
@@ -199,13 +255,13 @@ type Redactor struct {
 }
 
 // NewRedactor returns the writer that puts the text into out with the values taken
-// out of it. Values too short to be a secret of a machine are left alone, and a text
-// with no value in it is written as it is.
-func NewRedactor(out io.Writer, values ...string) *Redactor {
+// out of it. A value too short to be the secret of its own kind is left alone, and a
+// text with no value in it is written as it is.
+func NewRedactor(out io.Writer, values ...Value) *Redactor {
 	var secrets []string
 	for _, value := range values {
-		if len(value) >= shortest {
-			secrets = append(secrets, value)
+		if worthLookingFor(value) {
+			secrets = append(secrets, value.text)
 		}
 	}
 	return &Redactor{out: out, secrets: secrets}

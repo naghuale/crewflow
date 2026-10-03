@@ -17,25 +17,25 @@ func TestRedactTakesTheValuesOutOfAText(t *testing.T) {
 	cases := []struct {
 		name   string
 		text   string
-		values []string
+		values []Value
 		want   string
 	}{
 		{
 			name:   "a token in the middle of a line",
 			text:   "GH_TOKEN=" + token + " PATH=/usr/bin\n",
-			values: []string{token},
+			values: Generated(token),
 			want:   "GH_TOKEN=" + Redacted + " PATH=/usr/bin\n",
 		},
 		{
 			name:   "the same token twice",
 			text:   token + " and " + token + "\n",
-			values: []string{token},
+			values: Generated(token),
 			want:   Redacted + " and " + Redacted + "\n",
 		},
 		{
 			name:   "a value too short to be a secret of a machine",
 			text:   "the run of a task\n",
-			values: []string{"main"},
+			values: Generated("main"),
 			want:   "the run of a task\n",
 		},
 		{
@@ -54,6 +54,79 @@ func TestRedactTakesTheValuesOutOfAText(t *testing.T) {
 	}
 }
 
+// TestAValueAPersonChoseIsTakenOutWhateverItsLengthIs is the difference between the two
+// kinds of value a run keeps out of its files. A token of an hour and a key of an App are
+// written by a machine and are long, so a value shorter than that is not looked for: it would
+// be taken out of every word of a journal. A password of a proxy was chosen by a person and is
+// as long as that person made it — three signs is a password a proxy accepts — and a rule that
+// skipped it for being short is the one leak a run may not have
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestAValueAPersonChoseIsTakenOutWhateverItsLengthIs(t *testing.T) {
+	const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
+	cases := []struct {
+		name   string
+		text   string
+		values []Value
+		want   string
+	}{
+		{
+			name:   "a password of three signs in the middle of a line",
+			text:   "the password of the profile is abc\n",
+			values: Chosen("abc"),
+			want:   "the password of the profile is " + Redacted + "\n",
+		},
+		{
+			name:   "the same three signs in the spelling of the address",
+			text:   "socks5://u:abc@proxy.example.com:1080\n",
+			values: Chosen("u:abc", "abc"),
+			want:   "socks5://" + Redacted + "@proxy.example.com:1080\n",
+		},
+		{
+			name:   "a value a machine wrote that is short is left alone",
+			text:   "the branch is abc\n",
+			values: Generated("abc"),
+			want:   "the branch is abc\n",
+		},
+		{
+			name:   "both kinds in one list",
+			text:   "abc " + token + "\n",
+			values: append(Chosen("abc"), Generated(token)...),
+			want:   Redacted + " " + Redacted + "\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Redact(tc.text, tc.values...); got != tc.want {
+				t.Errorf("Redact(%q) = %q, want %q", tc.text, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestTheRedactorOfAValueAPersonChoseHoldsBackWhatMayStillGrowIntoIt: a journal of a run is
+// written while the run goes on, and a password of three signs is as likely to be split
+// between two writes of it as a token of forty — the run cannot tell a short value from a
+// long one before it is whole, and a redactor that wrote half of a password out is a journal
+// that reads `[redacted]c` (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestTheRedactorOfAValueAPersonChoseHoldsBackWhatMayStillGrowIntoIt(t *testing.T) {
+	var out bytes.Buffer
+	redactor := NewRedactor(&out, Chosen("abc")...)
+
+	for _, piece := range []string{"the password is a", "bc and the address is socks5://u:ab", "c@proxy.example.com:1080\n"} {
+		if _, err := redactor.Write([]byte(piece)); err != nil {
+			t.Fatalf("Write(%q): %v", piece, err)
+		}
+	}
+	if err := redactor.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	want := "the password is " + Redacted + " and the address is socks5://u:" + Redacted + "@proxy.example.com:1080\n"
+	if got := out.String(); got != want {
+		t.Errorf("the journal holds %q, want %q", got, want)
+	}
+}
+
 // TestRedactorHoldsBackWhatMayStillGrowIntoASecret: the executor writes to a journal
 // in pieces, and a value may be split between two of them. A redactor that replaced
 // only the values it saw whole would write half a token into a file and leave the
@@ -62,7 +135,7 @@ func TestRedactTakesTheValuesOutOfAText(t *testing.T) {
 func TestRedactorHoldsBackWhatMayStillGrowIntoASecret(t *testing.T) {
 	const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
 	var out bytes.Buffer
-	redactor := NewRedactor(&out, token)
+	redactor := NewRedactor(&out, Generated(token)...)
 
 	// The token arrives in three pieces, and a line comes after it.
 	for _, piece := range []string{"the token is gh", "s_16C7e42F292c", "6912E7710c838347Ae178B4a\nand after it\n"} {
@@ -90,7 +163,7 @@ func TestRedactorHoldsBackWhatMayStillGrowIntoASecret(t *testing.T) {
 func TestRedactorFlushesWhatWasHeldBack(t *testing.T) {
 	const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
 	var out bytes.Buffer
-	redactor := NewRedactor(&out, token)
+	redactor := NewRedactor(&out, Generated(token)...)
 	if _, err := redactor.Write([]byte("GH_TOKEN=" + token)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}

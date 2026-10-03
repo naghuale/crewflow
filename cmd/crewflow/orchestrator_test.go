@@ -404,6 +404,43 @@ func TestTheGitOfTheMachineIsTheOneOfTheCommands(t *testing.T) {
 	}
 }
 
+// TestWhatTheGitOfAMergeSaysCarriesNoCredentialOfTheRoute: the git of a review and of a
+// merge is started with the route of the project in its environment like every other program,
+// and a git that could not reach the host names the profile it went out by — and what it says
+// becomes the error a merge is refused with, on the terminal of the person who started it and
+// in the journal of the merge (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e, §7i).
+func TestWhatTheGitOfAMergeSaysCarriesNoCredentialOfTheRoute(t *testing.T) {
+	old := startProgram
+	t.Cleanup(func() { startProgram = old })
+	complained := "fatal: unable to access 'https://github.com/naghuale/crewflow': " +
+		"Could not resolve proxy: socks5://u:pa%20ss@proxy.example.com:1080, it asked for pa%20ss"
+	startProgram = func(_ context.Context, name string, args []string, dir string, environment []string) ([]byte, []byte, int, error) {
+		return []byte("the answer of " + strings.Join(args, " ")), []byte(complained), 128, nil
+	}
+	runner := gitIn([]string{"HTTPS_PROXY=socks5://u:pa%20ss@proxy.example.com:1080"})
+
+	out, stderr, code, err := runner(t.Context(), "git", []string{"fetch", "origin", "main"}, "/w")
+
+	if err != nil || code != 128 {
+		t.Fatalf("the runner of git = (%q, %d, %v), want the complaint of git", out, code, err)
+	}
+	// What the program answered is an answer and not a complaint: `git cat-file` and
+	// `git ls-remote` are read by what they wrote, and a value taken out of it is a value
+	// no program can read back (docs/DESIGN.md §7e).
+	if got := string(out); got != "the answer of fetch origin main" {
+		t.Errorf("the answer of the command is %q, want it as it was written", got)
+	}
+	said := string(stderr)
+	for _, value := range []string{"u:pa%20ss", "pa%20ss"} {
+		if strings.Contains(said, value) {
+			t.Errorf("the complaint of the git holds the value %q of a credential of the route:\n%s", value, said)
+		}
+	}
+	if !strings.Contains(said, "proxy.example.com:1080") {
+		t.Errorf("the complaint of the git is %q, want the address of the profile left in it:\n%s", said, said)
+	}
+}
+
 // TestTheReviewersOfTheProjectAreTheAccountOfTheOrchestratorWhereItSaysNothing: in the
 // mode of a separate login and with no reviewers in the file, the account the
 // orchestrator works as is the one whose record of a review counts — and a host that

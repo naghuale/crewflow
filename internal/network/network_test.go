@@ -3,6 +3,7 @@ package network
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -467,6 +468,9 @@ func TestAProfileThatTakesCredentialsAndHasNoneIsARefusal(t *testing.T) {
 // every file a program writes (docs/DESIGN.md §7e).
 const theCredentialsOfAProfile = "ann:s3cret with/a space"
 
+// thePasswordOfAProfile is that password on its own.
+const thePasswordOfAProfile = "s3cret with/a space"
+
 // TestWhatARouteSaysIsASecretIsWhatItHandsAChild: a program of a run is given the address
 // of the profile with the credentials in it, and an agent that prints its own environment
 // prints that address. The values a route says are a secret therefore have to include the
@@ -487,7 +491,7 @@ func TestWhatARouteSaysIsASecretIsWhatItHandsAChild(t *testing.T) {
 	values := route.Secrets(theCredentialsOfAProfile)
 
 	for _, given := range environment {
-		if redacted := secret.Redact(given, values...); strings.Contains(redacted, "s3cret") {
+		if redacted := secret.Redact(given, secret.Chosen(values...)...); strings.Contains(redacted, "s3cret") {
 			t.Errorf("the value %q is given to a child and %q is what a person reads from it: "+
 				"the password of the profile is in it", given, redacted)
 		}
@@ -495,7 +499,7 @@ func TestWhatARouteSaysIsASecretIsWhatItHandsAChild(t *testing.T) {
 	// The pair of the store and the password on its own are there as well: a program that
 	// says what it was given is not the only one that can print a credential, and a value
 	// of the store reaches an error of a run as readily as it reaches an environment.
-	for _, want := range []string{theCredentialsOfAProfile, "s3cret with/a space"} {
+	for _, want := range []string{theCredentialsOfAProfile, thePasswordOfAProfile} {
 		if !slices.Contains(values, want) {
 			t.Errorf("the values a route says are a secret are %q, want %q in them", values, want)
 		}
@@ -508,6 +512,49 @@ func TestWhatARouteSaysIsASecretIsWhatItHandsAChild(t *testing.T) {
 		if slices.Contains(values, said) {
 			t.Errorf("the values a route says are a secret are %q, want the address of the profile %q not in them",
 				values, said)
+		}
+	}
+}
+
+// TestThePasswordOfAProfileIsASecretAsTheAddressWritesIt: the address of a profile writes
+// the password percent-encoded, and a program is given that address and nothing else — so
+// the spelling of the password that reaches a journal is the one of the address and not the
+// one of the store. The pair as the address writes it is one value, and a program that
+// names the password alone — a proxy that says what it was asked for, a `curl --proxy-user`
+// a person was told to run, a diff of two addresses — names the encoded password without the
+// login in front of it, and that text is not the pair and is not the value of the store
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestThePasswordOfAProfileIsASecretAsTheAddressWritesIt(t *testing.T) {
+	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"work"`))
+	route, err := Choose(cfg, "api.github.com")
+	if err != nil {
+		t.Fatalf("the route of a request: %v", err)
+	}
+	address, err := route.Address(theCredentialsOfAProfile)
+	if err != nil {
+		t.Fatalf("the address of the profile: %v", err)
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("the address of the profile is not an address: %v", err)
+	}
+	// The password as the address writes it: percent-encoded, which is the spelling a
+	// program is given and the only one that can come back out of a file of a run.
+	_, encoded, _ := strings.Cut(parsed.User.String(), ":")
+
+	values := route.Secrets(theCredentialsOfAProfile)
+
+	if encoded == "" || encoded == thePasswordOfAProfile {
+		t.Fatalf("the address of the profile does not write the password another way, "+
+			"so this case proves nothing: %q", address)
+	}
+	for _, said := range []string{
+		"the proxy of the project asked for " + encoded + " and refused",
+		"curl --proxy-user ann:" + encoded + " https://api.github.com",
+	} {
+		if redacted := secret.Redact(said, secret.Chosen(values...)...); strings.Contains(redacted, encoded) {
+			t.Errorf("the words of a program are %q and the values of the route leave %q in them: "+
+				"the password of the profile as the address writes it is not a secret of the run", said, redacted)
 		}
 	}
 }

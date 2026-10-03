@@ -207,12 +207,19 @@ func EnvironmentOf(cfg config.Config, target, credentials string) ([]string, err
 }
 
 // Secrets are the values of this route that must not reach a file crewflow writes: the
-// credentials as they were read out of the store, the password on its own, and the pair as
-// the address a program is given writes it. The last one is not the same text as the first:
-// an address writes the password percent-encoded, and the value an agent prints out of its
-// own environment is the address and not the store — a value taken out of a text in one
-// spelling and shown in another is a secret in every file a run writes (docs/DESIGN.md §7d,
-// §7e).
+// credentials as they were read out of the store, the password on its own, and the pair and
+// the password as the address a program is given writes them. The last two are not the same
+// text as the first: an address writes the password percent-encoded, and the value an agent
+// prints out of its own environment is the address and not the store — a value taken out of a
+// text in one spelling and shown in another is a secret in every file a run writes
+// (docs/DESIGN.md §7d, §7e).
+//
+// The password on its own is in the list twice over, once as the store keeps it and once as
+// the address writes it, because a program is as likely to name the part of the address that
+// is the password as the whole of it: a proxy that says what it was asked for, a `curl
+// --proxy-user` a person was told to run, two addresses a person was asked to compare. Only
+// the one the address writes is percent-encoded, and only that one is what such a program
+// prints (D-068 RECHECK-FINDING-5, §7e).
 //
 // The address of the profile is not among them: it is in every report of a check of a
 // route and in every event of a change of it, and a person who cannot see where the
@@ -227,10 +234,17 @@ func (r Route) Secrets(credentials string) []string {
 	}
 	// The pair as the address writes it is worked out of that address and not out of a
 	// second spelling of the same value: the address is the only text a program is given,
-	// and it is that text a program can print.
+	// and it is that text a program can print. The password the same address writes is cut
+	// out of that text and not written out by hand, so that the two cannot disagree about
+	// how a machine percent-encodes a password.
 	if address, err := r.URL(credentials); err == nil && address != nil && address.User != nil {
-		if written := address.User.String(); written != "" {
-			values = append(values, written)
+		written := address.User.String()
+		if written == "" {
+			return values
+		}
+		values = append(values, written)
+		if _, password, found := strings.Cut(written, ":"); found && password != "" {
+			values = append(values, password)
 		}
 	}
 	return values
