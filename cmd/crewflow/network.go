@@ -46,7 +46,7 @@ var (
 // or through one of the named profiles of the project — and the profiles themselves, which
 // are changed with commands because the address of a proxy is different on every machine
 // and changes when its owner moves (docs/DESIGN.md §7d).
-func runNetwork(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runNetwork(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow network: nothing to do\n\n")
 		usage(stderr)
@@ -68,7 +68,7 @@ func runNetwork(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 }
 
 // runNetworkProxy is `crewflow network proxy list|add|edit|use|remove|credentials|test`.
-func runNetworkProxy(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runNetworkProxy(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow network proxy: what to do with a proxy?\n\n")
 		usage(stderr)
@@ -164,7 +164,7 @@ type profileShown struct {
 // runNetworkList is `crewflow network proxy list`: the profiles of the project, one line
 // each. A profile that is there is not a profile that works, and this command says nothing
 // about that — `crewflow network proxy test` is what asks the machine (§7d).
-func runNetworkList(args []string, stdout, stderr io.Writer) int {
+func runNetworkList(args []string, stdout, stderr *secret.Writer) int {
 	flags := networkFlags("network proxy list", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the profiles as JSON, for the orchestrator")
@@ -523,7 +523,7 @@ func takeAway(store secret.Store, name string) error {
 // This is the one command that really connects through the profile, and it is therefore
 // the one place where the credentials of it are read. It shows what came of that and never
 // the value itself (§7e).
-func runNetworkTest(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runNetworkTest(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := networkFlags("network proxy test", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the capabilities as JSON, for the orchestrator")

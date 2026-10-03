@@ -1998,3 +1998,97 @@ func TestTheTerminalOfACommandIsTheBoundaryOfTheCommand(t *testing.T) {
 			stderr.String())
 	}
 }
+
+// TestWhatACommandHeldBackIsWrittenWhenItReturns: the two streams of a command are the
+// two writers of the boundary of the command, and a writer holds back the end of what was
+// written to it while it may be the beginning of a value that the next write may finish. A
+// value a person chose may begin with the end of a line — a password of a proxy with a line
+// break in it is a password a proxy takes — and then the end of every line a command prints
+// is a beginning of a value. A command that returned without writing what its writers held
+// back lost it: the terminal of the person ended in the middle of the last line it printed,
+// and no other command was ever going to write it (R5-NEW-5, docs/DESIGN.md §7e).
+func TestWhatACommandHeldBackIsWrittenWhenItReturns(t *testing.T) {
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	refused := aHostThatRefusesWithTheRoute{
+		Forge: host,
+		line:  "HTTP 403: Resource not accessible by integration",
+	}
+	taskRoles = func(_ config.Config, env forge.Env) (forge.Set, error) {
+		env.Out.Learn(secret.Chosen("\ns3cret")...)
+		return forge.Set{Tracker: host, Forge: refused, CI: host.ci}, nil
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task run = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	if !strings.HasSuffix(stderr.String(), "\n") {
+		t.Errorf("the terminal of the command ends %q, want the whole of the last line it printed:\n%s",
+			stderr.String(), stderr.String())
+	}
+}
+
+// TestTheAnswerOfACommandIsAWholeDocumentWithNoNumberOfItCutOut: `-json` is read by a
+// program, and the values of a run are cut out of the answer of a command where the answer
+// is put together — by the strings of it, and not by the bytes of the document that came
+// out of it. A password a person chose is a number more often than one would like, and a
+// number of a report that happens to be such a password — the number of the task, the
+// number of an attempt — is a number of the report: the cleaning of a ready document put
+// `[redacted]` in the place of it, and the document stopped being a document that any
+// program can read (R5-NEW-4, docs/DESIGN.md §7e).
+func TestTheAnswerOfACommandIsAWholeDocumentWithNoNumberOfItCutOut(t *testing.T) {
+	// The value of this case is a number on purpose: it stands for the password of a proxy
+	// that is three digits, which is a password a proxy takes (docs/DESIGN.md §7e).
+	const value = "43"
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	refused := aHostThatRefusesWithTheRoute{
+		Forge: host,
+		line:  "HTTP 403: Resource not accessible by integration, and the number of the task is " + value,
+	}
+	taskRoles = func(_ config.Config, env forge.Env) (forge.Set, error) {
+		env.Out.Learn(secret.Chosen(value)...)
+		return forge.Set{Tracker: host, Forge: refused, CI: host.ci}, nil
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "run", "43", "-json", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task run -json = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	var answer struct {
+		Task     int    `json:"task"`
+		Branch   string `json:"branch"`
+		Worktree string `json:"worktree"`
+		Journal  string `json:"journal"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
+		t.Fatalf("the answer of `crewflow task run -json` is not a document: %v\n%s", err, stdout.String())
+	}
+	if answer.Task != 43 {
+		t.Errorf("the number of the task in the answer is %d, want 43: a number of a report is not a value of a run",
+			answer.Task)
+	}
+	for _, where := range []struct{ name, said string }{
+		{"the branch", answer.Branch},
+		{"the worktree", answer.Worktree},
+		{"the journal", answer.Journal},
+	} {
+		if strings.Contains(where.said, value) {
+			t.Errorf("%s of the answer is %q, want the value of the run taken out of it", where.name, where.said)
+		}
+		if !strings.Contains(where.said, secret.Redacted) {
+			t.Errorf("%s of the answer is %q, want %q in the place of the value", where.name, where.said, secret.Redacted)
+		}
+	}
+	if !strings.Contains(stderr.String(), "HTTP 403") || strings.Contains(stderr.String(), value) {
+		t.Errorf("crewflow task run wrote %q to stderr, want what the host answered and no value of the run in it",
+			stderr.String())
+	}
+}

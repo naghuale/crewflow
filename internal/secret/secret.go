@@ -12,6 +12,7 @@ package secret
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -229,14 +230,71 @@ func (n *Notices) Say(text string) {
 // writes after a run: the value of a token is in the environment of the executor, and
 // an agent that prints its own environment is a line of a journal that would carry a
 // token of an hour into a file kept for ever.
+//
+// A value is looked for in every text a machine writes it in and not only in the text as
+// it is written down: a proxy that says what it was asked for is quoted into an event of
+// the route with `%q`, a report writes its strings with the escapes of JSON, and a value
+// with a quote or a line break in it is in neither of those as the store keeps it
+// (docs/DESIGN.md §7e).
 func Redact(text string, values ...Value) string {
+	return string(redact([]byte(text), spellings(values)))
+}
+
+// spellings are every text a set of values is looked for by in everything crewflow
+// publishes: the value as it is written down and the two forms the machines of crewflow
+// escape it into — what `%q` writes of it and what JSON writes of it, both without the
+// quotes that go around them, because a value is looked for in a line and not in the
+// quotes of it. A boundary that knew the value alone did not find it where a machine had
+// escaped it, and a password of a person with a quote in it stood in an event whole
+// (R5-NEW-3, docs/DESIGN.md §7e).
+//
+// A value too short to be the secret of its own kind is left out of it: it is not looked
+// for in a text at all, and a value that is not looked for must not be looked for twice
+// (§7e). A form that is the value itself is one form and not three: the same text looked
+// for twice cuts a text twice for nothing.
+func spellings(values []Value) []string {
+	spellings := make([]string, 0, len(values))
+	known := make(map[string]struct{}, len(values))
 	for _, value := range values {
 		if !worthLookingFor(value) {
 			continue
 		}
-		text = string(bytes.ReplaceAll([]byte(text), []byte(value.text), []byte(Redacted)))
+		for _, form := range []string{value.text, quoted(value.text), encoded(value.text)} {
+			if _, seen := known[form]; seen {
+				continue
+			}
+			known[form] = struct{}{}
+			spellings = append(spellings, form)
+		}
 	}
-	return text
+	return spellings
+}
+
+// quoted is the value as `%q` writes it inside a string: the escapes of Go, which are the
+// ones a person reads in the words of an error and in the line of an event.
+func quoted(text string) string {
+	return inside(strconv.Quote(text))
+}
+
+// encoded is the value as JSON writes it inside a string of a document. It is not always
+// what `%q` writes of it: `encoding/json` escapes `<`, `>` and `&` into six signs each, and a
+// report of a command is a document of strings.
+func encoded(text string) string {
+	document, err := json.Marshal(text)
+	if err != nil {
+		// A string is never refused by the encoder, and a form that is not there is the
+		// value itself: nothing is lost by looking for the one form more than the others.
+		return text
+	}
+	return inside(string(document))
+}
+
+// inside is the text between the quotes of an encoded string.
+func inside(encoded string) string {
+	if len(encoded) < 2 {
+		return encoded
+	}
+	return encoded[1 : len(encoded)-1]
 }
 
 // redact is Redact over a byte slice, without a text and a back: a journal of a run

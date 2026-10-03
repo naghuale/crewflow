@@ -34,7 +34,7 @@ import (
 // -request-changes the command writes the record of a review under the change, as the
 // orchestrator of the project: a record an executor could write is a record the gate
 // would have to refuse (§7h, §7i).
-func runReview(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runReview(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := reviewFlags(stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout to read the history of the change in, the folder crewflow was called in when empty")

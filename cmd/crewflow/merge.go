@@ -36,7 +36,7 @@ import (
 // and in the second case git takes the credentials of that push from the helper of
 // crewflow, which signs a token of an hour for that one push and for nothing else
 // (§7h, §7i).
-func runMerge(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runMerge(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := mergeFlags("merge", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout to push from, the folder crewflow was called in when empty")
@@ -74,7 +74,7 @@ func runMerge(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // at the commit that was merged, is the task closed, and is the CI of that branch green
 // — waits for the checks while they are going on, and writes the moment of the check
 // into the state of the task (docs/DESIGN.md §6, §7h).
-func runVerify(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runVerify(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := mergeFlags("verify", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout the branch of the host is read in, the folder crewflow was called in when empty")

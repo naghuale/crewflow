@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -59,7 +58,7 @@ var (
 )
 
 // runTask runs one task, in a worktree of its own, and says how the run ended.
-func runTask(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTask(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow task: nothing to do\n\n")
 		usage(stderr)
@@ -98,7 +97,7 @@ func runTask(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // run opened the change request of its branch and changed nothing it was not to
 // change: every other outcome is something a person or an orchestrator has to
 // decide about, and a code cannot decide it (docs/DESIGN.md §6).
-func runTaskRun(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskRun(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("run", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository to make the worktree out of, the folder crewflow was called in when empty")
@@ -183,7 +182,7 @@ func runTaskRun(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // The code of the command is the code of `task run`: zero only when the run opened the
 // change request of its branch, and a refusal of the point is a failure with its reason
 // named, because a reason a person cannot read is a reason they will ask about again.
-func runTaskResume(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskResume(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("resume", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository the worktree is made from, the folder crewflow was called in when empty")
@@ -249,7 +248,7 @@ func runTaskResume(out *secret.Out, args []string, stdout, stderr io.Writer) int
 // says whether it may be run, and what it is missing when it may not. Nothing is
 // created for a check: no branch, no worktree, no attempt, no state, because a check
 // that made a worktree would already be a run of a task (docs/DESIGN.md §7f).
-func runTaskCheck(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskCheck(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("check", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
@@ -302,7 +301,7 @@ func runTaskCheck(out *secret.Out, args []string, stdout, stderr io.Writer) int 
 // The code of the command is zero only where the pair is admitted: the record is written
 // whatever it says, and a person who asked about a pair that does not hold is told so by
 // the code as well as by the eight lines.
-func runTaskAdmit(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskAdmit(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("admit", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository the working copies of the pair are of, the folder crewflow was called in when empty")
@@ -509,7 +508,7 @@ func runTaskWatch(out *secret.Out, args []string, stdout, stderr io.Writer) int 
 // file is looked for in — the same flag as in `task run`, and the same way it is used:
 // a person points it at the folder they work in. -all is another question: every run
 // of every project of the machine, from any folder, with the project in a column of it.
-func runTaskList(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskList(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("list", stderr)
 	configPath := flags.String("config", "", "path to crewflow.toml, the one in -repo when not named")
 	repo := flags.String("repo", "", "the checkout whose runs to show, the folder crewflow was called in when empty")
@@ -582,7 +581,7 @@ func runTaskList(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // named in every record: у каждого проекта свой хостинг и свой файл проекта, поэтому
 // читается одно состояние прогонов и ничего больше, и запись под задачей не оставляется
 // ни в одном из них (§6a, §7g).
-func runTaskAttention(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskAttention(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("attention", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the queue as JSON, for the orchestrator")
@@ -679,7 +678,7 @@ func runTaskAttention(out *secret.Out, args []string, stdout, stderr io.Writer) 
 // выносит в начало за то, что заждалась (docs/DESIGN.md §6). Nothing is left under any task
 // either: запись под задачей пишется от имени оркестратора проекта, а у всей машины
 // оркестратора нет (§6a, §7i).
-func attentionOfEveryProject(ctx context.Context, configPath string, asJSON bool, stdout, stderr io.Writer) int {
+func attentionOfEveryProject(ctx context.Context, configPath string, asJSON bool, stdout, stderr *secret.Writer) int {
 	env, err := attentionEnvOfTheFolder(configPath)
 	if err != nil {
 		return failed(stderr, err)
@@ -797,7 +796,7 @@ func (h hostUnreachable) FactsOf(context.Context, int, int) (taskrun.HostFacts, 
 // hundred lines about one run there. It reads the state of the tasks and writes nothing
 // else, and it reaches the host only when there is a record to leave under a task
 // (docs/DESIGN.md §6).
-func runTaskCheckStalled(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runTaskCheckStalled(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := taskFlags("check-stalled", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
@@ -1288,10 +1287,14 @@ func printWatch(w io.Writer, watch *taskrun.Watcher) {
 // printJSON is the answer of a command for the orchestrator, in the shape it reads.
 // The report is read by a person too, when something in it surprises them and they
 // ask for it again with -json.
-func printJSON(w io.Writer, answer any) error {
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(answer); err != nil {
+//
+// It goes through the writer of the boundary of the command and not as bytes into it: an
+// answer is put together with the values of the run taken out of its strings, and a
+// number of it that happens to be one of those values — a password of a proxy is three
+// signs more often than one would like — stays a number, so that the document is a
+// document a program can read (docs/DESIGN.md §7e).
+func printJSON(w *secret.Writer, answer any) error {
+	if err := w.Report(answer); err != nil {
 		return fmt.Errorf("print the answer: %w", err)
 	}
 	return nil

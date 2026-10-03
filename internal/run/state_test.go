@@ -89,6 +89,33 @@ func TestBeginOpensTheFilesOfAnAttempt(t *testing.T) {
 	}
 }
 
+// TestTheFilesOfAnAttemptAreWrittenWholeWhenTheyAreClosed: a writer of the boundary holds
+// back the end of what was written while it may still be the beginning of a value, and a
+// run writes into its journal after the last flush of it — the line of the run that goes
+// on by itself, the event of a provider that refused it. The files of an attempt are
+// closed on every path a run ends by, and what was held back when they are is written
+// there: the tail of the last line of a journal is a line nobody closes, and the value a
+// person chose may begin with the end of a line (R5-NEW-5, docs/DESIGN.md §7e).
+func TestTheFilesOfAnAttemptAreWrittenWholeWhenTheyAreClosed(t *testing.T) {
+	out := secret.NewOut(secret.Chosen("\ns3cret")...)
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+
+	files, err := journals.Begin(out, 43, 1)
+	if err != nil {
+		t.Fatalf("Begin returned an error: %v", err)
+	}
+	if _, err := io.WriteString(files.Out, "I did the work.\n"); err != nil {
+		t.Fatalf("write the journal: %v", err)
+	}
+	if err := files.Close(); err != nil {
+		t.Fatalf("Close returned an error: %v", err)
+	}
+
+	if got := read(t, files.Journal); got != "I did the work.\n" {
+		t.Errorf("the journal holds %q, want the whole of what the executor wrote", got)
+	}
+}
+
 // TestBeginEmptiesTheFilesOfAnAttempt: the file of an attempt is written by one
 // run, and what the run of another attempt wrote is in the file of that attempt.
 func TestBeginEmptiesTheFilesOfAnAttempt(t *testing.T) {

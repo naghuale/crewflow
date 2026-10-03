@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -32,7 +31,7 @@ var marks = map[doctor.Status]string{
 
 // runDoctor checks the machine before a task starts, so that what is missing is
 // found out here and not in the middle of a task.
-func runDoctor(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runDoctor(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	// `crewflow doctor network` is a check of its own: it asks the machine whether the
 	// route of the project works, one capability at a time, and a report of readiness
 	// must not stand in front of a proxy of a project every time it runs (§7d).
@@ -68,12 +67,12 @@ func runDoctor(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	// (docs/DESIGN.md §7d, §7i).
 	report := doctor.Run(context.Background(), systemEnv(*configPath, folder, *probe, stderr))
 	if *asJSON {
-		encoder := json.NewEncoder(stdout)
 		// The report is read by a person too, when something in it surprises
-		// them and they ask for it again with -json.
-		encoder.SetIndent("", "  ")
-		if err := encoder.Encode(report); err != nil {
-			fmt.Fprintf(stderr, "crewflow doctor: print the report: %v\n", err)
+		// them and they ask for it again with -json — and it is an answer of the
+		// command like every other one, so it goes through the boundary of the
+		// command and not as bytes into its terminal (docs/DESIGN.md §7e).
+		if err := printJSON(stdout, report); err != nil {
+			fmt.Fprintf(stderr, "crewflow doctor: %v\n", err)
 			return exitFailure
 		}
 	} else {
@@ -89,7 +88,7 @@ func runDoctor(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // with each capability apart from the others. A report that said one word for all three
 // would say nothing about the one that is broken — and the success of the host of the code
 // says nothing at all about the provider of the model (docs/DESIGN.md §7d).
-func runDoctorNetwork(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runDoctorNetwork(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	flags := flag.NewFlagSet("doctor network", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { usage(stderr) }

@@ -651,9 +651,10 @@ func (j Journals) Begin(out *secret.Out, number, attempt int) (*AttemptFiles, er
 	return files, nil
 }
 
-// Flush writes what the journal writers held back, and is what a run calls before it
-// closes the files of its attempt: the end of what the executor wrote may be the
-// beginning of a value, and the run is over (docs/DESIGN.md §7e).
+// Flush writes what the journal writers held back, and is what a run calls while the
+// journal of its attempt is still open: the end of what the executor wrote may be the
+// beginning of a value, and the file is read out of the disk before it is closed
+// (docs/DESIGN.md §7e).
 func (f *AttemptFiles) Flush() error {
 	var err error
 	for _, said := range f.said {
@@ -662,10 +663,17 @@ func (f *AttemptFiles) Flush() error {
 	return err
 }
 
-// Close is what a run does with the files of its attempt when the executor is done:
-// the journal of a run is closed before anything is read out of it.
+// Close is what a run does with the files of its attempt when the executor is done: the
+// journal of a run is closed before anything is read out of it, and what the writers held
+// back is written before they are closed.
+//
+// A run writes into its journal after the last flush of it — the line of a run that goes on
+// by itself, the event of a provider that refused it — and every path a run ends by closes
+// the files of the attempt. So this is where a tail that is held back goes out: the end of
+// the last line of a journal is a line nobody closes, and a value a person chose may begin
+// with the end of a line (R5-NEW-5, docs/DESIGN.md §7e).
 func (f *AttemptFiles) Close() error {
-	var err error
+	err := f.Flush()
 	for _, file := range f.open {
 		err = errors.Join(err, file.Close())
 	}

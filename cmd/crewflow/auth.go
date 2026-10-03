@@ -38,7 +38,7 @@ var (
 // runAuth runs the commands about the credentials of a run: putting the key of an app
 // in the store of the machine, saying whether the app is set up, and answering git
 // when it asks for a password (docs/DESIGN.md §7i).
-func runAuth(out *secret.Out, args []string, stdout, stderr io.Writer) int {
+func runAuth(out *secret.Out, args []string, stdout, stderr *secret.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow auth: nothing to do\n\n")
 		usage(stderr)
@@ -62,7 +62,7 @@ func runAuth(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 // runAuthApp is `crewflow auth app import|check`: the key of the app of the project
 // goes into the store of the machine once, and a check says whether a run in the mode
 // of the bot can start at all.
-func runAuthApp(args []string, stdout, stderr io.Writer) int {
+func runAuthApp(args []string, stdout, stderr *secret.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow auth app: what to do with the app?\n\n")
 		usage(stderr)
@@ -156,7 +156,7 @@ func runAuthAppImport(args []string, stdout, stderr io.Writer) int {
 // the app is installed on the repository of the project, and it may do no more than a
 // run of it needs. The token of the app is not asked for and not printed: a check of a
 // setup has nothing to do with a credential of an hour (docs/DESIGN.md §7i).
-func runAuthAppCheck(args []string, stdout, stderr io.Writer) int {
+func runAuthAppCheck(args []string, stdout, stderr *secret.Writer) int {
 	flags := authFlags("auth app check", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	as := subjectFlag(flags, stderr)

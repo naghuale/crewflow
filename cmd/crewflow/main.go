@@ -34,38 +34,49 @@ func main() {
 // run are learned into it as the command finds them. The two streams of the command are
 // the two writers of that boundary, so a command cannot print through one of them and
 // not the other (docs/DESIGN.md §7e).
+//
+// What the two writers held back is written when the command returns, on every path out
+// of it: a writer holds the end of a line back while it may be the beginning of a value,
+// and the terminal of the person is read once — what a command never wrote is not written
+// by anything after it (R5-NEW-5, §7e).
 func run(args []string, stdout, stderr io.Writer) int {
 	out := secret.NewOut()
-	stdout, stderr = out.Writer(stdout), out.Writer(stderr)
+	terminal, diagnostics := out.Writer(stdout), out.Writer(stderr)
+	defer func() {
+		// A stream of the machine that cannot be written to has said everything it is
+		// going to say: what is left of it is lost, and there is nobody left to tell.
+		_ = terminal.Flush()
+		_ = diagnostics.Flush()
+	}()
 	if len(args) == 0 {
-		usage(stderr)
+		usage(diagnostics)
 		return exitUsage
 	}
 	switch args[0] {
 	case "doctor":
-		return runDoctor(out, args[1:], stdout, stderr)
+		return runDoctor(out, args[1:], terminal, diagnostics)
 	case "task":
-		return runTask(out, args[1:], stdout, stderr)
+		return runTask(out, args[1:], terminal, diagnostics)
 	case "review":
-		return runReview(out, args[1:], stdout, stderr)
+		return runReview(out, args[1:], terminal, diagnostics)
 	case "merge":
-		return runMerge(out, args[1:], stdout, stderr)
+		return runMerge(out, args[1:], terminal, diagnostics)
 	case "changelog":
-		return runChangelog(out, args[1:], stdout, stderr)
+		return runChangelog(out, args[1:], terminal, diagnostics)
 	case "verify":
-		return runVerify(out, args[1:], stdout, stderr)
+		return runVerify(out, args[1:], terminal, diagnostics)
 	case "auth":
-		return runAuth(out, args[1:], stdout, stderr)
+		return runAuth(out, args[1:], terminal, diagnostics)
 	case "network":
-		return runNetwork(out, args[1:], stdout, stderr)
+		return runNetwork(out, args[1:], terminal, diagnostics)
 	case "version":
-		return runVersion(args[1:], stdout, stderr)
+		return runVersion(args[1:], terminal, diagnostics)
 	case "help", "-h", "--help":
-		usage(stdout)
+		usage(terminal)
 		return exitOK
 	default:
-		fmt.Fprintf(stderr, "crewflow: unknown subcommand %q\n\n", args[0])
-		usage(stderr)
+		fmt.Fprintf(diagnostics, "crewflow: unknown subcommand %q\n\n", args[0])
+		usage(diagnostics)
 		return exitUsage
 	}
 }

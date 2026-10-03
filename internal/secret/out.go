@@ -2,9 +2,11 @@ package secret
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"sync"
 )
@@ -153,6 +155,131 @@ func (o *Out) Err(err error) error {
 	return &said{words: o.Text(err.Error()), cause: err}
 }
 
+// Report is the answer of a command as it may be published to the channel of the report,
+// in the document a program reads it in: every string of the answer with the values of this
+// boundary taken out of it, and everything else of it as it was made.
+//
+// The values are cut out where the answer is put together and not out of the document that
+// came out of it. A number of a report that happens to be a value of a run is a number of
+// the report — the password of a proxy is three signs more often than one would like — and
+// a document with `[redacted]` in the place of a number is a document no program can read
+// (docs/DESIGN.md §7e).
+func (o *Out) Report(answer any) ([]byte, error) {
+	if report, changed := clean(reflect.ValueOf(answer), o.Text); changed {
+		answer = report.Interface()
+	}
+	var document bytes.Buffer
+	encoder := json.NewEncoder(&document)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(answer); err != nil {
+		return nil, fmt.Errorf("write the document of the answer: %w", err)
+	}
+	return document.Bytes(), nil
+}
+
+// clean is the value of an answer with every string of it put through text, and nothing
+// else of it touched: a number, a flag, a moment and the shape of an answer are not values
+// a run must not write down (docs/DESIGN.md §7e).
+//
+// What it did not change it hands back as it was: a value of a type this package knows
+// nothing about keeps its own marshaller — the answer of a run writes seconds and not
+// "1h 05m", and that is the shape of the answer and not the business of the boundary
+// (§7e).
+func clean(value reflect.Value, text func(string) string) (reflect.Value, bool) {
+	switch value.Kind() {
+	case reflect.String:
+		said := text(value.String())
+		if said == value.String() {
+			return value, false
+		}
+		return reflect.ValueOf(said), true
+	case reflect.Pointer, reflect.Interface:
+		if value.IsNil() {
+			return value, false
+		}
+		inside, changed := clean(value.Elem(), text)
+		if !changed {
+			return value, false
+		}
+		held := reflect.New(value.Type()).Elem()
+		held.Set(inside)
+		return held, true
+	case reflect.Slice:
+		if value.IsNil() {
+			return value, false
+		}
+		held := reflect.MakeSlice(value.Type(), value.Len(), value.Len())
+		changed := false
+		for at := range value.Len() {
+			item, itemChanged := clean(value.Index(at), text)
+			if !itemChanged {
+				held.Index(at).Set(value.Index(at))
+				continue
+			}
+			changed = true
+			held.Index(at).Set(item)
+		}
+		return held, changed
+	case reflect.Array:
+		held := reflect.New(value.Type()).Elem()
+		changed := false
+		for at := range value.Len() {
+			item, itemChanged := clean(value.Index(at), text)
+			if !itemChanged {
+				held.Index(at).Set(value.Index(at))
+				continue
+			}
+			changed = true
+			held.Index(at).Set(item)
+		}
+		return held, changed
+	case reflect.Map:
+		if value.IsNil() {
+			return value, false
+		}
+		held := reflect.MakeMapWithSize(value.Type(), value.Len())
+		changed := false
+		for _, key := range value.MapKeys() {
+			// A name in the keys of an answer is as printable as a name in the values of it,
+			// and a program reads an answer by its keys. Only a key that is a name is looked
+			// at: a key of a kind no name has cannot be changed without changing what the
+			// answer is keyed by (§7e).
+			name := key
+			if key.Kind() == reflect.String {
+				if said := text(key.String()); said != key.String() {
+					name = reflect.ValueOf(said)
+					changed = true
+				}
+			}
+			item, itemChanged := clean(value.MapIndex(key), text)
+			changed = changed || itemChanged
+			held.SetMapIndex(name, item)
+		}
+		return held, changed
+	case reflect.Struct:
+		// A record of an answer is a table of named fields, and the fields the encoder
+		// reads are the exported ones. The rest is copied as it is, whole: the copy is of
+		// the record itself, and nothing of it was ever looked into.
+		held := reflect.New(value.Type()).Elem()
+		held.Set(value)
+		changed := false
+		for at := range value.NumField() {
+			if !value.Type().Field(at).IsExported() {
+				continue
+			}
+			field, fieldChanged := clean(value.Field(at), text)
+			if !fieldChanged {
+				continue
+			}
+			changed = true
+			held.Field(at).Set(field)
+		}
+		return held, changed
+	default:
+		return value, false
+	}
+}
+
 // Publish is the text of one channel with the values of this boundary taken out of it.
 // A channel crewflow does not know is refused with [ErrNoSuchChannel] and the text is
 // not returned at all: a value nobody can clear has nowhere to be shown, and publishing
@@ -196,7 +323,9 @@ type Writer struct {
 	out *Out
 	to  io.Writer
 	// held is what was written and not passed on yet: the end of a text that may still
-	// grow into the beginning of a value.
+	// grow into the beginning of a value. It is the cleaned text of it and not the text as
+	// the program wrote it — a value that was cut out of it is cut out once, and the tail
+	// that is looked at for the beginning of a value is the tail a person will read (§7e).
 	held []byte
 }
 
@@ -212,6 +341,15 @@ func (o *Out) Writer(to io.Writer) *Writer {
 // end of it while it may still be the beginning of a value. It reports as many bytes as
 // it was given: the program that writes to it is not told about the values in it, and a
 // program that is told would go and look for them (§7e).
+//
+// The whole of what is held back is cleaned first, and only what is left of the cleaned
+// text is looked at for the beginning of a value. The place of the cut used to be worked
+// out over the text as the program wrote it, before the values were cut out of it, and a
+// value whose tail is its own beginning — `abab`, where `ab` is both the end of it and
+// the beginning of it — was cut in two by that order: the head of it went into the
+// journal as the program wrote it, the tail was held back as a beginning of a value that
+// was never finished, and the two halves stood next to each other in the file with the
+// whole value between them (R5-NEW-2, §7e).
 func (w *Writer) Write(p []byte) (int, error) {
 	if w == nil || w.to == nil {
 		return len(p), nil
@@ -219,14 +357,15 @@ func (w *Writer) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.held = append(w.held, p...)
-	cut := len(w.held) - w.pending()
-	if cut == 0 {
-		return len(p), nil
+	spellings := spellings(w.values())
+	cleaned := redact(w.held, spellings)
+	cut := len(cleaned) - pending(cleaned, spellings)
+	if cut > 0 {
+		if _, err := w.to.Write(cleaned[:cut]); err != nil {
+			return 0, err
+		}
 	}
-	if _, err := w.to.Write(redact(w.held[:cut], spellings(w.values()))); err != nil {
-		return 0, err
-	}
-	w.held = slices.Clone(w.held[cut:])
+	w.held = slices.Clone(cleaned[cut:])
 	return len(p), nil
 }
 
@@ -234,16 +373,48 @@ func (w *Writer) Write(p []byte) (int, error) {
 // last line of a journal is written without a newline of its own more often than a
 // person would think, and the end of it is where a token of a run is (§7e).
 func (w *Writer) Flush() error {
-	if w == nil {
+	if w == nil || w.to == nil {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.flush()
+}
+
+// flush is [Writer.Flush] with the lock of the writer already held.
+func (w *Writer) flush() error {
 	if len(w.held) == 0 {
 		return nil
 	}
 	_, err := w.to.Write(redact(w.held, spellings(w.values())))
 	w.held = nil
+	return err
+}
+
+// Report publishes the answer of a command — the document a program reads with `-json` —
+// with the values of this boundary taken out of every string of it, and writes it whole.
+//
+// It is the boundary itself that writes the document into the stream of the machine and
+// not a [Writer.Write] of it: a document that went through the boundary twice was cleaned
+// twice, and the second cleaning is the one that cannot tell a string from a number — it
+// takes the values out of the ready document byte by byte, and a number that happened to
+// be the password of a person stopped being a number (R5-NEW-4, §7e).
+func (w *Writer) Report(answer any) error {
+	if w == nil || w.to == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	document, err := w.out.Report(answer)
+	if err != nil {
+		return err
+	}
+	// What was held back is the end of a line and the document begins with one: it goes
+	// first, or the answer of the command would begin in the middle of a line.
+	if err := w.flush(); err != nil {
+		return err
+	}
+	_, err = w.to.Write(document)
 	return err
 }
 
@@ -254,36 +425,19 @@ func (w *Writer) values() []Value {
 	return w.out.Values()
 }
 
-// pending is how much of the end of the text is the beginning of a value that the next
-// write may finish: the longest tail of it that is the beginning of one of the values
-// and not all of one, which is a whole value and is redacted as it is.
-func (w *Writer) pending() int {
+// pending is how much of the end of the cleaned text is the beginning of a value that the
+// next write may finish: the longest tail of it that is the beginning of one of the
+// spellings and not all of one, which is a whole value and was cut out of it as it was.
+func pending(text []byte, spellings []string) int {
 	longest := 0
-	for _, value := range w.values() {
-		if !worthLookingFor(value) {
-			continue
-		}
-		for size := longest + 1; size < len(value.text); size++ {
-			if bytes.HasSuffix(w.held, []byte(value.text[:size])) {
+	for _, spelling := range spellings {
+		for size := longest + 1; size < len(spelling); size++ {
+			if bytes.HasSuffix(text, []byte(spelling[:size])) {
 				longest = size
 			}
 		}
 	}
 	return longest
-}
-
-// spellings are the texts a set of values is looked for by in everything crewflow
-// publishes. A value too short to be the secret of its own kind is left out of it: it is
-// not looked for in a text at all, and a value that is not looked for must not be
-// looked for twice (§7e).
-func spellings(values []Value) []string {
-	spellings := make([]string, 0, len(values))
-	for _, value := range values {
-		if worthLookingFor(value) {
-			spellings = append(spellings, value.text)
-		}
-	}
-	return spellings
 }
 
 // said is an error whose words are for a person and whose cause is for a program: the

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,15 @@ import (
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/secret"
 )
+
+// quotedIn is what `%q` writes of a value inside a quoted line: the escapes of it without
+// the quotes that go around them, because an event of a failure says one quoted line and a
+// value with a quote or a line break in it is not in it as the store keeps it (R5-NEW-3,
+// docs/DESIGN.md §7e).
+func quotedIn(value string) string {
+	quoted := strconv.Quote(value)
+	return quoted[1 : len(quoted)-1]
+}
 
 // The words a program of the machine writes when the network is not there, and when it is
 // there and answered no. They are the words of gh on a machine with no route and on a
@@ -410,10 +420,15 @@ func TestTheEventsOfTheRouteCarryNoCredentialOfAProfile(t *testing.T) {
 // is a password a proxy takes: the number of signs a value has to have to be worth looking
 // for is the rule of the values a machine wrote, and a person chose this one
 // (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+//
+// A password with a quote in it is a third spelling of it and the one that was left: the
+// complaint of the program goes into the event through `%q`, so what the event holds is the
+// password as the event writes it and not as the store keeps it (R5-NEW-3, §7e).
 func TestTheEventsOfTheRouteCarryNoAddressOfTheProfileInIt(t *testing.T) {
 	cases := []struct{ name, pair string }{
 		{name: "a password of three signs", pair: "u:abc"},
 		{name: "a password the address writes another way", pair: "u:pa ss/word"},
+		{name: "a password the event writes another way", pair: `u:pa"ss`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -452,7 +467,7 @@ func TestTheEventsOfTheRouteCarryNoAddressOfTheProfileInIt(t *testing.T) {
 				"work":   {stderr: refused, code: 1},
 			}))
 
-			for _, value := range []string{tc.pair, password, encoded} {
+			for _, value := range []string{tc.pair, password, encoded, quotedIn(tc.pair), quotedIn(password)} {
 				if strings.Contains(r.said.String(), value) {
 					t.Errorf("the journal of the route holds the value %q of a credential: %q", value, r.said.String())
 				}
