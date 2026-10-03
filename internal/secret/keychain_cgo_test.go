@@ -3,8 +3,6 @@
 package secret
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"os"
 	"strconv"
@@ -119,19 +117,4 @@ func TestTheKeychainOfThisMachineWhenTheOwnerAsks(t *testing.T) {
 	if string(kept) != string(binary) {
 		t.Errorf("Get = %q, want the bytes that were kept", kept)
 	}
-}
-
-// randomOfTest is a name of its own for an item of a test, so that two tests on one
-// machine never meet in one item of the keychain.
-func randomOfTest(t *testing.T) int64 {
-	t.Helper()
-	buffer := make([]byte, 8)
-	if _, err := rand.Read(buffer); err != nil {
-		t.Fatalf("read the randomness of the machine: %v", err)
-	}
-	number, err := strconv.ParseInt(hex.EncodeToString(buffer), 16, 64)
-	if err != nil {
-		t.Fatalf("the name of the item of the test: %v", err)
-	}
-	return number
 }
