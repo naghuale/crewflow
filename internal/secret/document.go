@@ -493,3 +493,16 @@ func (o *Out) cutting() func(string) string {
 	}
 	return func(said string) string { return Redact(said, values...) }
 }
+
+// FormOf is whether a value of a protected field is of the form its own field holds — the form
+// of a commit, of a moment, of a project as `owner/name`. It is how a test of the package that
+// writes a name of that kind holds the boundary against the code that writes it: the boundary
+// refuses a document whose identifier is not of its form, and the code that writes it has to be
+// the code that writes that form (D-044, D-082, docs/DESIGN.md §7e).
+func FormOf(doc Document, path string) (func(string) bool, bool) {
+	what, known := policies[doc][path]
+	if !known || what.class != identifier || what.format == nil {
+		return nil, false
+	}
+	return what.format, true
+}

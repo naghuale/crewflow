@@ -106,10 +106,10 @@ var statesOfAttention = []string{
 // reasonsOfAttention is the list of §6a: the reasons of the queue (`run.Reasons`).
 var reasonsOfAttention = []string{
 	"blocked", "blocked-permission", "blocked-secret", "change-closed", "change-merged",
-	"checks-running", "conflict-with-main", "human-authorization-required", "no-checks",
-	"no-progress", "out-of-scope", "owner-acceptance-required", "provider-error-unknown",
+	"ci-running", "conflict-with-main", "human-authorization-required", "network-route-unavailable",
+	"no-checks", "no-progress", "out-of-scope", "owner-acceptance-required", "provider-error-unknown",
 	"provider-unavailable", "read-failed", "read-interrupted", "resource-wait", "review-required",
-	"run-completed", "run-ended", "run-failed", "run-timeout", "stopped-by-hand", "task-closed",
+	"run-completed", "run-ended", "run-failed", "run-timeout", "stopped-by-person", "task-closed",
 	"task-missing", "waited-too-long",
 }
 
@@ -309,7 +309,7 @@ func attentionOfATask() map[string]rule {
 		"resource":        ofForm(aName),
 		"action":          freeText(),
 		"resource_type":   ofForm(aWord),
-		"next_actor":      ofList("orchestrator", "owner", "nobody", "either"),
+		"next_actor":      ofList("orchestrator", "owner", "nobody — we are waiting", "owner or orchestrator"),
 		"priority":        ofList("critical", "high", "normal"),
 		"actable":         ofList("now", "watch", "wait", "unknown"),
 		"waiting_since":   ofForm(aMoment),

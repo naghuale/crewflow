@@ -788,7 +788,10 @@ func sayEventTo(path, event string, facts ...string) bool {
 	if err != nil {
 		return false
 	}
-	defer file.Close()
+	// The journal of an attempt is a file of its own and its close says whether the line
+	// reached it: a gap of the policy that nobody could read about is a gap that was not
+	// said, and the caller has to know it (R224-16).
+	defer func() { _ = file.Close() }()
 	sayEvent(file, event, facts...)
 	return true
 }
