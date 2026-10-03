@@ -601,12 +601,15 @@ type record struct {
 // write. Nothing of it is a network and nothing of it is a repository: no test of the
 // command reaches GitHub or a checkout of the person who runs it (docs/DESIGN.md §7h).
 type reviewHost struct {
-	task     forge.Task
-	change   forge.ChangeRequest
-	comments []forge.Comment
-	files    []string
-	checks   []forge.CheckRun
-	required []forge.RequiredCheck
+	task   forge.Task
+	change forge.ChangeRequest
+	// changeError is why the host could not read the change at all: the answer of a check
+	// after a merge has to tell that apart from a change that names no head (§7h).
+	changeError error
+	comments    []forge.Comment
+	files       []string
+	checks      []forge.CheckRun
+	required    []forge.RequiredCheck
 	// rules is what the host says about the rules of the branch themselves, and
 	// the state of them is what a repository on the free plan is judged by (§7h, §7k).
 	rules   forge.RuleState
@@ -766,7 +769,7 @@ func (h *reviewHost) git(_ context.Context, name string, args []string, _ string
 func (h *reviewHost) Task(context.Context, int) (forge.Task, error) { return h.task, nil }
 
 func (h *reviewHost) ChangeRequest(context.Context, int) (forge.ChangeRequest, error) {
-	return h.change, nil
+	return h.change, h.changeError
 }
 
 func (h *reviewHost) FindChangeRequest(context.Context, string) (forge.ChangeRequest, bool, error) {

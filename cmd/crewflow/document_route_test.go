@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/forge"
+	"github.com/naghuale/crewflow/internal/network"
 	taskrun "github.com/naghuale/crewflow/internal/run"
 	"github.com/naghuale/crewflow/internal/secret"
 )
@@ -57,6 +59,20 @@ func TestTheAnswerOfEveryCommandIsTheDocumentItsPolicyNames(t *testing.T) {
 						document, planted.note)
 				}
 				return
+			}
+			if planted.input != "" {
+				// The case says where it planted the value, and a case that planted nothing
+				// proves nothing: the answer of a command whose text held the value before
+				// the boundary holds no value of a run at all — not even in a name of the
+				// format, or nothing of it could ever be cut (SEC-224-012, SEC-224-013).
+				if !strings.Contains(planted.input, planted.canary) {
+					t.Errorf("the case planted %q, and the text it says it planted it into is %q: "+
+						"there is nothing to cut", planted.canary, planted.input)
+				}
+				if bytes.Contains(document, []byte(planted.canary)) {
+					t.Errorf("the answer of the command is\n%s\nwant the value of the run %q taken out "+
+						"of it everywhere", document, planted.canary)
+				}
 			}
 			if len(planted.cut) == 0 && planted.note == "" {
 				t.Errorf("the case planted the value %q and says neither a field where it has to stand cut "+
@@ -110,11 +126,13 @@ type aCommandThatPublishes struct {
 }
 
 // planted is what a case put into the answer of a command: the value of a run it taught the
-// boundary of the command, the fields where that value has to stand cut, the words and the names
-// of the format that have to be in the document byte for byte — and, when no value of a run
-// reaches the document at all, why.
+// boundary of the command, the text of the project or of the host that held that value before
+// the boundary, the fields where the value has to stand cut, the words and the names of the
+// format that have to be in the document byte for byte — and, when no value of a run reaches
+// the document at all, why.
 type planted struct {
 	canary string
+	input  string
 	cut    []string
 	whole  map[string]string
 	note   string
@@ -284,6 +302,7 @@ func theAnswerOfTheList(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  "the run of a task " + canary,
 		cut:    []string{"runs[].title"},
 		whole: map[string]string{
 			"runs[].outcome":  "timeout",
@@ -308,6 +327,7 @@ func theAnswerOfTheAttention(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  "the run of a task " + canary,
 		cut:    []string{"attention[].title"},
 		whole:  map[string]string{"attention[].reason": "run-timeout", "attention[].run": "43-1"},
 	}
@@ -327,6 +347,7 @@ func theAnswerOfTheAttentionOfEveryProject(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  "the run of a task " + canary,
 		cut:    []string{"attention[].title"},
 		whole:  map[string]string{"attention[].reason": "run-timeout", "attention[].run": "43-1"},
 	}
@@ -345,6 +366,7 @@ func theAnswerOfTheCheckOfATask(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  host.task.Title,
 		cut:    []string{"title"},
 		whole:  map[string]string{"task": "43", "ready": "true"},
 	}
@@ -416,6 +438,7 @@ func theAnswerOfTheAdmission(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  "fail: the agent asked for " + canary,
 		cut:    []string{"criteria.K2.reason"},
 		whole: map[string]string{
 			"decision":           "denied",
@@ -458,6 +481,7 @@ func theAnswerOfTheReview(t *testing.T) ([]byte, planted) {
 
 	return document, planted{
 		canary: canary,
+		input:  "internal/secret/" + canary + ".go",
 		cut:    []string{"outside[]"},
 		whole: map[string]string{
 			"change":        "7",
@@ -475,14 +499,19 @@ func theAnswerOfTheMerge(t *testing.T) ([]byte, planted) {
 	const canary = "s3cr3t-of-the-run"
 	host := newMergeHost(t)
 	host.remote = reviewHead
+	// The words of the gate about a file the task was not to change are the words of a
+	// run in them: the name of a file of a change is written by the words of its task.
+	host.reviewHost.files = []string{"internal/secret/" + canary + ".go"}
 	theRunKnows(t, canary, &mergeRoles)
 
 	document, _ := theAnswerOf(t, "merge", "7", "-config", writeConfig(t, mergeConfig), "-json")
 
-	return document, planted{canary: canary, note: "the answer is the words of crewflow and of the host about " +
-		"one change: the run that merged it left no words of its own here, and the canary of the case is taught " +
-		"to the boundary so that a value of the run, had one stood in this document, would be cut. The cutting " +
-		"itself is covered by TestTheAnswerOfTheReview: the words of a change stand under the same boundary"}
+	return document, planted{
+		canary: canary,
+		input:  host.reviewHost.files[0],
+		cut:    []string{"verdict.detail"},
+		whole:  map[string]string{"outcome": "already-merged", "verdict.ready": "false", "verdict.reason": "out-of-scope"},
+	}
 }
 
 // theAnswerOfTheVerification is `crewflow verify <PR> -json`: what is true about the change after
@@ -491,41 +520,57 @@ func theAnswerOfTheVerification(t *testing.T) ([]byte, planted) {
 	const canary = "s3cr3t-of-the-run"
 	host := newMergeHost(t)
 	host.remote = reviewHead
+	// A change the host could not read at all is said in `missing`: what a program
+	// answered is words of a run like any other (§7h).
+	said := "the host of the case read the change with " + canary
+	host.reviewHost.changeError = errors.New(said)
 	theRunKnows(t, canary, &mergeRoles)
 
 	document, _ := theAnswerOf(t, "verify", "7", "-config", writeConfig(t, mergeConfig), "-json")
 
-	return document, planted{canary: canary, note: "the answer is the words of crewflow and of the host about one " +
-		"change after its merge: no value of a run stands in them, and the canary of the case is taught to the " +
-		"boundary all the same. The cutting of a document of a change is covered by TestTheAnswerOfTheReview"}
+	return document, planted{
+		canary: canary,
+		input:  said,
+		cut:    []string{"missing[]"},
+		whole:  map[string]string{"verified": "false", "task_state": "closed", "task": "7"},
+	}
 }
 
-// theAnswerOfTheDoctor is `crewflow doctor -json`: the report of the machine of the person — the
-// checks, the folders a run may read and why they are open, and the debt of trust between the
-// three subjects of the project.
+// theAnswerOfTheDoctor is `crewflow doctor -json`: the report of the machine of the person —
+// the checks, the folders a run may read and why they are open, and the debt of trust between the
+// three subjects of the project. The boundary of this command is given no value of a run: a report
+// of readiness is made by a command with no run behind it, and the words of the file of the
+// project — the reason a folder is open is the command that asked for it — are the words of a
+// person in a repository, published as they are. The case says that instead of a marker it cannot
+// earn; what stays unproven here is covered where a boundary *is* taught a value (§7e).
 func theAnswerOfTheDoctor(t *testing.T) ([]byte, planted) {
-	const canary = "s3cr3t-of-the-run"
-	theRunKnows(t, canary, &taskRoles)
+	project := writeProject(t)
 
-	document, _ := theAnswerOf(t, "doctor", "-config", writeProject(t), "-json")
+	document, _ := theAnswerOf(t, "doctor", "-config", project, "-json")
 
-	return document, planted{canary: canary, note: "the report of the machine says what the checks, git and the " +
-		"keychain of macOS answered: no value of a run stands in it, and the canary of the case is taught to the " +
-		"boundary all the same. The cutting of a text field is covered by TestTheAnswerOfTheCheckOfATask"}
+	return document, planted{note: "the boundary of this command is taught no value of a run: a report of " +
+		"readiness is made with no run behind it, so the reason a folder is open — the command the " +
+		"project asked for it with — is published as it was written, the words of a person in a " +
+		"repository rather than a value of a run. What stays unproven by this case is the cutting of " +
+		"that reason where a boundary knows a value: see TestTheAnswerOfTheMerge, where the words of " +
+		"the gate about a change stand under a boundary the case teaches"}
 }
 
-// theAnswerOfTheChecksOfTheRoute is `crewflow doctor network -json`: the checks of the route of
-// the project, one per ability.
+// theAnswerOfTheChecksOfTheRoute is `crewflow doctor network -json`: the checks of the route of the
+// project, one per ability. The checks are made by the machine and by the host of the project, and
+// the boundary of the command is taught no value of a run — the same words of the same checks are
+// under a boundary that does know one in `crewflow network proxy test`, where the case teaches it.
+// What stays unproven here is a check whose words hold a value the boundary knows: that is the case
+// of the test of a route.
 func theAnswerOfTheChecksOfTheRoute(t *testing.T) ([]byte, planted) {
-	const canary = "s3cr3t-of-the-run"
 	useNetworkOfTheTest(t, &storeOfTheRoute{}, nil)
-	theRunKnows(t, canary, &taskRoles)
 
 	document, _ := theAnswerOf(t, "doctor", "network", "-config", writeConfig(t, plainProject), "-json")
 
-	return document, planted{canary: canary, note: "the checks of the route say what the route answered about " +
-		"every ability of it: no value of a run stands in them, and the canary of the case is taught to the " +
-		"boundary. The cutting of a text field is covered by TestTheAnswerOfTheAdmission"}
+	return document, planted{note: "the checks of the route are the words of the machine and of the host, and " +
+		"the boundary of this command is taught no value of a run, so they are published as they came. " +
+		"The same words of the same checks go under a boundary that knows a value in `crewflow network " +
+		"proxy test`, and that is where the cutting of them is proven — see TestTheAnswerOfTheTestOfARoute"}
 }
 
 // theAnswerOfTheProfiles is `crewflow network proxy list -json`: the profiles the project declares.
@@ -551,7 +596,10 @@ func theAnswerOfTheProfiles(t *testing.T) ([]byte, planted) {
 // closed lists of §7d, and the details are the words of the checks themselves.
 func theAnswerOfTheTestOfARoute(t *testing.T) ([]byte, planted) {
 	const canary = "s3cr3t-of-the-run"
-	useNetworkOfTheTest(t, &storeOfTheRoute{}, nil)
+	said := "the route of the case answered " + canary
+	useNetworkOfTheTest(t, &storeOfTheRoute{}, []network.State{
+		{Capability: "github-api", Result: "unknown", Detail: said},
+	}, secret.Chosen(canary)...)
 	project := writeConfig(t, plainProject)
 	if _, _, code := say(t, "network", "proxy", "add", "home",
 		"--type", "http", "--host", "192.0.2.10", "--port", "1082", "-config", project); code != exitOK {
@@ -560,9 +608,16 @@ func theAnswerOfTheTestOfARoute(t *testing.T) ([]byte, planted) {
 
 	document, _ := theAnswerOf(t, "network", "proxy", "test", "home", "-config", project, "-json")
 
-	return document, planted{canary: canary, note: "the checks of the route in a machine without a network answer " +
-		"\"unknown\" and say so in their details: no value of a run stands in them, and the canary of the case " +
-		"is taught to the boundary. The cutting of a text field is covered by TestTheAnswerOfTheAdmission"}
+	return document, planted{
+		canary: canary,
+		input:  said,
+		cut:    []string{"capabilities[].detail"},
+		whole: map[string]string{
+			"capabilities[].capability": "github-api",
+			"capabilities[].result":     "unknown",
+			"route.profile":             "home",
+		},
+	}
 }
 
 // theAnswerOfTheJournal is `crewflow changelog check -json`: the problems of the journal of the
@@ -636,7 +691,8 @@ func theCodeOf(t *testing.T, args ...string) int {
 }
 
 // theFieldOfTheDocument is the value at a path of a document and whether the path is there at
-// all: a path of a list stands for every element of it, and a test reads the first (D-082, §7e).
+// all: `[]` in a path stands for every element of a list and the test reads the first of them,
+// and `[3]` stands for the one under that number (D-082, §7e).
 func theFieldOfTheDocument(node any, path string) (string, bool) {
 	said := theFieldsAt(node, strings.Split(path, "."))
 	if len(said) == 0 {
@@ -653,37 +709,45 @@ func theFieldsAt(node any, segments []string) []string {
 		return theLeafOf(node)
 	}
 	head, rest := segments[0], segments[1:]
-	name, _, every := strings.Cut(head, "[]")
+	name, bracket, _ := strings.Cut(head, "[")
 	switch held := node.(type) {
 	case map[string]any:
 		value, there := held[name]
 		if !there {
 			return nil
 		}
-		if !every {
+		if bracket == "" {
 			return theFieldsAt(value, rest)
 		}
-		return theElementsAt(value, rest)
+		return theElementsAt(value, bracket, rest)
 	case []any:
 		if name != "" {
 			return nil
 		}
-		return theElementsAt(held, rest)
+		return theElementsAt(held, bracket, rest)
 	}
 	return nil
 }
 
-// theElementsAt is what a list says under the rest of a path, one element at a time.
-func theElementsAt(node any, rest []string) []string {
+// theElementsAt is what a list says under the rest of a path: an empty `[]` is every element of
+// the list, and `[3]` is the one under that number.
+func theElementsAt(node any, bracket string, rest []string) []string {
 	list, is := node.([]any)
 	if !is {
 		return nil
 	}
-	var values []string
-	for _, item := range list {
-		values = append(values, theFieldsAt(item, rest)...)
+	if bracket == "]" {
+		var values []string
+		for _, item := range list {
+			values = append(values, theFieldsAt(item, rest)...)
+		}
+		return values
 	}
-	return values
+	at, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(bracket, "["), "]"))
+	if err != nil || at < 0 || at >= len(list) {
+		return nil
+	}
+	return theFieldsAt(list[at], rest)
 }
 
 // theLeafOf is a leaf of a document as a test reads it: a string as it is, a number as it is

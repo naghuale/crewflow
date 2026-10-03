@@ -26,7 +26,7 @@ const plainProject = projectConfig
 // secrets, a clock that does not move, and a check of a route that answers what the case
 // says it answers. No test of a command opens the keychain of the person who runs it and
 // no test asks the network of the machine the tests run on.
-func useNetworkOfTheTest(t *testing.T, store secret.Store, states []network.State) {
+func useNetworkOfTheTest(t *testing.T, store secret.Store, states []network.State, values ...secret.Value) {
 	t.Helper()
 	oldStore, oldNow, oldCheck := secretsOfTheNetwork, clockOfTheNetwork, checksOfARoute
 	t.Cleanup(func() {
@@ -34,7 +34,10 @@ func useNetworkOfTheTest(t *testing.T, store secret.Store, states []network.Stat
 	})
 	secretsOfTheNetwork = func() secret.Store { return store }
 	clockOfTheNetwork = func() time.Time { return time.Date(2026, time.October, 2, 9, 0, 0, 0, time.UTC) }
-	checksOfARoute = func(context.Context, *secret.Out, config.Config, network.Route, secret.Store) ([]network.State, error) {
+	checksOfARoute = func(_ context.Context, out *secret.Out, _ config.Config, _ network.Route, _ secret.Store) ([]network.State, error) {
+		// The words of a check of a route are words of a program, and the boundary of the
+		// command has to know the values of that program to take them out (§7e).
+		out.Learn(values...)
 		return states, nil
 	}
 }
