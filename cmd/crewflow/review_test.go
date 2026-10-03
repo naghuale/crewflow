@@ -18,6 +18,7 @@ import (
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // The head of a change of a test, whole: a record of a review names the whole of it,
@@ -740,7 +741,7 @@ func (h *reviewHost) use(t *testing.T) {
 // with: the push of a merge and the fetch of a review are the commands whose account
 // matters, and a test of the separate mode has to see what they were started with
 // (docs/DESIGN.md §7i).
-func (h *reviewHost) gitIn(environment []string) merge.Runner {
+func (h *reviewHost) gitIn(_ *secret.Out, environment []string) merge.Runner {
 	h.environment = environment
 	return h.git
 }

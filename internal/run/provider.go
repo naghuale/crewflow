@@ -231,9 +231,13 @@ func keptFacts(facts []string) []string {
 // through the secrets of the run like every other line of it: an agent that prints its own
 // environment on the way out to a refusal of its provider puts the password of the route in
 // there with it, and this line is written to the journal of the attempt and not through the
-// redactor of the output of the executor (docs/DESIGN.md §7e, §7i).
+// stream of the executor, so the boundary of the run publishes it on its own (docs/DESIGN.md §7e, §7i).
 func (r *runner) failureOf(failure profile.Failure) string {
-	words := strings.Join(strings.Fields(secret.Redact(failure.Said, r.secrets()...)), " ")
+	words, refused := r.boundary().Publish(secret.ChannelReport, failure.Said)
+	if refused != nil {
+		words = secret.Redacted
+	}
+	words = strings.Join(strings.Fields(words), " ")
 	if words == "" {
 		return ""
 	}

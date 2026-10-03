@@ -508,3 +508,173 @@ type storeWithoutAnything struct{}
 func (storeWithoutAnything) Get(string, string) ([]byte, error) { return nil, secret.ErrNotFound }
 
 func (storeWithoutAnything) Set(string, string, []byte) error { return nil }
+
+// TestTheReasonOfAFailureIsReadFromWhatTheProgramWrote: the classifier of a failure of the
+// network reads the words of the program as it wrote them, and the boundary cleans only what
+// is published. A password of three signs that is a part of a word of the ladder of §7d was
+// read out of the words of a program before they reached the classifier, and the reason of
+// the failure came out of the act of cleaning it rather than out of the failure: the same
+// failure of the network was one reason on one day and another reason on the next, and the
+// route a run went on by was worked out of a redaction (D-068 RECHECK-FINDING-5,
+// docs/DESIGN.md §7e).
+//
+// The password here is `ssl` — three signs, and one of the words of the row of the
+// certificates, which is read before the row of a handshake that ran out of time. The
+// program reported a timeout and named the profile it went out by, and the reason of that
+// failure is the certificate and not the timeout: what the program wrote says a certificate.
+func TestTheReasonOfAFailureIsReadFromWhatTheProgramWrote(t *testing.T) {
+	_, cfg := withFile(t, keysOf("mode", `"fallback"`, "active_proxy", `"work"`))
+	route, err := Choose(cfg, "")
+	if err != nil {
+		t.Fatalf("the route of the project: %v", err)
+	}
+	pair := "ann:ssl"
+	through, err := Through(cfg, "work")
+	if err != nil {
+		t.Fatalf("the route through the profile: %v", err)
+	}
+	address, err := through.Address(pair)
+	if err != nil {
+		t.Fatalf("the address of the profile: %v", err)
+	}
+	store := &storeOfTheTest{values: map[string]string{
+		secret.Service + "/" + secret.ProxyKey("work"): pair,
+	}}
+	r := &recorder{clock: time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC), secrets: store}
+
+	answered := r.fallback(cfg, route).Once(t.Context(), r.do(map[string]answer{
+		"direct": {stderr: noSuchHost, code: 1},
+		"work":   {stderr: "dial tcp 192.0.2.10:1080: i/o timeout through " + address, code: 1},
+	}))
+
+	closed, both := RouteUnavailable(answered.Err)
+	if !both {
+		t.Fatalf("the error of the operation is %v, want the refusal of both routes", answered.Err)
+	}
+	if closed.Through != ReasonTLS {
+		t.Errorf("the reason of the failure of the second attempt is %q, want %q: the words of the "+
+			"program say a certificate, and the password of the profile is not taken out of them "+
+			"before the reason of the failure is worked out", closed.Through, ReasonTLS)
+	}
+	if !r.has(EventFallbackFailed, "reason="+ReasonTLS) {
+		t.Errorf("the journal does not hold the reason of the failure of the second attempt: %q", r.said.String())
+	}
+	if strings.Contains(r.said.String(), "ssl") {
+		t.Errorf("the journal of the route holds the password of the profile: %q", r.said.String())
+	}
+}
+
+// TestTheCredentialsOfTheRouteDoNotDecideTheReasonOfAFailure: the guard of the reason a run
+// works out about itself. The same complaint of the same program is one reason whether the
+// route of the operation takes credentials or not, and a value of the route in the words of
+// the program is a value of the run: it is not in the reason crewflow publishes, and it does
+// not decide it either (docs/DESIGN.md §7e).
+//
+// The password here collides with nothing of the ladder of §7d, and the complaint is the
+// same in both cases but for the address of the profile in it. What the test guards is the
+// act of cleaning: a reason that changes when a value is taken out of the words it was read
+// from is a reason of the cleaning and not of the failure (D-068 RECHECK-FINDING-5, §7e).
+func TestTheCredentialsOfTheRouteDoNotDecideTheReasonOfAFailure(t *testing.T) {
+	// The route of the project goes through the profile of the project, so the one attempt
+	// really is given the address of the profile with the credentials in it (docs.DESIGN.md §7d).
+	_, withCredentials := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"work"`))
+	_, withoutCredentials := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`))
+	pair := "ann:7Qd2-lonely"
+	reasons := make(map[string]string, 2)
+	for _, tc := range []struct {
+		name    string
+		cfg     config.Config
+		store   secret.Store
+		profile string
+	}{
+		{name: "a route that takes credentials", cfg: withCredentials, profile: "work",
+			store: &storeOfTheTest{values: map[string]string{
+				secret.Service + "/" + secret.ProxyKey("work"): pair,
+			}}},
+		{name: "a route that takes none", cfg: withoutCredentials, profile: "home", store: &storeWithoutAnything{}},
+	} {
+		route, err := Choose(tc.cfg, "")
+		if err != nil {
+			t.Fatalf("%s: the route of the project: %v", tc.name, err)
+		}
+		complained := "dial tcp 192.0.2.10:1080: i/o timeout"
+		if tc.profile == "work" {
+			through, err := Through(tc.cfg, tc.profile)
+			if err != nil {
+				t.Fatalf("%s: the route through the profile: %v", tc.name, err)
+			}
+			address, err := through.Address(pair)
+			if err != nil {
+				t.Fatalf("%s: the address of the profile: %v", tc.name, err)
+			}
+			complained += " through " + address
+		}
+		r := &recorder{clock: time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC), secrets: tc.store}
+
+		answered := r.fallback(tc.cfg, route).Once(t.Context(), r.do(map[string]answer{
+			"": {stderr: complained, code: 1},
+		}))
+
+		reasons[tc.name] = Failure(answered.Err, answered.said())
+		if strings.Contains(r.said.String(), pair) || strings.Contains(r.said.String(), "7Qd2-lonely") {
+			t.Errorf("%s: the journal of the route holds the credentials of the profile: %q",
+				tc.name, r.said.String())
+		}
+	}
+	for name, reason := range reasons {
+		if reason != ReasonConnectionTimeout {
+			t.Errorf("the reason worked out of %s is %q, want %q: a value of the route is not a word "+
+				"of the failure and does not decide its reason", name, reason, ReasonConnectionTimeout)
+		}
+	}
+}
+
+// TestTheBoundaryOfAnOperationHoldsTheCredentialsOfEveryRouteItWasMadeBy: an operation of the
+// mode `fallback` is made by two routes, and each of them was given its own credentials.
+// What it publishes is cleaned with the values of both of them: the answer of the first
+// attempt is read after the second one was made, and the credentials of the second route are
+// in the words of that answer — the diagnostics of gh of the second attempt are printed with
+// the values of the first route alone in the old way, and a password of a proxy went into the
+// error of a command (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestTheBoundaryOfAnOperationHoldsTheCredentialsOfEveryRouteItWasMadeBy(t *testing.T) {
+	_, cfg := withFile(t, keysOf("mode", `"fallback"`, "active_proxy", `"work"`))
+	route, err := Choose(cfg, "")
+	if err != nil {
+		t.Fatalf("the route of the project: %v", err)
+	}
+	first, second := "ann:7Qd2-of-the-first", "bob:s3cret-of-the-second"
+	store := &storeOfTheTest{values: map[string]string{
+		secret.Service + "/" + secret.ProxyKey("work"): first,
+	}}
+	r := &recorder{clock: time.Date(2026, 10, 3, 9, 0, 0, 0, time.UTC), secrets: store}
+	out := secret.NewOut()
+	machine := r.fallback(cfg, route)
+	machine.Out = out
+
+	// The first route is the straight one, and the profile of the second attempt is `work`:
+	// the credentials of both of them are learned into the boundary of the operation.
+	machine.Once(t.Context(), r.do(map[string]answer{
+		"direct": {stderr: noSuchHost, code: 1},
+		"work":   {stderr: refusedDial, code: 1},
+	}))
+	// The route the project goes out by, with credentials of its own, is one more attempt of
+	// the same operation with the same boundary — which is what a run of the mode `proxy`
+	// makes, and the values of that route are one a program of it may print back.
+	through, err := Through(cfg, "work")
+	if err != nil {
+		t.Fatalf("the route through the profile: %v", err)
+	}
+	alone := r.fallback(cfg, through)
+	alone.Out = out
+	alone.Once(t.Context(), r.do(map[string]answer{
+		"work": {stderr: refusedDial, code: 1},
+	}))
+	out.Learn(secret.Chosen(through.Secrets(second)...)...)
+
+	for _, value := range []string{first, "7Qd2-of-the-first", second, "s3cret-of-the-second"} {
+		if got := out.Text(value); got != secret.Redacted {
+			t.Errorf("the boundary of the operation does not hold %q: it publishes %q, want %q",
+				value, got, secret.Redacted)
+		}
+	}
+}

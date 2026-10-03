@@ -111,6 +111,13 @@ func RouteUnavailable(err error) (Unavailable, bool) {
 // apart, the code it exited with, and whether it could be started at all. These are the same
 // fields the machine of a check of a route answers with, so that the two places where a
 // program of crewflow talks to the network read one thing (docs/DESIGN.md §7d).
+//
+// Both streams are as the program wrote them. An answer is what crewflow reads — the JSON of
+// gh, the protocol of the executor, the words the classifier of a failure reads — and a value
+// cut out of it before that reading is a value no program can read back, and a password of a
+// proxy that is a part of a word of the ladder of §7d is a reason of a failure that crewflow
+// works out wrongly. Whatever is published goes through the boundary of the operation instead,
+// which knows the values of every route the operation was made by (docs/DESIGN.md §7e).
 type Answer struct {
 	// Stdout is what the program wrote to its standard output.
 	Stdout string
@@ -159,13 +166,20 @@ type Fallback struct {
 	Route Route
 	// Secrets is where the credentials of a profile are. A nil store is a project with no
 	// credentials read, and a route that needs them says so instead of being made with an
-	// empty pair (docs.DESIGN.md §7e).
+	// empty pair (docs/DESIGN.md §7e).
 	Secrets secret.Store
 	// Now is the clock the events of the route are stamped with.
 	Now func() time.Time
 	// Events is where those events are said: the terminal of the person who started the
 	// command and, as soon as a run has a journal of its own, that journal (§7i).
 	Events *secret.Notices
+	// Out is the boundary of everything this operation publishes: the events of the
+	// route, the answer of the attempt and every error that comes out of it. The
+	// credentials of every route the operation was really made by are learned into it,
+	// so that what one route wrote is cleaned with the values of the other one as well —
+	// the result of the first attempt is often what a person reads about the second one,
+	// and the second attempt is the one that went through the profile (§7e).
+	Out *secret.Out
 }
 
 // Once is one operation of a program of crewflow under the route of the project: the route the
@@ -177,7 +191,22 @@ type Fallback struct {
 // The change of route does not outlive this call: the operations after it go out the way the
 // mode says, and a permanent change of the route is a command of a person and not a decision of
 // a program of crewflow (owner 02.10, §7d).
+//
+// The classification of a failure reads what the programs wrote as they wrote it, and the
+// boundary cleans only what is published: a short password of a proxy that happens to be a part
+// of a word of the ladder of §7d took the reason of a failure away from the classifier and gave
+// it another one, and a run then went on by the wrong road because of its own secret (D-068
+// RECHECK-FINDING-5, §7e). Nothing here cleans an answer before anything reads it, and the
+// answer a caller gets is the raw one — cleaned by the caller, through the boundary, on its way
+// out (§7e).
 func (f Fallback) Once(ctx context.Context, do Attempt) Answer {
+	if f.Out == nil {
+		// An operation that was given no boundary makes one of its own, and the values of
+		// the routes it was made by are learned into it: the events of the route are said
+		// as the attempt is made and not afterwards, and an event nobody has a boundary
+		// for is an event with the credentials of the route in it (§7e).
+		f.Out = secret.NewOut()
+	}
 	if f.Route.Fallback != "" {
 		f.say(EventRouteSelected, "route="+name(f.Route), "second="+f.Route.Fallback)
 	}
@@ -237,13 +266,20 @@ func (f Fallback) Once(ctx context.Context, do Attempt) Answer {
 // credentials of the profile of the second attempt are read here and not earlier, because this
 // is where a connection through it is really made (§7e).
 //
-// What the program said about the failure goes through the editor of that route before it is
-// handed to anybody: the address of the profile is in its environment, and a program that
-// prints what it was given — or a proxy that names itself in its complaint — is a copy of the
-// password of a person in an event of the route, in an error of gh and in a file kept for ever.
-// Only what the program wrote to its second stream: the first one is an answer crewflow reads
-// (the JSON of gh, the protocol of the executor), and a value cut out of it is a value no
-// program can read back (D-068 RECHECK-FINDING-5, §7e, §7i).
+// The credentials of this route are learned into the boundary of everything the operation
+// publishes before the attempt is even made: what the program is given in its environment is
+// what it may print back, in every spelling the address of the profile writes it, and a proxy
+// that names itself in a complaint is a copy of the password of a person in an event of the
+// route, in an answer of gh and in a file kept for ever. Learning them here is also what makes
+// the second attempt's values clean the result of the first one, and the first attempt's clean
+// the second — the set of the values of an operation is the union of the values of every route
+// it was made by (D-068 RECHECK-FINDING-5, §7e).
+//
+// What the program wrote is handed on as it was written. It is not cleaned here: the answer of
+// a program is what the classifier of a failure reads (the first stream of it is what
+// `gh --json` and what the protocol of the executor are read by, and a value cut out of an
+// answer is a value no program can read back), and the cleaning of what is published happens at
+// the boundary on its way out (D-068 RECHECK-FINDING-5, §7e).
 func (f Fallback) made(do Attempt, route Route) (tried, error) {
 	credentials, err := Credentials(f.Secrets, route)
 	if err != nil {
@@ -253,12 +289,12 @@ func (f Fallback) made(do Attempt, route Route) (tried, error) {
 	if err != nil {
 		return tried{}, err
 	}
+	f.Out.Learn(secret.Chosen(route.Secrets(credentials)...)...)
 	stdout, stderr, code, err := do(route, environment)
-	secrets := secret.Chosen(route.Secrets(credentials)...)
 	return tried{
 		answer: Answer{
 			Stdout: stdout,
-			Stderr: secret.Redact(stderr, secrets...),
+			Stderr: stderr,
 			Code:   code,
 			Err:    err,
 		},
@@ -267,40 +303,44 @@ func (f Fallback) made(do Attempt, route Route) (tried, error) {
 	}, nil
 }
 
-// say is one event of the route, stamped with the clock of the machine. An operation of a
-// machine of a test has a clock of its own or none at all, and an event without a moment is
-// still an event (docs/DESIGN.md §7i).
+// say is one event of the route, stamped with the clock of the machine and published
+// through the boundary of the operation. An operation of a machine of a test has a clock
+// of its own or none at all, and an event without a moment is still an event
+// (docs.DESIGN.md §7i).
 func (f Fallback) say(event string, facts ...string) {
 	if f.Now != nil {
 		facts = append(facts, "at="+f.Now().Format(time.RFC3339))
 	}
-	SayEvent(f.Events, event, facts...)
+	SayEvent(f.Out, f.Events, event, facts...)
 }
 
 // tried is one attempt of one operation together with the route it was made by and the
 // credentials it was made with: the three belong to each other, because what the program
-// wrote goes through the redactor with the values of that route — a proxy that answers with
-// the password of its own profile must not have that password in a journal, and only the
-// route and the value that was read for it say which spellings of it a program can print
-// (docs/DESIGN.md §7e, §7i).
+// wrote is cleaned by the boundary of the operation, and the boundary knows the values of
+// every route that operation was made by — a proxy that answers with the password of its
+// own profile must not have that password in a journal (docs/DESIGN.md §7e, §7i).
 type tried struct {
 	answer Answer
 	route  Route
 	// credentials is what was read out of the store for this attempt and went into the
 	// environment of the program: a route does not hold them, and they are read where a
-	// connection through it is really made (docs.DESIGN.md §7e).
+	// connection through it is really made (docs/DESIGN.md §7e).
 	credentials string
 }
 
 // told is what the program wrote, as one fact of an event, with nothing of a credential in it:
 // one line, because a failure spread over three lines is a failure nobody reads whole
 // (docs.DESIGN.md §7a, §7e).
+//
+// It is the line as the program wrote it. It is cleaned where it is published and not
+// here, because the word of the program is also what the classifier of the failure reads
+// (docs/DESIGN.md §7d, §7e).
 func (t tried) told() string {
 	line := oneLine(t.answer.said())
 	if line == "" {
 		return ""
 	}
-	return fmt.Sprintf("said=%q", secret.Redact(line, t.secrets()...))
+	return fmt.Sprintf("said=%q", line)
 }
 
 // exited is how the attempt ended, as one fact of an event: the code it exited with, or that
@@ -312,22 +352,19 @@ func (t tried) exited() string {
 	return "exit=" + strconv.Itoa(t.answer.Code)
 }
 
-// secrets are the values of the route of this attempt that must not reach a journal: the pair
-// and the password of the profile as the store keeps them, and the pair and the password as
-// the address of the profile writes them — percent-encoded, which is the spelling a program is
-// given and the only one it can print (docs/DESIGN.md §7e).
-func (t tried) secrets() []secret.Value {
-	return secret.Chosen(t.route.Secrets(t.credentials)...)
-}
-
 // Failure is the reason of a failure of the network in what one operation of a program of
 // crewflow was told, by the ladder of §7d: what Go says the error is first, and the words the
 // program wrote after that. An empty string proves nothing — the class of the failure is not
 // known — and a caller that acted on an empty string would repeat a request for a reason nobody
-// read (docs/DESIGN.md §7d, §7e).
+// read (docs.DESIGN.md §7d, §7e).
 //
 // The words are the two streams of the program joined: the answer of gh and the complaint of git
 // are two streams and not one.
+//
+// They are the words as the program wrote them and never the words as they were published: a
+// password of a proxy that is a part of a word of the ladder changed the reason of a failure the
+// run went on by, and the reason of a failure is worked out before anything is published
+// (D-068 RECHECK-FINDING-5, §7e).
 func Failure(err error, said string) string {
 	if err != nil {
 		if reason := networkReasonOf(err); reason != "" {
@@ -365,17 +402,28 @@ func name(route Route) string {
 // first, because that is what a program and a person look for, and then the facts it happened
 // with (docs.DESIGN.md §6a, §7a, §7i).
 //
+// Every fact is published through the boundary of the operation: what a program wrote about its
+// failure is in it, and the address of the profile with the credentials in it was in the
+// environment of that program (docs/DESIGN.md §7e). A fact that cannot be published is left out
+// of the event: a value nobody can clear has nowhere to be shown, and an event that says half
+// of what happened is better than an event that carries a password of a person
+// (docs/DESIGN.md §7e).
+//
 // The zero Notices and a nil one say nothing: an operation that was given nowhere to say what it
 // did is an operation of a machine of a test, and a program that cannot say where it would say it
 // says nothing at all.
-func SayEvent(events *secret.Notices, event string, facts ...string) {
+func SayEvent(out *secret.Out, events *secret.Notices, event string, facts ...string) {
 	if events == nil {
 		return
 	}
 	line := "crewflow: event " + event
 	for _, fact := range facts {
-		if fact != "" {
-			line += " " + fact
+		said, err := out.Publish(secret.ChannelEvent, fact)
+		if err != nil {
+			continue
+		}
+		if said != "" {
+			line += " " + said
 		}
 	}
 	events.Say(line)

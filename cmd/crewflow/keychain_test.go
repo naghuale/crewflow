@@ -106,7 +106,7 @@ func TestTheStoreOfTheRolesIsBehindTheWaitOfTheKeychain(t *testing.T) {
 	waitForTheKeychain = 10 * time.Millisecond
 	var said bytes.Buffer
 
-	env := roleEnv("crewflow.toml", secret.NewNotices(&said))
+	env := roleEnv("crewflow.toml", secret.NewNotices(&said), nil)
 	started := time.Now()
 	_, err := env.Secrets.Get(secret.Service, secret.AppKey(5107052))
 	waited := time.Since(started)

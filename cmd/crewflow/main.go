@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/naghuale/crewflow/internal/buildinfo"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // Exit codes. Two says that crewflow was called wrong, which a script can tell
@@ -26,28 +27,37 @@ func main() {
 
 // run dispatches the subcommand in args and returns the exit code, so that the
 // whole program can be tested in process.
+//
+// It is also where the boundary of the command is made: everything crewflow publishes
+// out of a command — the terminal of the person, the journal of an attempt, the events of
+// a route, the state of a task and every `-json` — goes through it, and the values of a
+// run are learned into it as the command finds them. The two streams of the command are
+// the two writers of that boundary, so a command cannot print through one of them and
+// not the other (docs/DESIGN.md §7e).
 func run(args []string, stdout, stderr io.Writer) int {
+	out := secret.NewOut()
+	stdout, stderr = out.Writer(stdout), out.Writer(stderr)
 	if len(args) == 0 {
 		usage(stderr)
 		return exitUsage
 	}
 	switch args[0] {
 	case "doctor":
-		return runDoctor(args[1:], stdout, stderr)
+		return runDoctor(out, args[1:], stdout, stderr)
 	case "task":
-		return runTask(args[1:], stdout, stderr)
+		return runTask(out, args[1:], stdout, stderr)
 	case "review":
-		return runReview(args[1:], stdout, stderr)
+		return runReview(out, args[1:], stdout, stderr)
 	case "merge":
-		return runMerge(args[1:], stdout, stderr)
+		return runMerge(out, args[1:], stdout, stderr)
 	case "changelog":
-		return runChangelog(args[1:], stdout, stderr)
+		return runChangelog(out, args[1:], stdout, stderr)
 	case "verify":
-		return runVerify(args[1:], stdout, stderr)
+		return runVerify(out, args[1:], stdout, stderr)
 	case "auth":
-		return runAuth(args[1:], stdout, stderr)
+		return runAuth(out, args[1:], stdout, stderr)
 	case "network":
-		return runNetwork(args[1:], stdout, stderr)
+		return runNetwork(out, args[1:], stdout, stderr)
 	case "version":
 		return runVersion(args[1:], stdout, stderr)
 	case "help", "-h", "--help":

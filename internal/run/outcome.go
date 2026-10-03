@@ -110,7 +110,7 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 	// whatever the habit of the command looks like: the refusals of such a run are
 	// shown with the place, the kind of access and the fact that no run of it goes on
 	// by itself (docs/DESIGN.md §7a.1, §7d, §8).
-	result.Rejections = secrets.marked
+	result.Rejections = publishedSecrets(r.boundary(), secrets.marked)
 	if len(secrets.reached) > 0 {
 		return result.spent(BlockedSecret), nil
 	}
@@ -118,7 +118,10 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 	// words of the executor, and they go through the secrets of the run like every other
 	// thing it printed: a reason is written into the state of the task and shown in the
 	// report of a run, and both of those are pasted into issues (docs/DESIGN.md §7e, §7i).
-	reason := secret.Redact(r.profile.Blocked(stdout), r.secrets()...)
+	reason, nowhere := r.boundary().Publish(secret.ChannelState, r.profile.Blocked(stdout))
+	if nowhere != nil {
+		reason = secret.Redacted
+	}
 	// What the model provider said about the failure it stopped the run for is read
 	// before anything the run said about itself: a provider that refused the run is a wait
 	// for a resource and not a defect of the task, however the task of the run ended, and
@@ -147,7 +150,11 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 		// wait: the name is the code of §6a that a program reads, and the words are what
 		// a person reads when the queue says which resource of the machine the task
 		// waits for (§6a, §7i).
-		result.Reason = provider.reason + ": " + secret.Redact(provider.said, r.secrets()...)
+		said, nowhere := r.boundary().Publish(secret.ChannelState, provider.said)
+		if nowhere != nil {
+			said = secret.Redacted
+		}
+		result.Reason = provider.reason + ": " + said
 		return result.spent(Blocked), nil
 	case reason != "":
 		result.Reason = reason
@@ -224,6 +231,24 @@ func lines(out string) []string {
 		}
 	}
 	return found
+}
+
+// publishedSecrets are the refusals of a run as a report and a state of a task may show
+// them: every one of them published through the boundary of the run, and a refusal that
+// cannot be published left out of the answer. A refusal names what the run asked of it,
+// and what the run asked with it is in the text of the command it was refused in — a
+// report about a secret of a run that carries that secret is a report that puts it into
+// an issue (docs/DESIGN.md §7a.1, §7e).
+func publishedSecrets(out *secret.Out, marked []string) []string {
+	published := make([]string, 0, len(marked))
+	for _, refusal := range marked {
+		said, refused := out.Publish(secret.ChannelReport, refusal)
+		if refused != nil {
+			continue
+		}
+		published = append(published, said)
+	}
+	return published
 }
 
 // spent is the result of a run that ended the way it says, with everything that was

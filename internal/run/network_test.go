@@ -452,7 +452,16 @@ type aRunOnARoute struct {
 // with the two is not the same — the host answering and refusing ends the run where it is, and
 // a proven failure of the network is the one failure the mode `fallback` answers with a second
 // attempt (docs.DESIGN.md §7d, §7e).
-type saidOfGh struct{ straight, through string }
+//
+// onStdout is which stream gh writes it to. A program of a host writes what it has to say to
+// either of the two, and the answer of a second attempt is the stream an adapter reads into the
+// error of a command when the complaint of that attempt is empty — so a value of the route in
+// the answer of the second attempt is a value in an error of a command, and the values of the
+// first route do not take it out (D-068 RECHECK-FINDING-5, §7e).
+type saidOfGh struct {
+	straight, through string
+	onStdout          bool
+}
 
 // aRunOnARouteWithCredentials is that run with the given pair of the given mode: the store of
 // the machine of the test holds the credentials of the profile, and nothing of it is the
@@ -497,6 +506,9 @@ func aRunOnARouteWithCredentials(t *testing.T, m *machine, mode, pair string, sa
 			return strings.HasPrefix(name, "ALL_PROXY=")
 		}) {
 			complaint = said.through
+		}
+		if said.onStdout {
+			return []byte(complaint), nil, 1, nil
 		}
 		return nil, []byte(complaint), 1, nil
 	}
@@ -675,4 +687,161 @@ func contains(environment []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// TestTheDiagnosticsOfTheSecondAttemptGoThroughTheCredentialsOfBothRoutes: the mode
+// `fallback` makes one operation twice, once straight and once through the active profile of
+// the project, and the answer of the second attempt is read after the credentials of the
+// second route were read for it. What gh wrote about the refusal of the host is in that
+// answer — gh writes what it has to say to either of its streams, and a program of the host
+// that goes through a proxy names the proxy in it — and the error a command prints is made of
+// what gh wrote. Cleaning it with the values of the first route alone is a password of a proxy
+// in a line of the terminal of the person and in the state of a task (D-068
+// RECHECK-FINDING-5, docs.DESIGN.md §7e, §7i).
+func TestTheDiagnosticsOfTheSecondAttemptGoThroughTheCredentialsOfBothRoutes(t *testing.T) {
+	for _, pair := range theCredentialsOfACase {
+		t.Run(pair, func(t *testing.T) {
+			m := newMachine(t)
+			// The straight attempt could not reach the network at all, and the second attempt
+			// reached the host and was refused there — with the name of the profile it went out
+			// by in the words it wrote to its answer.
+			c := aRunOnARouteWithCredentials(t, m, "fallback", pair, saidOfGh{
+				straight: "error connecting to api.github.com: dial tcp: lookup api.github.com: no such host",
+				through:  "HTTP 403: Resource not accessible by integration",
+				onStdout: true,
+			})
+			m.answers["opencode"] = answer{stdout: theRun}
+			m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+			env := m.env()
+			env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+			env.Notices = c.notices
+
+			_, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+			if err == nil {
+				t.Fatal("a run whose host refused it returned no error, want one with what gh wrote in it")
+			}
+			// The refusal of the host is still there: only what of it is a secret is gone.
+			if !strings.Contains(err.Error(), "HTTP 403") {
+				t.Errorf("the error %q does not say what gh wrote", err)
+			}
+			if !strings.Contains(err.Error(), secret.Redacted) {
+				t.Errorf("the error %q holds no %q, want the credentials of the route of the second "+
+					"attempt taken out of it", err, secret.Redacted)
+			}
+			// The profile was really the road of the second attempt: a test that proves the
+			// cleaning of a value nobody was given proves nothing (docs/DESIGN.md §7d).
+			if !strings.Contains(c.address, "@proxy.example.com:1080") {
+				t.Fatalf("the address of the profile is %q, want the credentials in it", c.address)
+			}
+			nothingOfTheCredentials(t, "the error the command prints", err.Error(), c.forms)
+		})
+	}
+}
+
+// TestTheCanaryOfTheRunIsNowhereInWhatTheRunPublishes: the guard of the whole of it. A run
+// whose route goes through a profile with a canary in it — a short one and a long one, in every
+// spelling the address of the profile writes them — is watched in every place a person or a
+// program reads what came of it: the error the command prints, the journal of the attempt, the
+// way out of it, the events of the route, the state of the task and the report of the run. The
+// words of the run are all there; the canary is in none of them (D-068 RECHECK-FINDING-5,
+// docs/DESIGN.md §7e, §7i).
+func TestTheCanaryOfTheRunIsNowhereInWhatTheRunPublishes(t *testing.T) {
+	for _, tc := range []struct{ name, pair string }{
+		{name: "a password of three signs", pair: theCredentialsOfACase[0]},
+		{name: "a password the address writes another way", pair: theCredentialsOfACase[1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pair := tc.pair
+			m := newMachine(t)
+			// The host refuses the change request of the branch with the name of the profile
+			// in what it wrote, and the executor has printed its own environment on the way:
+			// every way a value of the run comes back into a text of a run.
+			c := aRunOnARouteWithCredentials(t, m, "proxy", pair, saidOfGh{
+				through: "HTTP 403: Resource not accessible by integration",
+			})
+			m.answers["opencode"] = answer{
+				stdout: "HTTPS_PROXY=" + c.address + "\n" + theRun,
+				stderr: "curl: (97) cannot connect to " + c.address + "\n",
+			}
+			m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+			env := m.env()
+			env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+			env.Notices = c.notices
+
+			result, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+			if err == nil {
+				t.Fatal("a run whose host refused it returned no error, want one with what gh wrote in it")
+			}
+			published := []struct{ name, said string }{
+				{"the error the command prints", err.Error()},
+				{"the journal of the attempt", read(t, result.Journal)},
+				{"the way out of the run", read(t, result.ErrorJournal)},
+				{"the events of the route", c.events.String()},
+				{"the state of the task", read(t, c.statePath(m))},
+				{"the reason of the run", result.Reason},
+			}
+			for _, refusal := range result.Rejections {
+				published = append(published, struct{ name, said string }{"a refusal of the run", refusal})
+			}
+			for _, where := range published {
+				nothingOfTheCredentials(t, where.name, where.said, c.forms)
+			}
+			// And the words are: a journal that says only `[redacted]` says that something was
+			// there and nothing of what the run did (docs/DESIGN.md §7e).
+			journal := read(t, result.Journal)
+			if !strings.Contains(journal, secret.Redacted) || !strings.Contains(journal, "proxy.example.com:1080") {
+				t.Errorf("the journal of the attempt is %q, want the words of the run with only the "+
+					"credentials of the route taken out of them", journal)
+			}
+		})
+	}
+}
+
+// TestTheReportOfARefusalHoldsNoSecretOfTheRun: a run that reached for a secret is reported
+// twice — the outcome of the run and the line of its journal — and the report names the
+// command the refusal came in with, because a command of a shell is refused whole and a
+// person has to see what it was. A command may hold a token of a run, and a report about a
+// secret of a run that carries that secret is a report that puts it into an issue
+// (docs/DESIGN.md §7a.1, §7e, §7i).
+func TestTheReportOfARefusalHoldsNoSecretOfTheRun(t *testing.T) {
+	pair := theCredentialsOfACase[1]
+	m := newMachine(t)
+	c := aRunOnARouteWithCredentials(t, m, "proxy", pair, saidOfGh{})
+	// The run was refused the key of the person and named the credentials of the route in the
+	// command it was refused in: an agent that reads its own environment into a command is
+	// an agent that hands a proxy password to the machinery of the refusals.
+	m.answers["opencode"] = answer{
+		stdout: theRun,
+		stderr: "! permission requested: read (" + c.address + "); auto-rejecting\n" +
+			"curl --proxy socks5://" + pair + "@proxy.example.com:1080 https://api.github.com\n",
+	}
+	m.answers["gh issue view"] = answer{stdout: theIssueOfTheTask(t)}
+	env := m.env()
+	env.Secrets = storeOfTheCredentialsOfTheProfile{pair: pair}
+	env.Notices = c.notices
+
+	result, err := Run(t.Context(), env, c.cfg, c.set, Request{Number: 43, RepoDir: m.repo})
+
+	if err != nil {
+		t.Fatalf("Run returned an error: %v", err)
+	}
+	if len(result.Rejections) == 0 {
+		t.Fatal("the report of the run holds no refusal, want the one the way out of it says")
+	}
+	// The refusal is reported: what the run was refused is the first thing an orchestrator
+	// reads about it, and a report that says nothing of it is a report about nothing (§7a.1).
+	if !strings.Contains(strings.Join(result.Rejections, " "), "read") {
+		t.Errorf("the refusals of the run are %q, want what the run was refused", result.Rejections)
+	}
+	for _, where := range []struct{ name, said string }{
+		{"a refusal of the report of the run", strings.Join(result.Rejections, "\n")},
+		{"the journal of the attempt", read(t, result.Journal)},
+		{"the way out of the run", read(t, result.ErrorJournal)},
+		{"the state of the task", read(t, c.statePath(m))},
+		{"the events of the route", c.events.String()},
+	} {
+		nothingOfTheCredentials(t, where.name, where.said, c.forms)
+	}
 }

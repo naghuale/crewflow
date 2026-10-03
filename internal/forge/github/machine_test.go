@@ -74,6 +74,22 @@ func (m *machine) fails(commandLine, line string) *machine {
 	return m
 }
 
+// failsWithAnAnswer makes gh exit with the code 1 having written the line to its answer
+// rather than to its complaint: a program writes what it has to say to either of its two
+// streams, and the answer is the one a caller reads.
+func (m *machine) failsWithAnAnswer(commandLine, output string) *machine {
+	m.answers[commandLine] = answer{stdout: output, code: 1}
+	return m
+}
+
+// cannotStart makes gh not start at all and fail with the error, the way a program that is
+// not there or cannot be reached on this machine does: the words of such an error are the
+// words of a program and of the machine, and they are what an error of a command is made of.
+func (m *machine) cannotStart(commandLine string, err error) *machine {
+	m.answers[commandLine] = answer{err: err}
+	return m
+}
+
 // without takes programs out of PATH.
 func (m *machine) without(programs ...string) *machine {
 	for _, program := range programs {

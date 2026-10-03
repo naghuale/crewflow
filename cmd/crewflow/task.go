@@ -59,7 +59,7 @@ var (
 )
 
 // runTask runs one task, in a worktree of its own, and says how the run ended.
-func runTask(args []string, stdout, stderr io.Writer) int {
+func runTask(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow task: nothing to do\n\n")
 		usage(stderr)
@@ -67,21 +67,21 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 	}
 	switch args[0] {
 	case "run":
-		return runTaskRun(args[1:], stdout, stderr)
+		return runTaskRun(out, args[1:], stdout, stderr)
 	case "resume":
-		return runTaskResume(args[1:], stdout, stderr)
+		return runTaskResume(out, args[1:], stdout, stderr)
 	case "check":
-		return runTaskCheck(args[1:], stdout, stderr)
+		return runTaskCheck(out, args[1:], stdout, stderr)
 	case "admit":
-		return runTaskAdmit(args[1:], stdout, stderr)
+		return runTaskAdmit(out, args[1:], stdout, stderr)
 	case "watch":
-		return runTaskWatch(args[1:], stdout, stderr)
+		return runTaskWatch(out, args[1:], stdout, stderr)
 	case "list":
-		return runTaskList(args[1:], stdout, stderr)
+		return runTaskList(out, args[1:], stdout, stderr)
 	case "attention":
-		return runTaskAttention(args[1:], stdout, stderr)
+		return runTaskAttention(out, args[1:], stdout, stderr)
 	case "check-stalled":
-		return runTaskCheckStalled(args[1:], stdout, stderr)
+		return runTaskCheckStalled(out, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		usage(stdout)
 		return exitOK
@@ -98,7 +98,7 @@ func runTask(args []string, stdout, stderr io.Writer) int {
 // run opened the change request of its branch and changed nothing it was not to
 // change: every other outcome is something a person or an orchestrator has to
 // decide about, and a code cannot decide it (docs/DESIGN.md §6).
-func runTaskRun(args []string, stdout, stderr io.Writer) int {
+func runTaskRun(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("run", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository to make the worktree out of, the folder crewflow was called in when empty")
@@ -127,7 +127,7 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	// secrets and the run are given the same notices, so that one line reaches both and
 	// not one of them (docs/DESIGN.md §7i).
 	notices := secret.NewNotices(stderr)
-	set, err := taskRoles(cfg, roleEnv(*configPath, notices))
+	set, err := taskRoles(cfg, roleEnv(*configPath, notices, out))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -140,6 +140,11 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 	env := taskRunEnv(home)
 	env.ConfigPath = *configPath
 	env.Notices = notices
+	// The run publishes through the boundary of the command: the report it prints on the
+	// terminal of the person, the journal of its attempt, the events and the state of the
+	// task are all of it one boundary, and a value taken out of one of them and not of the
+	// others is a secret kept for ever in the one (docs/DESIGN.md §7e).
+	env.Out = out
 	result, err := taskrun.Run(ctx, env, cfg, set, taskrun.Request{
 		Number:   wanted,
 		RepoDir:  *repoDir,
@@ -178,7 +183,7 @@ func runTaskRun(args []string, stdout, stderr io.Writer) int {
 // The code of the command is the code of `task run`: zero only when the run opened the
 // change request of its branch, and a refusal of the point is a failure with its reason
 // named, because a reason a person cannot read is a reason they will ask about again.
-func runTaskResume(args []string, stdout, stderr io.Writer) int {
+func runTaskResume(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("resume", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository the worktree is made from, the folder crewflow was called in when empty")
@@ -205,7 +210,7 @@ func runTaskResume(args []string, stdout, stderr io.Writer) int {
 	// continuation that stands in front of that window is a run like any other
 	// (docs/DESIGN.md §7i).
 	notices := secret.NewNotices(stderr)
-	set, err := taskRoles(cfg, roleEnv(*configPath, notices))
+	set, err := taskRoles(cfg, roleEnv(*configPath, notices, out))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -215,6 +220,11 @@ func runTaskResume(args []string, stdout, stderr io.Writer) int {
 	env := taskRunEnv(home)
 	env.ConfigPath = *configPath
 	env.Notices = notices
+	// The run publishes through the boundary of the command: the report it prints on the
+	// terminal of the person, the journal of its attempt, the events and the state of the
+	// task are all of it one boundary, and a value taken out of one of them and not of the
+	// others is a secret kept for ever in the one (docs/DESIGN.md §7e).
+	env.Out = out
 	result, err := taskrun.Resume(ctx, env, cfg, set, taskrun.Request{Number: wanted, RepoDir: *repoDir})
 	if err != nil {
 		failed(stderr, err)
@@ -239,7 +249,7 @@ func runTaskResume(args []string, stdout, stderr io.Writer) int {
 // says whether it may be run, and what it is missing when it may not. Nothing is
 // created for a check: no branch, no worktree, no attempt, no state, because a check
 // that made a worktree would already be a run of a task (docs/DESIGN.md §7f).
-func runTaskCheck(args []string, stdout, stderr io.Writer) int {
+func runTaskCheck(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("check", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
@@ -256,7 +266,7 @@ func runTaskCheck(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
+	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr), out))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -292,7 +302,7 @@ func runTaskCheck(args []string, stdout, stderr io.Writer) int {
 // The code of the command is zero only where the pair is admitted: the record is written
 // whatever it says, and a person who asked about a pair that does not hold is told so by
 // the code as well as by the eight lines.
-func runTaskAdmit(args []string, stdout, stderr io.Writer) int {
+func runTaskAdmit(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("admit", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the repository the working copies of the pair are of, the folder crewflow was called in when empty")
@@ -317,7 +327,7 @@ func runTaskAdmit(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return failed(stderr, err)
 	}
-	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
+	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr), out))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -325,6 +335,11 @@ func runTaskAdmit(args []string, stdout, stderr io.Writer) int {
 	env := taskRunEnv(home)
 	env.ConfigPath = *configPath
 	env.Notices = notices
+	// The run publishes through the boundary of the command: the report it prints on the
+	// terminal of the person, the journal of its attempt, the events and the state of the
+	// task are all of it one boundary, and a value taken out of one of them and not of the
+	// others is a secret kept for ever in the one (docs/DESIGN.md §7e).
+	env.Out = out
 	record, err := taskrun.Admit(context.Background(), env, cfg, set, taskrun.AdmissionRequest{
 		First:     first,
 		Second:    second,
@@ -444,7 +459,7 @@ func printAdmission(w io.Writer, record task.Admission, path string) {
 // attempt of a task wrote, as the profile of the run reads it, and it goes on
 // showing while the attempt is still running. It creates nothing and starts nobody: a
 // watch of a run is a second terminal, not a second run (docs/DESIGN.md §7).
-func runTaskWatch(args []string, stdout, stderr io.Writer) int {
+func runTaskWatch(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("watch", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	attempt := flags.Int("attempt", 0, "the attempt to watch, the last one of the task when not named")
@@ -494,7 +509,7 @@ func runTaskWatch(args []string, stdout, stderr io.Writer) int {
 // file is looked for in — the same flag as in `task run`, and the same way it is used:
 // a person points it at the folder they work in. -all is another question: every run
 // of every project of the machine, from any folder, with the project in a column of it.
-func runTaskList(args []string, stdout, stderr io.Writer) int {
+func runTaskList(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("list", stderr)
 	configPath := flags.String("config", "", "path to crewflow.toml, the one in -repo when not named")
 	repo := flags.String("repo", "", "the checkout whose runs to show, the folder crewflow was called in when empty")
@@ -519,7 +534,7 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	runs, err := listOfRuns(context.Background(), *configPath, *repo, *all, taskrun.ListEnv{
+	runs, err := listOfRuns(context.Background(), out, *configPath, *repo, *all, taskrun.ListEnv{
 		Now:     taskClock,
 		Running: taskMachine.Alive,
 	})
@@ -567,7 +582,7 @@ func runTaskList(args []string, stdout, stderr io.Writer) int {
 // named in every record: у каждого проекта свой хостинг и свой файл проекта, поэтому
 // читается одно состояние прогонов и ничего больше, и запись под задачей не оставляется
 // ни в одном из них (§6a, §7g).
-func runTaskAttention(args []string, stdout, stderr io.Writer) int {
+func runTaskAttention(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("attention", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the queue as JSON, for the orchestrator")
@@ -609,7 +624,7 @@ func runTaskAttention(args []string, stdout, stderr io.Writer) int {
 	reading := saysItReads(stderr, readSilence)
 	env.Reading = reading.begin
 	queue, err := taskrun.CheckAttention(ctx, home, cfg.RepoName(), env,
-		hostOfTheProject(ctx, cfg, *configPath), noticeUnderTheTask(cfg, *configPath))
+		hostOfTheProject(ctx, out, cfg, *configPath), noticeUnderTheTask(cfg, out, *configPath))
 	reading.stop()
 	if err != nil {
 		return failed(stderr, err)
@@ -746,8 +761,8 @@ func attentionEnvOfTheFolder(configPath string) (taskrun.AttentionEnv, error) {
 // everything but the review and the acceptance of a change, and every entry of it says that
 // the host was not read. A queue that says "nobody is waiting" because the host was out of
 // reach would be lying about the work of the project (docs.DESIGN.md §6a, §7h).
-func hostOfTheProject(ctx context.Context, cfg config.Config, configPath string) taskrun.Host {
-	set, err := stateRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+func hostOfTheProject(ctx context.Context, out *secret.Out, cfg config.Config, configPath string) taskrun.Host {
+	set, err := stateRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard), out))
 	if err != nil {
 		return hostUnreachable{err}
 	}
@@ -782,7 +797,7 @@ func (h hostUnreachable) FactsOf(context.Context, int, int) (taskrun.HostFacts, 
 // hundred lines about one run there. It reads the state of the tasks and writes nothing
 // else, and it reaches the host only when there is a record to leave under a task
 // (docs/DESIGN.md §6).
-func runTaskCheckStalled(args []string, stdout, stderr io.Writer) int {
+func runTaskCheckStalled(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := taskFlags("check-stalled", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	asJSON := flags.Bool("json", false, "print the answer as JSON, for the orchestrator")
@@ -811,7 +826,7 @@ func runTaskCheckStalled(args []string, stdout, stderr io.Writer) int {
 	// project only where there is something to leave under a task: a project whose host
 	// is not there, or a run that is working, is answered without a network at all
 	// (docs/DESIGN.md §6).
-	standings, err := taskrun.CheckStalled(context.Background(), home, repo, env, recordUnderTheTask(cfg, *configPath))
+	standings, err := taskrun.CheckStalled(context.Background(), home, repo, env, recordUnderTheTask(cfg, out, *configPath))
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -860,11 +875,11 @@ func stallEnv(cfg config.Config) (taskrun.ListEnv, error) {
 // The roles of the project are built the first time there is something to leave under a
 // task, and not before: a project whose host is not reachable, or a run that is working,
 // is answered without a network at all.
-func recordUnderTheTask(cfg config.Config, configPath string) taskrun.Say {
+func recordUnderTheTask(cfg config.Config, out *secret.Out, configPath string) taskrun.Say {
 	var roles *forge.Set
 	return func(ctx context.Context, one taskrun.Standing) (bool, string) {
 		if roles == nil {
-			set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+			set, err := taskRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard), out))
 			if err != nil {
 				return false, err.Error()
 			}
@@ -910,7 +925,7 @@ func printStandings(w io.Writer, standings []taskrun.Standing) {
 // tracker, no host and no network, and the entries of it are told the state of the process
 // of their own task, which is what the state of the task is enough for (docs/DESIGN.md §6,
 // §6a).
-func listOfRuns(ctx context.Context, configPath, repo string, all bool, env taskrun.ListEnv) (taskrun.Runs, error) {
+func listOfRuns(ctx context.Context, out *secret.Out, configPath, repo string, all bool, env taskrun.ListEnv) (taskrun.Runs, error) {
 	home, err := whereCrewflowKeeps()
 	if err != nil {
 		return taskrun.Runs{}, err
@@ -944,7 +959,7 @@ func listOfRuns(ctx context.Context, configPath, repo string, all bool, env task
 		// машины свой хостинг и свой файл проекта, а папка, из которой спросили, может
 		// проектом вовсе не быть (§6).
 		queue, err := taskrun.CheckAttention(ctx, home, cfg.RepoName(), attention,
-			hostOfTheProject(ctx, cfg, configPath), nil)
+			hostOfTheProject(ctx, out, cfg, configPath), nil)
 		if err != nil {
 			return taskrun.Runs{}, err
 		}
@@ -1111,7 +1126,7 @@ func taskNumber(stderr io.Writer, subcommand, number string) (int, bool) {
 // host and the clock. The store of the secrets is behind the wait of the keychain of
 // macOS and says what it is about to wait for to the notices of the command
 // (docs/DESIGN.md §7i).
-func roleEnv(configPath string, notices *secret.Notices) forge.Env {
+func roleEnv(configPath string, notices *secret.Notices, out *secret.Out) forge.Env {
 	return forge.Env{
 		LookPath:   exec.LookPath,
 		Run:        runRole,
@@ -1119,6 +1134,7 @@ func roleEnv(configPath string, notices *secret.Notices) forge.Env {
 		Secrets:    storeOfSecrets(notices),
 		HTTP:       httpOfMachine,
 		Now:        time.Now,
+		Out:        out,
 	}
 }
 

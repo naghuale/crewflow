@@ -3,6 +3,7 @@ package github
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -158,7 +159,7 @@ func TestTheErrorOfAGhThatNamedTheRouteHoldsNoCredentialOfIt(t *testing.T) {
 	m := newMachine().fails("pr list", "HTTP 403: Resource not accessible by integration, "+
 		"the route socks5://u:abc@proxy.example.com:1080 asked for pa%20ss and refused\n")
 	env := m.env(t)
-	env.RouteSecrets = secret.Chosen("u:abc", "pa%20ss")
+	env.Out = secret.NewOut(secret.Chosen("u:abc", "pa%20ss")...)
 	a := New(repo, "", env)
 
 	_, _, err := a.FindChangeRequest(t.Context(), "crewflow/43-the-run")
@@ -852,4 +853,63 @@ func checkNames(checks []forge.Check) []string {
 		names = append(names, check.Name)
 	}
 	return names
+}
+
+// TestEveryWayGhCanSayNoGoesThroughTheBoundaryOfTheAdapter: an error of a command is a line of
+// the terminal of the person who started it and a line of the state of a task, and every way
+// gh can say no is made of what it wrote or of what the machine said when it could not be
+// started at all — and both were printed as they were, with the address of the profile of the
+// project in them (D-068 RECHECK-FINDING-5, docs.DESIGN.md §7e, §7i).
+func TestEveryWayGhCanSayNoGoesThroughTheBoundaryOfTheAdapter(t *testing.T) {
+	const address = "socks5://u:pa%20ss@proxy.example.com:1080"
+	for _, tc := range []struct {
+		name    string
+		program func(*machine) *machine
+		ask     func(*Adapter) error
+	}{
+		{
+			name: "a gh that could not be started",
+			program: func(m *machine) *machine {
+				return m.cannotStart("pr list", fmt.Errorf("exec: %s: no route through %s", program, address))
+			},
+			ask: func(a *Adapter) error {
+				_, _, err := a.FindChangeRequest(t.Context(), "crewflow/43-the-run")
+				return err
+			},
+		},
+		{
+			name: "a gh that wrote what it has to say to its answer",
+			program: func(m *machine) *machine {
+				return m.failsWithAnAnswer("pr list", "HTTP 403: Resource not accessible by integration through "+address)
+			},
+			ask: func(a *Adapter) error {
+				_, _, err := a.FindChangeRequest(t.Context(), "crewflow/43-the-run")
+				return err
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := tc.program(newMachine()).env(t)
+			env.Out = secret.NewOut(secret.Chosen("u:pa%20ss", "pa ss")...)
+
+			err := tc.ask(New(repo, "", env))
+
+			if err == nil {
+				t.Fatal("the host of the project could not be read and no error says so")
+			}
+			for _, value := range []string{"u:pa%20ss", "pa ss"} {
+				if strings.Contains(err.Error(), value) {
+					t.Errorf("the error %q holds the value %q of a credential of the route", err, value)
+				}
+			}
+			if !strings.Contains(err.Error(), secret.Redacted) {
+				t.Errorf("the error %q holds no %q, want the credentials of the route taken out of it",
+					err, secret.Redacted)
+			}
+			// The words of the program are still there: only what of them is a secret is gone.
+			if !strings.Contains(err.Error(), "gh pr list") {
+				t.Errorf("the error %q does not name the command a person may run by hand", err)
+			}
+		})
+	}
 }

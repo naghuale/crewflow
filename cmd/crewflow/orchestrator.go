@@ -59,18 +59,21 @@ var startProgram = doctor.Command
 // of a merge is made as the account of the app, and a checkout of a person is never
 // written to make it so (docs/DESIGN.md §7a, §7h, §7i).
 //
-// What a command of it complained about goes through the editor of the route first: the
-// address of the profile is in that environment, a git that could not reach the host names
-// that profile in what it says, and what it says becomes the error a review or a merge is
-// refused with — on the terminal of the person who started the command and in the journal of
-// the merge (D-068 RECHECK-FINDING-5, §7e, §7i). What it answered is left as it is: that is
-// what `git cat-file` and `git ls-remote` are read by, and a value taken out of an answer is
-// a value no program can read back (§7e).
-func gitIn(environment []string) merge.Runner {
-	values := valuesOfRoute(environment)
+// What a command of it complained about goes through the boundary of the command before it
+// is handed on: the address of the profile is in that environment, a git that could not
+// reach the host names that profile in what it says, and what it says becomes the error a
+// review or a merge is refused with — on the terminal of the person who started the command
+// and in the journal of the merge (D-068 RECHECK-FINDING-5, §7e, §7i). The values of the
+// route are learned into that boundary as the git of the review is built, so that
+// everything this command publishes is cleaned with them.
+//
+// What git answered is left as it is: that is what `git cat-file` and `git ls-remote` are
+// read by, and a value taken out of an answer is a value no program can read back (§7e).
+func gitIn(out *secret.Out, environment []string) merge.Runner {
+	out.Learn(valuesOfRoute(environment)...)
 	return func(ctx context.Context, name string, args []string, dir string) ([]byte, []byte, int, error) {
 		stdout, stderr, exitCode, err := startProgram(ctx, name, args, dir, environment)
-		return stdout, []byte(secret.Redact(string(stderr), values...)), exitCode, err
+		return stdout, []byte(out.Text(string(stderr))), exitCode, out.Err(err)
 	}
 }
 

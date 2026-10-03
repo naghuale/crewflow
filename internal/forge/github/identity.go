@@ -307,10 +307,10 @@ func (a *Adapter) OpenChangeRequest(ctx context.Context, branch, title, body str
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", env)
 	switch {
 	case err != nil:
-		return forge.ChangeRequest{}, fmt.Errorf("gh %s: %w", strings.Join(arguments, " "), err)
+		return forge.ChangeRequest{}, a.env.Out.Err(fmt.Errorf("gh %s: %w", strings.Join(arguments, " "), err))
 	case code != 0:
-		return forge.ChangeRequest{}, fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments, " "), code, firstLine(stderr))
+		return forge.ChangeRequest{}, a.env.Out.Err(fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments, " "), code, firstLine(stderr)))
 	}
 	// The request is read back instead of being assembled out of the URL gh printed:
 	// a report shows the head of it, and the head is what a review is about (§8).
@@ -370,10 +370,10 @@ func (a *Adapter) WriteComment(ctx context.Context, number int, body string) err
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", environment)
 	switch {
 	case err != nil:
-		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+		return a.env.Out.Err(fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err))
 	case code != 0:
-		return fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments[:5], " "), code, firstLine(stderr))
+		return a.env.Out.Err(fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr)))
 	}
 	return nil
 }

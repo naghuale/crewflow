@@ -34,7 +34,7 @@ import (
 // -request-changes the command writes the record of a review under the change, as the
 // orchestrator of the project: a record an executor could write is a record the gate
 // would have to refuse (§7h, §7i).
-func runReview(args []string, stdout, stderr io.Writer) int {
+func runReview(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := reviewFlags(stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout to read the history of the change in, the folder crewflow was called in when empty")
@@ -63,14 +63,14 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 	// the project gives it: the record of a review counts only because a reviewer of the
 	// project wrote it, and the rules of a branch are rights a person has — and, in the
 	// mode of a separate login, rights the App of the orchestrator has (§7h, §7i).
-	set, err := reviewRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
+	set, err := reviewRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr), out))
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	facts, err := gatherReview(ctx, set, cfg, home, *repoDir, change, stderr)
+	facts, err := gatherReview(ctx, out, set, cfg, home, *repoDir, change, stderr)
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}
@@ -102,7 +102,7 @@ func runReview(args []string, stdout, stderr io.Writer) int {
 // record of a review is an approval, and the owners, whose records are the decision of a
 // person — where the orchestrator works apart from the owner, the first of the two is
 // its account and the second is not it (§5, §7h, §7i).
-func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, repoDir string, change int, stderr io.Writer) (gate.Facts, error) {
+func gatherReview(ctx context.Context, out *secret.Out, set forge.Set, cfg config.Config, home, repoDir string, change int, stderr io.Writer) (gate.Facts, error) {
 	reviewers, err := reviewersOf(ctx, cfg, set)
 	if err != nil {
 		return gate.Facts{}, err
@@ -112,7 +112,7 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 		return gate.Facts{}, err
 	}
 	number := taskOfChange(home, cfg, change)
-	history, err := historyOf(ctx, cfg, set, repoDir, stderr)
+	history, err := historyOf(ctx, out, cfg, set, repoDir, stderr)
 	if err != nil {
 		return gate.Facts{}, err
 	}
@@ -136,7 +136,7 @@ func gatherReview(ctx context.Context, set forge.Set, cfg config.Config, home, r
 // was called in, or the one -repo named. A review is asked in a checkout of the
 // project and creates nothing in it: a fetch of the objects of the head is a fetch
 // like any other, and nothing else of the run writes there (§7h).
-func historyOf(ctx context.Context, cfg config.Config, set forge.Set, repoDir string, stderr io.Writer) (gate.History, error) {
+func historyOf(ctx context.Context, out *secret.Out, cfg config.Config, set forge.Set, repoDir string, stderr io.Writer) (gate.History, error) {
 	environment, err := gitEnvironment(ctx, cfg, set, stderr)
 	if err != nil {
 		return gate.History{}, err
@@ -145,7 +145,7 @@ func historyOf(ctx context.Context, cfg config.Config, set forge.Set, repoDir st
 	if dir == "" {
 		dir = "."
 	}
-	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: gitOf(environment)}, nil
+	return gate.History{Dir: dir, Branch: cfg.Project.DefaultBranch, Run: gitOf(out, environment)}, nil
 }
 
 // taskFactsOf is what the gate asks the tracker about the task of a change: the paths

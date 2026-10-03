@@ -38,7 +38,7 @@ var (
 // runAuth runs the commands about the credentials of a run: putting the key of an app
 // in the store of the machine, saying whether the app is set up, and answering git
 // when it asks for a password (docs/DESIGN.md §7i).
-func runAuth(args []string, stdout, stderr io.Writer) int {
+func runAuth(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow auth: nothing to do\n\n")
 		usage(stderr)

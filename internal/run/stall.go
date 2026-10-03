@@ -437,10 +437,14 @@ func (w *watcher) look() {
 // own, and goes on when it cannot: what a person reads about the standing of a run is
 // the state of the task and the record under the task, and a line of a journal that
 // could not be written is not a reason to stop a run for. The line goes through the
-// redactor of the secrets of the run like every other line of it, because the last
+// boundary of the run like every other line of it, because the last
 // step of a run is a line the executor wrote (docs/DESIGN.md §7e).
 func (w *watcher) note(said string) {
-	_ = appendLine(w.files.ErrorJournal, secret.Redact(said, w.runner.secrets()...))
+	said, refused := w.runner.boundary().Publish(secret.ChannelJournal, said)
+	if refused != nil {
+		said = secret.Redacted
+	}
+	_ = appendLine(w.files.ErrorJournal, said)
 }
 
 // attemptNow is the attempt of the run as the run itself knows it: the sign of life the

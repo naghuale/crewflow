@@ -8,6 +8,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github/app"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // The names a report calls the checks of this adapter by: the program, and the
@@ -320,14 +321,10 @@ func listed(items []string) string {
 func (a *Adapter) version(ctx context.Context) forge.Check {
 	stdout, stderr, code, err := a.env.Run(ctx, program, []string{"--version"}, "", a.environment())
 	if err != nil || code != 0 {
-		return forge.Check{
-			Name:   ghCheck,
-			Status: forge.Fail,
-			Detail: program + " --version " + howItFailed(code, err, stdout, stderr),
-			Hint:   "install " + program + ", or put the " + program + " of the project in PATH",
-		}
+		return a.check(ghCheck, forge.Fail, program+" --version "+a.howItFailed(code, err, stdout, stderr),
+			"install "+program+", or put the "+program+" of the project in PATH")
 	}
-	return forge.Check{Name: ghCheck, Status: forge.OK, Detail: firstLine(stdout, stderr)}
+	return a.check(ghCheck, forge.OK, firstLine(stdout, stderr), "")
 }
 
 // login is the check that somebody is signed in with gh, and it reports only who:
@@ -340,24 +337,32 @@ func (a *Adapter) login(ctx context.Context) forge.Check {
 		if line := firstLine(stderr, stdout); line != "" {
 			detail = line
 		}
-		return forge.Check{
-			Name:   ghLoginCheck,
-			Status: forge.Fail,
-			Detail: detail,
-			Hint:   program + " auth login",
-		}
+		return a.check(ghLoginCheck, forge.Fail, detail, program+" auth login")
 	}
 	detail := "signed in"
 	if match := accountPattern.FindSubmatch(stdout); match != nil {
 		detail = "signed in as " + string(match[1])
 	}
-	return forge.Check{Name: ghLoginCheck, Status: forge.OK, Detail: detail}
+	return a.check(ghLoginCheck, forge.OK, detail, "")
+}
+
+// check is one line of a report of this adapter with what it says published through the
+// boundary of the adapter: what a program of the machine wrote about a failure of it is
+// in the detail of the check, and the address of the profile with the credentials in it
+// was in the environment of that program (docs.DESIGN.md §7e).
+func (a *Adapter) check(name string, status forge.Status, detail, hint string) forge.Check {
+	said, err := a.env.Out.Publish(secret.ChannelReport, detail)
+	if err != nil {
+		said = "this check could not be published"
+	}
+	return forge.Check{Name: name, Status: status, Detail: said, Hint: hint}
 }
 
 // howItFailed is how a report says that a program did not do its job: that it
 // could not be started at all, or the code it exited with and what it said on
-// the way out.
-func howItFailed(code int, err error, outputs ...[]byte) string {
+// the way out. The words are as the program wrote them, and the boundary of the
+// adapter takes the values of the route out of them where the check is published (§7e).
+func (a *Adapter) howItFailed(code int, err error, outputs ...[]byte) string {
 	if err != nil {
 		return "could not be started: " + err.Error()
 	}

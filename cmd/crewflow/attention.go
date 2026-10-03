@@ -319,11 +319,11 @@ func stateOfChecks(checks []forge.CheckRun) taskrun.ChecksState {
 // the orchestrator and is written as him: in the mode of an account of its own the App of the
 // executor is refused by the host of an issue, and a notice that cannot be written is no
 // notice at all (docs.DESIGN.md §6a, §7g, §7i).
-func noticeUnderTheTask(cfg config.Config, configPath string) taskrun.SayAttention {
+func noticeUnderTheTask(cfg config.Config, out *secret.Out, configPath string) taskrun.SayAttention {
 	var built *forge.Set
 	return func(ctx context.Context, one taskrun.Attention) (bool, string) {
 		if built == nil {
-			set, err := reviewRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard)))
+			set, err := reviewRoles(cfg, roleEnv(configPath, secret.NewNotices(io.Discard), out))
 			if err != nil {
 				return false, err.Error()
 			}

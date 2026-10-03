@@ -19,6 +19,7 @@ import (
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // mergeConfig is the file of a project a change of it is merged in: it names who
@@ -399,7 +400,7 @@ func (h *mergeHost) use(t *testing.T) {
 // and the environment every command of it is started with: the push of a merge in the
 // mode of a separate login is made as the account of an app of the host, and a test of
 // that has to see the settings git was pointed at (§7i).
-func (h *mergeHost) gitIn(environment []string) merge.Runner {
+func (h *mergeHost) gitIn(_ *secret.Out, environment []string) merge.Runner {
 	h.environment = environment
 	return h.git
 }

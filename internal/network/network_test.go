@@ -490,8 +490,9 @@ func TestWhatARouteSaysIsASecretIsWhatItHandsAChild(t *testing.T) {
 
 	values := route.Secrets(theCredentialsOfAProfile)
 
+	out := secret.NewOut(secret.Chosen(values...)...)
 	for _, given := range environment {
-		if redacted := secret.Redact(given, secret.Chosen(values...)...); strings.Contains(redacted, "s3cret") {
+		if redacted := out.Text(given); strings.Contains(redacted, "s3cret") {
 			t.Errorf("the value %q is given to a child and %q is what a person reads from it: "+
 				"the password of the profile is in it", given, redacted)
 		}
@@ -543,6 +544,7 @@ func TestThePasswordOfAProfileIsASecretAsTheAddressWritesIt(t *testing.T) {
 	_, encoded, _ := strings.Cut(parsed.User.String(), ":")
 
 	values := route.Secrets(theCredentialsOfAProfile)
+	out := secret.NewOut(secret.Chosen(values...)...)
 
 	if encoded == "" || encoded == thePasswordOfAProfile {
 		t.Fatalf("the address of the profile does not write the password another way, "+
@@ -552,7 +554,7 @@ func TestThePasswordOfAProfileIsASecretAsTheAddressWritesIt(t *testing.T) {
 		"the proxy of the project asked for " + encoded + " and refused",
 		"curl --proxy-user ann:" + encoded + " https://api.github.com",
 	} {
-		if redacted := secret.Redact(said, secret.Chosen(values...)...); strings.Contains(redacted, encoded) {
+		if redacted := out.Text(said); strings.Contains(redacted, encoded) {
 			t.Errorf("the words of a program are %q and the values of the route leave %q in them: "+
 				"the password of the profile as the address writes it is not a secret of the run", said, redacted)
 		}

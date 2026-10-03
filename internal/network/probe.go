@@ -269,8 +269,13 @@ type Machine struct {
 	// The check of a route is a test of the route and not a test of the network of the
 	// machine the tests run on, and that is true of every connection it makes: a check that
 	// answered from a proxy of the machine of a person would be a check of that proxy
-	// (docs/DESIGN.md §7d).
+	// (docs.DESIGN.md §7d).
 	Dial func(ctx context.Context, network, address string) (net.Conn, error)
+	// Out is the boundary of the answers of this check: the detail of every state of it
+	// is published through it, with the credentials of the route taken out of it in
+	// every spelling the address of the profile writes them and whatever their length
+	// is (docs.DESIGN.md §7e).
+	Out *secret.Out
 }
 
 // Check asks every capability of the route, one by one, and says what came of it. A
@@ -294,6 +299,19 @@ func Check(ctx context.Context, m Machine, route Route, noProxy []string) ([]Sta
 	if err != nil {
 		return nil, err
 	}
+	// What a check may not print, it learns before it asks anything: the credentials of
+	// this route are read here and go into the environment of every program the check
+	// starts, and a program that prints what it was given is answered by the boundary
+	// on the way out of it (§7e).
+	//
+	// A check that was given no boundary makes one of its own: the answers of a check
+	// are read by people and are printed by commands that were not handed a boundary of
+	// their own, and the values of the route are the ones a report has to be cleaned
+	// with whatever else there is (§7e).
+	if m.Out == nil {
+		m.Out = secret.NewOut()
+	}
+	m.Out.Learn(secret.Chosen(route.Secrets(credentials)...)...)
 	states := make([]State, 0, len(Capabilities))
 	for _, capability := range Capabilities {
 		if ctx.Err() != nil {
@@ -308,7 +326,25 @@ func Check(ctx context.Context, m Machine, route Route, noProxy []string) ([]Sta
 		}
 		states = append(states, m.ask(ctx, capability, route, environment, credentials))
 	}
-	return states, nil
+	return published(m.Out, states), nil
+}
+
+// published are the states of a check as a person and a report may read them: every detail
+// of them through the boundary of the check, so that what a program of the route wrote into
+// one is cleaned on the way out and not here.
+//
+// It is after every check is asked and not during one: the reason of a state is worked out
+// of what the program wrote as it wrote it, and a value cut out of the middle of that reading
+// is a state that says the wrong reason (docs.DESIGN.md §7d, §7e).
+func published(out *secret.Out, states []State) []State {
+	for at, state := range states {
+		detail, err := out.Publish(secret.ChannelReport, state.Detail)
+		if err != nil {
+			continue
+		}
+		states[at].Detail = detail
+	}
+	return states
 }
 
 // Credentials is the login and the password of the profile, and only when it says that
@@ -357,6 +393,10 @@ func Configured(store secret.Store, route Route) (bool, error) {
 }
 
 // ask is one capability of one route, with the clock around it.
+//
+// The detail it holds is what the program wrote as it wrote it: what is read out of it is
+// worked out before the state is published, and a value cut out of the middle of that
+// reading is a reason of a failure that crewflow names wrongly (docs.DESIGN.md §7d, §7e).
 func (m Machine) ask(ctx context.Context, capability string, route Route, environment []string, credentials string) State {
 	started := m.Now()
 	state := m.check(ctx, capability, route, environment, credentials)
@@ -369,13 +409,6 @@ func (m Machine) ask(ctx context.Context, capability string, route Route, enviro
 	}
 	state.CheckedAt = started
 	state.Duration = m.Now().Sub(started).Round(time.Millisecond).String()
-	if credentials != "" {
-		// Nothing of a credential of the profile is in what a person reads, whatever the
-		// program that answered wrote: the values of the route go through the redactor of
-		// the secrets of the machine, in every spelling the address of the profile writes
-		// them and whatever their length is (docs/DESIGN.md §7e).
-		state.Detail = secret.Redact(state.Detail, secret.Chosen(route.Secrets(credentials)...)...)
-	}
 	if m.Now().Sub(started) > m.ValidFor {
 		state.Result = StateStale
 		state.Detail = fmt.Sprintf("%s, and the check is older than the %s of [network] test_valid_for",

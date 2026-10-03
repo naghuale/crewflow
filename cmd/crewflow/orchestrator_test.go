@@ -13,6 +13,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/gate"
 	"github.com/naghuale/crewflow/internal/merge"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // orchestratorConfig is the file of a project whose orchestrator works as an account of
@@ -392,7 +393,7 @@ func TestTheGitOfTheMachineIsTheOneOfTheCommands(t *testing.T) {
 		started = append(started, environment)
 		return []byte(name + " " + strings.Join(args, " ") + " in " + dir), nil, 0, nil
 	}
-	runner := gitIn([]string{"GH_TOKEN=ghs_token_of_the_orchestrator"})
+	runner := gitIn(secret.NewOut(), []string{"GH_TOKEN=ghs_token_of_the_orchestrator"})
 
 	out, _, code, err := runner(t.Context(), "git", []string{"push", "origin", "x:refs/heads/main"}, "/w")
 
@@ -417,7 +418,7 @@ func TestWhatTheGitOfAMergeSaysCarriesNoCredentialOfTheRoute(t *testing.T) {
 	startProgram = func(_ context.Context, name string, args []string, dir string, environment []string) ([]byte, []byte, int, error) {
 		return []byte("the answer of " + strings.Join(args, " ")), []byte(complained), 128, nil
 	}
-	runner := gitIn([]string{"HTTPS_PROXY=socks5://u:pa%20ss@proxy.example.com:1080"})
+	runner := gitIn(secret.NewOut(), []string{"HTTPS_PROXY=socks5://u:pa%20ss@proxy.example.com:1080"})
 
 	out, stderr, code, err := runner(t.Context(), "git", []string{"fetch", "origin", "main"}, "/w")
 

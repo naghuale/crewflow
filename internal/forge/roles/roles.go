@@ -217,24 +217,35 @@ func withoutSecrets(env forge.Env) forge.Env {
 // then go out the way the shell of the machine happened to leave it, and a report would
 // say the project cannot be read while the answer would be a proxy of somebody else.
 //
-// The roles are also given what the credentials of that route are, and an adapter puts
-// what its programs said through it before the words become an error of a command: gh was
-// started with the address of the profile in its environment, and a proxy that names itself
-// in a refusal would otherwise put the password of a person into a terminal and into a state
-// of a task (docs/DESIGN.md §7e).
+// The roles are also given the boundary of the command, and an adapter puts what its
+// programs said through it before the words become an error of a command: gh was started
+// with the address of the profile in its environment, and a proxy that names itself in a
+// refusal would otherwise put the password of a person into a terminal and into a state of
+// a task. The boundary knows both routes of an operation and not only the first one: the
+// diagnostics of the second attempt are printed with the credentials of the profile they
+// went through, and cleaning them with the values of the first route alone is a password
+// of a proxy in a line of a terminal (docs.DESIGN.md §7e, D-068 RECHECK-FINDING-5).
 func throughRoute(cfg config.Config, env forge.Env) forge.Env {
 	route, credentials, err := firstRoute(cfg, env)
 	if err != nil {
 		env.RouteError = err
 		return env
 	}
-	env.RouteSecrets = secret.Chosen(route.Secrets(credentials)...)
+	// A caller that handed no boundary of its own gets one of the roles', and the
+	// credentials of the route are learned into it: an adapter that prints the words of
+	// gh has to be able to take them out of them, and a boundary nobody handed in is a
+	// boundary the adapter has to make for itself (§7e).
+	if env.Out == nil {
+		env.Out = secret.NewOut()
+	}
+	env.Out.Learn(secret.Chosen(route.Secrets(credentials)...)...)
 	machine := network.Fallback{
 		Config:  cfg,
 		Route:   route,
 		Secrets: env.Secrets,
 		Now:     env.Now,
 		Events:  env.Events,
+		Out:     env.Out,
 	}
 	run := env.Run
 	env.Run = func(ctx context.Context, name string, args []string, dir string, extra []string) ([]byte, []byte, int, error) {

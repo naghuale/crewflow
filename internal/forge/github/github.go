@@ -22,7 +22,6 @@ import (
 
 	"github.com/naghuale/crewflow/internal/forge"
 	"github.com/naghuale/crewflow/internal/forge/github/app"
-	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // program is the tool of this adapter: the official client of GitHub, which
@@ -163,10 +162,10 @@ func (a *Adapter) CloseTask(ctx context.Context, number int, comment string) err
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", environment)
 	switch {
 	case err != nil:
-		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+		return a.env.Out.Err(fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err))
 	case code != 0:
-		return fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments[:5], " "), code, a.redacted(firstLine(stderr)))
+		return a.env.Out.Err(fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr)))
 	}
 	return nil
 }
@@ -183,10 +182,10 @@ func (a *Adapter) CommentTask(ctx context.Context, number int, body string) erro
 	_, stderr, code, err := a.env.Run(ctx, program, arguments, "", a.environment())
 	switch {
 	case err != nil:
-		return fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err)
+		return a.env.Out.Err(fmt.Errorf("gh %s: %w", strings.Join(arguments[:5], " "), err))
 	case code != 0:
-		return fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(arguments[:5], " "), code, a.redacted(firstLine(stderr)))
+		return a.env.Out.Err(fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(arguments[:5], " "), code, firstLine(stderr)))
 	}
 	return nil
 }
@@ -681,6 +680,15 @@ func (a *Adapter) json(ctx context.Context, args ...string) ([]byte, error) {
 // jsonIn is gh in the environment of the project plus the one of an identity of a
 // run, and nothing else: a token of a run is added to what gh is started with and is
 // not kept anywhere else (docs/DESIGN.md §7i).
+//
+// Every way gh can say no is an error that goes through the boundary of this adapter
+// before it leaves it: gh is started with the address of the profile in its
+// environment, and a proxy that names itself in a refusal is not rare — and in the mode
+// `fallback` gh may have gone out through the second route, whose credentials the
+// boundary knows as well and the values of the first route alone do not hold. Both
+// streams of what gh wrote are read as gh wrote them and cleaned on the way out, and no
+// value of the address of a profile is left in the error a command prints
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e, §7i).
 func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([]byte, error) {
 	environment, err := a.speaking(ctx)
 	if err != nil {
@@ -689,24 +697,17 @@ func (a *Adapter) jsonIn(extra []string, ctx context.Context, args ...string) ([
 	command := append([]string{}, args...)
 	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", append(environment, extra...))
 	if err != nil {
-		return nil, fmt.Errorf("gh %s: %w", strings.Join(command, " "), err)
+		return nil, a.env.Out.Err(fmt.Errorf("gh %s: %w", strings.Join(command, " "), err))
 	}
 	if code != 0 {
-		return nil, fmt.Errorf("gh %s: exited with %d: %s",
-			strings.Join(command, " "), code, a.redacted(firstLine(stderr, stdout)))
+		return nil, a.env.Out.Err(fmt.Errorf("gh %s: exited with %d: %s",
+			strings.Join(command, " "), code, firstLine(stderr, stdout)))
 	}
 	if len(strings.TrimSpace(string(stdout))) == 0 {
-		return nil, fmt.Errorf("gh %s: no JSON in the answer, gh wrote nothing", strings.Join(command, " "))
+		return nil, a.env.Out.Err(fmt.Errorf("gh %s: no JSON in the answer, gh wrote nothing",
+			strings.Join(command, " ")))
 	}
 	return stdout, nil
-}
-
-// redacted is what a program of the machine said with the credentials of the route of the
-// project taken out of it: gh is started with that route in its environment, and a proxy that
-// names itself in a refusal is not rare — and what gh said goes into the error a command prints
-// to the terminal of the person who started it (docs.DESIGN.md §7e, §7i).
-func (a *Adapter) redacted(words string) string {
-	return secret.Redact(words, a.env.RouteSecrets...)
 }
 
 // environment is what the project adds to the environment of gh: its own server, and

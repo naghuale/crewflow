@@ -21,6 +21,7 @@ import (
 	"github.com/naghuale/crewflow/internal/forge/roles"
 	"github.com/naghuale/crewflow/internal/proc"
 	taskrun "github.com/naghuale/crewflow/internal/run"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -1920,4 +1921,80 @@ func (h *host) ExecutorIdentity(context.Context) (forge.Identity, error) {
 		Mode:        forge.ModeOwner,
 		Description: "owner — the person who runs crewflow (shared rights)",
 	}, nil
+}
+
+// aHostThatRefusesWithTheRoute is the host of a project as it answers when the account of a
+// run did not get in: what it wrote names the profile it went out by, and the words of a
+// refusal are the one part of a program of the machine nobody wrote (docs/DESIGN.md §7e).
+type aHostThatRefusesWithTheRoute struct {
+	forge.Forge
+	line string
+}
+
+// FindChangeRequest is where the refusal of the host is: the request of the branch cannot be
+// read, and what gh wrote about it is in the error of the command.
+func (h aHostThatRefusesWithTheRoute) FindChangeRequest(context.Context, string) (forge.ChangeRequest, bool, error) {
+	return forge.ChangeRequest{}, false, errors.New(h.line)
+}
+
+// TestTheTerminalOfACommandIsTheBoundaryOfTheCommand: a command prints what the programs of
+// the project wrote, and what they wrote may hold the credentials of the route the project
+// goes out by — gh was started with the address of the profile in its environment, and a
+// program that names that address in a refusal prints a password of a person. The terminal of
+// the person who started the command is the boundary of the command, and the values of the
+// route are learned into it where a connection through that route is really made
+// (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e, §7i).
+func TestTheTerminalOfACommandIsTheBoundaryOfTheCommand(t *testing.T) {
+	// Both spellings of one password of a person: the pair as the store keeps it and the
+	// password as the address of the profile writes it, percent-encoded (docs/DESIGN.md §7e).
+	const (
+		pair     = "relay:s3cret%20with%2Fa%20space"
+		password = "s3cret with/a space"
+	)
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	refused := aHostThatRefusesWithTheRoute{
+		Forge: host,
+		line: "HTTP 403: Resource not accessible by integration, through socks5://" + pair +
+			"@proxy.example.com:1080 as " + pair,
+	}
+	taskRoles = func(_ config.Config, env forge.Env) (forge.Set, error) {
+		// The roles of a project learn the credentials of its route into the boundary of the
+		// command before the first program of it is started: an adapter that prints what its
+		// programs wrote has to be able to take the values of the route out of it (§7e).
+		env.Out.Learn(secret.Chosen(pair, password)...)
+		return forge.Set{Tracker: host, Forge: refused, CI: host.ci}, nil
+	}
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"task", "run", "43", "-config", project}, &stdout, &stderr)
+
+	if code != exitFailure {
+		t.Fatalf("crewflow task run = %d, want %d (stderr: %q)", code, exitFailure, stderr.String())
+	}
+	// The refusal of the host is still what the command says: only what of it is a secret is
+	// gone, and a report of a run that says nothing of what happened is worth nothing (§7e).
+	if !strings.Contains(stderr.String(), "HTTP 403") {
+		t.Errorf("crewflow task run wrote %q to stderr, want what the host answered in it", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), secret.Redacted) {
+		t.Errorf("crewflow task run wrote %q to stderr, want the credentials of the route taken out of it",
+			stderr.String())
+	}
+	for _, where := range []struct{ name, said string }{
+		{"the terminal of the command", stdout.String() + stderr.String()},
+	} {
+		for _, value := range []string{pair, password} {
+			if strings.Contains(where.said, value) {
+				t.Errorf("%s holds the value %q of a credential of the route:\n%s", where.name, value, where.said)
+			}
+		}
+	}
+	// The address of the profile is left in it: a person who is told what happened has to see
+	// where the traffic of the project went (docs.DESIGN.md §7d, §7e).
+	if !strings.Contains(stderr.String(), "proxy.example.com:1080") {
+		t.Errorf("crewflow task run wrote %q to stderr, want the address of the profile left in it",
+			stderr.String())
+	}
 }

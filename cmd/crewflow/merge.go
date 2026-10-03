@@ -36,7 +36,7 @@ import (
 // and in the second case git takes the credentials of that push from the helper of
 // crewflow, which signs a token of an hour for that one push and for nothing else
 // (§7h, §7i).
-func runMerge(args []string, stdout, stderr io.Writer) int {
+func runMerge(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := mergeFlags("merge", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout to push from, the folder crewflow was called in when empty")
@@ -48,7 +48,7 @@ func runMerge(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	deps, _, err := depsOfChange(ctx, *configPath, *repoDir, change, stderr)
+	deps, _, err := depsOfChange(ctx, out, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -74,7 +74,7 @@ func runMerge(args []string, stdout, stderr io.Writer) int {
 // at the commit that was merged, is the task closed, and is the CI of that branch green
 // — waits for the checks while they are going on, and writes the moment of the check
 // into the state of the task (docs/DESIGN.md §6, §7h).
-func runVerify(args []string, stdout, stderr io.Writer) int {
+func runVerify(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := mergeFlags("verify", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout the branch of the host is read in, the folder crewflow was called in when empty")
@@ -86,7 +86,7 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	deps, cfg, err := depsOfChange(ctx, *configPath, *repoDir, change, stderr)
+	deps, cfg, err := depsOfChange(ctx, out, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -121,7 +121,7 @@ func runVerify(args []string, stdout, stderr io.Writer) int {
 // from, the task the change is of and the state of that task. The task comes out of what
 // crewflow kept of the runs of this project, and a change no run of it opened still says
 // which task it is of (docs/DESIGN.md §7, §7h).
-func depsOfChange(ctx context.Context, configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
+func depsOfChange(ctx context.Context, out *secret.Out, configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
@@ -130,7 +130,7 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}
-	set, err := mergeRoles(cfg, roleEnv(configPath, secret.NewNotices(stderr)))
+	set, err := mergeRoles(cfg, roleEnv(configPath, secret.NewNotices(stderr), out))
 	if err != nil {
 		return merge.Deps{}, config.Config{}, err
 	}
@@ -177,7 +177,7 @@ func depsOfChange(ctx context.Context, configPath, repoDir string, change int, s
 			Dir:     checkoutOf(repoDir),
 			Branch:  cfg.Project.DefaultBranch,
 			HeadRef: headRefOf(set.Forge, change),
-			Run:     gitOf(checkoutEnvironment),
+			Run:     gitOf(out, checkoutEnvironment),
 		},
 		Tracker:      set.Tracker,
 		Task:         number,

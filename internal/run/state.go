@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/proc"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // State is what crewflow keeps of a task between its runs, so that after an
@@ -606,35 +608,68 @@ type AttemptFiles struct {
 	// sent to and what `crewflow task watch` reads.
 	Journal      string
 	ErrorJournal string
-	// Out and ErrOut are the open files. Everything written to them goes to the
-	// files above as well: a journal that is written only at the end of a run is a
-	// journal of a run that was cut short with nothing in it.
-	Out, ErrOut *os.File
+	// Out and ErrOut are where everything this run publishes is written, and they are
+	// the boundary of the run: what the executor wrote, what it said on the way out,
+	// every line of crewflow about the attempt and every event of it are written into
+	// them with the values of the run taken out. They are made once, here, and not asked
+	// for again at the place that writes — a journal is written from the place that
+	// holds the text, and every one of those places would otherwise be a place a value
+	// could go around (docs/DESIGN.md §7e).
+	Out, ErrOut io.Writer
+	// open are the files behind those writers, in the order they were made.
+	open []*os.File
+	// said are the journal writers: the end of what was written is held back in them
+	// while it may still be the beginning of a value, and [AttemptFiles.Flush] writes
+	// what is left when the run is over.
+	said []*secret.Writer
 }
 
 // Begin opens the two files of an attempt, before the executor is started. What a
 // run writes is in them from its first line, so that a run that is cut short leaves
 // its journal behind (docs/DESIGN.md §7).
-func (j Journals) Begin(number, attempt int) (*AttemptFiles, error) {
+//
+// Everything written to them goes through the boundary of the run, and the boundary
+// is the one of the caller: the journal of an attempt and the terminal of the person
+// who started the command are one boundary of one run, and a value taken out of one
+// of them and not of the other is a secret kept for ever in the one and nothing at all
+// in the other (docs.DESIGN.md §7e).
+func (j Journals) Begin(out *secret.Out, number, attempt int) (*AttemptFiles, error) {
 	files := &AttemptFiles{
 		Journal:      j.JournalPath(number, attempt),
 		ErrorJournal: j.errorJournalPath(number, attempt),
 	}
-	var err error
-	if files.Out, err = openForWriting(files.Journal); err != nil {
-		return nil, err
+	for _, path := range []string{files.Journal, files.ErrorJournal} {
+		file, err := openForWriting(path)
+		if err != nil {
+			_ = files.Close()
+			return nil, err
+		}
+		files.open = append(files.open, file)
+		files.said = append(files.said, out.Writer(file))
 	}
-	if files.ErrOut, err = openForWriting(files.ErrorJournal); err != nil {
-		_ = files.Out.Close()
-		return nil, err
-	}
+	files.Out, files.ErrOut = files.said[0], files.said[1]
 	return files, nil
+}
+
+// Flush writes what the journal writers held back, and is what a run calls before it
+// closes the files of its attempt: the end of what the executor wrote may be the
+// beginning of a value, and the run is over (docs/DESIGN.md §7e).
+func (f *AttemptFiles) Flush() error {
+	var err error
+	for _, said := range f.said {
+		err = errors.Join(err, said.Flush())
+	}
+	return err
 }
 
 // Close is what a run does with the files of its attempt when the executor is done:
 // the journal of a run is closed before anything is read out of it.
 func (f *AttemptFiles) Close() error {
-	return errors.Join(f.Out.Close(), f.ErrOut.Close())
+	var err error
+	for _, file := range f.open {
+		err = errors.Join(err, file.Close())
+	}
+	return err
 }
 
 // takeAway is what a run does with the files of an attempt that was never made: the
@@ -691,18 +726,41 @@ func LoadState(path string) (State, error) {
 // interruption is a file that says the wrong thing about a run, and a state that is wrong is
 // worse than none — and it is the one place where the bytes of a state are written.
 //
-// It is unexported and called with the lock of the task held: by `UpdateState`, which makes the
-// change the caller has, and by the run that takes its own attempt back out of the state. A
+// It is unexported and called with the lock of the task held: by `UpdateStateThrough`, which makes
+// the change the caller has, and by the run that takes its own attempt back out of the state. A
 // caller that has not taken the lock cannot reach it, and that is the whole point: a state of a
 // task is changed and never written whole, so that no command can take a record of another one
 // away (D-068 FINDING-4, D-044: одна дорога).
-func saveState(path string, state State) error {
+//
+// The reason of an attempt is what a program of the run said, and it is published through the
+// boundary of the run before it is written: the state of a task is a file kept for ever and read
+// by programs that decide by the words of crewflow, and a reason of a run with the password of a
+// proxy in it is a password of a person in a file of a task (docs/DESIGN.md §7e).
+func saveState(out *secret.Out, path string, state State) error {
 	state.Schema = Schema
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(state.published(out), "", "  ")
 	if err != nil {
 		return fmt.Errorf("the state of the task: %w", err)
 	}
 	return writeFileAtomic(path, append(data, '\n'))
+}
+
+// published is the state of a task as the state of a task may be written down: every
+// word of a run that is in it published through the boundary of the run, and every other
+// word of it left as it is.
+//
+// The reason of an attempt is the only word of a state that a program of the machine
+// wrote, and it is a word of the run: what an executor said about itself, what a provider
+// said about its refusal, and what crewflow made of a route that could not be reached. The
+// rest of a state is the words of crewflow and the facts of the machine, and a program
+// reads them to decide — `bot` is the mode of an identity and `denied` is the answer of a
+// person, and a value of a person that is a part of them must not take the words of a
+// program away from the programs that read them (docs/DESIGN.md §7e, §7i).
+func (s State) published(out *secret.Out) State {
+	for at, attempt := range s.Attempts {
+		s.Attempts[at].Reason, _ = out.Publish(secret.ChannelState, attempt.Reason)
+	}
+	return s
 }
 
 // UpdateState is what a command writes into the state of a task without taking a record
@@ -725,6 +783,17 @@ func saveState(path string, state State) error {
 // is refused and says so: a record lost without a word about it is worse than a record that
 // was not written (D-044: одна дорога).
 func UpdateState(path string, change func(State) (State, error)) (State, error) {
+	return UpdateStateThrough(nil, path, change)
+}
+
+// UpdateStateThrough is [UpdateState] with the values of a run taken out of what the
+// state holds, and it is what a run writes its state with: a caller that writes words of
+// a run into a state hands the boundary of the run in, and every other caller uses
+// [UpdateState] and writes only the words of crewflow (docs/DESIGN.md §7e).
+//
+// A nil boundary publishes what it is given: the words of crewflow in a state are its own
+// and there is nothing of a run to take out of them.
+func UpdateStateThrough(out *secret.Out, path string, change func(State) (State, error)) (State, error) {
 	release, err := lockState(path)
 	if err != nil {
 		return State{}, err
@@ -745,7 +814,7 @@ func UpdateState(path string, change func(State) (State, error)) (State, error) 
 	if err != nil {
 		return State{}, err
 	}
-	if err := saveState(path, changed); err != nil {
+	if err := saveState(out, path, changed); err != nil {
 		return State{}, err
 	}
 	return changed, nil

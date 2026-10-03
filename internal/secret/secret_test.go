@@ -110,7 +110,7 @@ func TestAValueAPersonChoseIsTakenOutWhateverItsLengthIs(t *testing.T) {
 // that reads `[redacted]c` (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
 func TestTheRedactorOfAValueAPersonChoseHoldsBackWhatMayStillGrowIntoIt(t *testing.T) {
 	var out bytes.Buffer
-	redactor := NewRedactor(&out, Chosen("abc")...)
+	redactor := NewOut(Chosen("abc")...).Writer(&out)
 
 	for _, piece := range []string{"the password is a", "bc and the address is socks5://u:ab", "c@proxy.example.com:1080\n"} {
 		if _, err := redactor.Write([]byte(piece)); err != nil {
@@ -135,7 +135,7 @@ func TestTheRedactorOfAValueAPersonChoseHoldsBackWhatMayStillGrowIntoIt(t *testi
 func TestRedactorHoldsBackWhatMayStillGrowIntoASecret(t *testing.T) {
 	const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
 	var out bytes.Buffer
-	redactor := NewRedactor(&out, Generated(token)...)
+	redactor := NewOut(Generated(token)...).Writer(&out)
 
 	// The token arrives in three pieces, and a line comes after it.
 	for _, piece := range []string{"the token is gh", "s_16C7e42F292c", "6912E7710c838347Ae178B4a\nand after it\n"} {
@@ -163,7 +163,7 @@ func TestRedactorHoldsBackWhatMayStillGrowIntoASecret(t *testing.T) {
 func TestRedactorFlushesWhatWasHeldBack(t *testing.T) {
 	const token = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
 	var out bytes.Buffer
-	redactor := NewRedactor(&out, Generated(token)...)
+	redactor := NewOut(Generated(token)...).Writer(&out)
 	if _, err := redactor.Write([]byte("GH_TOKEN=" + token)); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestRedactorFlushesWhatWasHeldBack(t *testing.T) {
 // token and no key, and its journal is the words of the agent, whole and as they are.
 func TestRedactorWithoutSecretsWritesWhatItIsGiven(t *testing.T) {
 	var out bytes.Buffer
-	redactor := NewRedactor(&out)
+	redactor := NewOut().Writer(&out)
 	if _, err := redactor.Write([]byte("I did the work.")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}

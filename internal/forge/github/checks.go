@@ -298,12 +298,13 @@ func (a *Adapter) api(ctx context.Context, path string) (apiAnswer, error) {
 	command := []string{"api", "--include", path}
 	stdout, stderr, code, err := a.env.Run(ctx, program, command, "", environment)
 	if err != nil {
-		return apiAnswer{}, fmt.Errorf("gh api %s: %w", path, err)
+		return apiAnswer{}, a.env.Out.Err(fmt.Errorf("gh api %s: %w", path, err))
 	}
 	status, body, found := answerIn(stdout)
 	if !found {
-		return apiAnswer{}, fmt.Errorf("gh api %s: exited with %d and the answer holds no status of the host: %s",
-			path, code, firstLine(stderr))
+		return apiAnswer{}, a.env.Out.Err(fmt.Errorf(
+			"gh api %s: exited with %d and the answer holds no status of the host: %s",
+			path, code, firstLine(stderr)))
 	}
 	return apiAnswer{Status: status, Body: body}, nil
 }

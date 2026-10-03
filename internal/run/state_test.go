@@ -3,6 +3,7 @@ package run
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/naghuale/crewflow/internal/proc"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // TestJournalsPaths checks where the files of a run are kept: under the root
@@ -62,14 +64,14 @@ func TestJournalsPaths(t *testing.T) {
 func TestBeginOpensTheFilesOfAnAttempt(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 
-	files, err := journals.Begin(43, 1)
+	files, err := journals.Begin(nil, 43, 1)
 	if err != nil {
 		t.Fatalf("Begin returned an error: %v", err)
 	}
-	if _, err := files.Out.WriteString("I did the work.\n"); err != nil {
+	if _, err := io.WriteString(files.Out, "I did the work.\n"); err != nil {
 		t.Fatalf("write the journal: %v", err)
 	}
-	if _, err := files.ErrOut.WriteString("a refusal\n"); err != nil {
+	if _, err := io.WriteString(files.ErrOut, "a refusal\n"); err != nil {
 		t.Fatalf("write the way out: %v", err)
 	}
 
@@ -91,18 +93,18 @@ func TestBeginOpensTheFilesOfAnAttempt(t *testing.T) {
 // run, and what the run of another attempt wrote is in the file of that attempt.
 func TestBeginEmptiesTheFilesOfAnAttempt(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
-	first, err := journals.Begin(43, 1)
+	first, err := journals.Begin(nil, 43, 1)
 	if err != nil {
 		t.Fatalf("Begin returned an error: %v", err)
 	}
-	if _, err := first.Out.WriteString("the first attempt\n"); err != nil {
+	if _, err := io.WriteString(first.Out, "the first attempt\n"); err != nil {
 		t.Fatalf("write the journal: %v", err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatalf("Close returned an error: %v", err)
 	}
 
-	again, err := journals.Begin(43, 1)
+	again, err := journals.Begin(nil, 43, 1)
 	if err != nil {
 		t.Fatalf("Begin of the same attempt returned an error: %v", err)
 	}
@@ -179,10 +181,10 @@ func TestTheStateLeavesOneFile(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
 
-	if err := saveState(path, State{Number: 43}); err != nil {
+	if err := saveState(nil, path, State{Number: 43}); err != nil {
 		t.Fatalf("saveState returned an error: %v", err)
 	}
-	if err := saveState(path, State{Number: 43, Branch: "crewflow/43-task"}); err != nil {
+	if err := saveState(nil, path, State{Number: 43, Branch: "crewflow/43-task"}); err != nil {
 		t.Fatalf("saveState of a second run returned an error: %v", err)
 	}
 
@@ -589,5 +591,55 @@ func TestAStateOfANewerCrewflowIsRefused(t *testing.T) {
 		t.Fatal("LoadState read a state of a format crewflow does not know")
 	} else if !strings.Contains(err.Error(), "99") {
 		t.Errorf("the error %q does not say which format the file is of", err)
+	}
+}
+
+// TestTheReasonOfAnAttemptIsPublishedWhenTheStateOfTheTaskIsWritten: the state of a task is
+// a file kept for ever, read by programs and pasted into issues, and the reason of an attempt
+// in it is a sentence of a run — what an executor said about itself, what a provider said
+// about its refusal. It is published through the boundary of the run when the state is
+// written, and a state a caller writes without a boundary keeps the words of crewflow, which
+// are its own (D-068 RECHECK-FINDING-5, docs/DESIGN.md §7e).
+func TestTheReasonOfAnAttemptIsPublishedWhenTheStateOfTheTaskIsWritten(t *testing.T) {
+	const canary = "ghs_16C7e42F292c6912E7710c838347Ae178B4a"
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	withReason := func(current State) (State, error) {
+		started := current
+		started.Number, started.Title, started.Branch = 43, "the run of a task", "crewflow/43-task"
+		return started.NextAttempt(started.NextNumber(), StartOf{
+			Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+			Journal: journals.JournalPath(43, 1),
+		}).Reason(1, "the run stopped itself: it could not reach "+canary), nil
+	}
+
+	if _, err := UpdateStateThrough(secret.NewOut(secret.Generated(canary)...), journals.StatePath(43), withReason); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	written, err := LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("read the state of the task: %v", err)
+	}
+	reason := written.Attempts[0].Reason
+	if strings.Contains(reason, canary) {
+		t.Errorf("the reason in the state of the task is %q, want the value of the run taken out of it", reason)
+	}
+	if !strings.Contains(reason, secret.Redacted) {
+		t.Errorf("the reason in the state of the task is %q, want the words of the run left in it", reason)
+	}
+	if !strings.Contains(reason, "it could not reach ") {
+		t.Errorf("the reason in the state of the task is %q, want the words of the run left in it", reason)
+	}
+	// The words of crewflow in a state are its own: a caller that has no values of a run to
+	// publish writes what it has, and a value of a person is not taken out of the mode of an
+	// identity or out of the answer of a person (docs.DESIGN.md §7e, §7i).
+	if _, err := UpdateState(journals.StatePath(43), withReason); err != nil {
+		t.Fatalf("write the state of the task again: %v", err)
+	}
+	written, err = LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("read the state of the task again: %v", err)
+	}
+	if want := "the run stopped itself: it could not reach " + canary; written.Attempts[0].Reason != want {
+		t.Errorf("the reason in the state of a caller with no boundary is %q, want %q", written.Attempts[0].Reason, want)
 	}
 }

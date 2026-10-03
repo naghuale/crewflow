@@ -16,7 +16,7 @@ import (
 // runChangelog is `crewflow changelog`: the journal of the project is written by its
 // tasks as fragments, and these commands assemble it out of them and say whether the
 // journal is what the fragments make (docs/DESIGN.md §6, журнал изменений).
-func runChangelog(args []string, stdout, stderr io.Writer) int {
+func runChangelog(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintf(stderr, "crewflow changelog: nothing to do\n\n")
 		usage(stderr)
@@ -26,7 +26,7 @@ func runChangelog(args []string, stdout, stderr io.Writer) int {
 	case "build":
 		return runChangelogBuild(args[1:], stdout, stderr)
 	case "check":
-		return runChangelogCheck(args[1:], stdout, stderr)
+		return runChangelogCheck(out, args[1:], stdout, stderr)
 	case "release":
 		return runChangelogRelease(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
@@ -77,7 +77,7 @@ func runChangelogBuild(args []string, stdout, stderr io.Writer) int {
 // what they build. One reason at a time in a line, with the file and the line in it — this
 // is the gate of a change that touches the journal, and a gate needs to know what it
 // found and where.
-func runChangelogCheck(args []string, stdout, stderr io.Writer) int {
+func runChangelogCheck(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := changelogFlags("check", stderr)
 	configPath := flags.String("config", defaultConfigPath, "path to crewflow.toml")
 	repoDir := flags.String("repo", "", "the checkout to check the journal of, the folder crewflow was called in when empty")
@@ -95,7 +95,7 @@ func runChangelogCheck(args []string, stdout, stderr io.Writer) int {
 		return changelogFailed(stderr, err)
 	}
 	ctx := context.Background()
-	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr)))
+	set, err := taskRoles(cfg, roleEnv(*configPath, secret.NewNotices(stderr), out))
 	if err != nil {
 		return changelogFailed(stderr, err)
 	}

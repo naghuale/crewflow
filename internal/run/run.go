@@ -97,6 +97,18 @@ type Env struct {
 	// a line about the keychain of macOS reaches the person who started the run and
 	// the journal of the attempt both, and not one of them alone (§7i).
 	Notices *secret.Notices
+	// Out is the boundary of everything this run publishes: the terminal of the person
+	// who started the command, the journals of the attempts, the events, the state of
+	// the task and the report of the run. The values a run must not write down are
+	// learned into it — the credentials of the route it goes out by, and the token of
+	// the App it works as — and whatever a program of the run prints is cleaned there
+	// and not at the place that prints it, because a place is a place a program can
+	// go around and a boundary is not (docs/DESIGN.md §7e).
+	//
+	// A run that was given no boundary makes one of its own: nothing is published
+	// outside a command of crewflow, and a run of a machine of a test has no terminal
+	// to clean (§7e).
+	Out *secret.Out
 }
 
 // System is the machine this process runs on, with the given root of what crewflow
@@ -268,6 +280,7 @@ const (
 // cycle and the next attempt of a person are read from (docs/DESIGN.md §7).
 func Run(ctx context.Context, env Env, cfg config.Config, set forge.Set, req Request) (Result, error) {
 	r := &runner{env: env, cfg: cfg, set: set, req: req, hang: &hang{}, by: byPerson}
+	r.out = env.Out
 	if err := r.readTask(ctx); err != nil {
 		return Result{}, err
 	}
@@ -428,11 +441,13 @@ type runner struct {
 	// `direct`, because a run that hands its executor a proxy nobody chose is a run that
 	// sends a task of a person to a machine of somebody else (docs/DESIGN.md §7d).
 	route []string
-	// routeSecrets are the values of the credentials of that route which must not reach a
-	// file of the run: they are in the environment of every program this run starts, and
-	// an executor that prints its own environment is one line of a journal that is kept
-	// for ever and pasted into issues (docs/DESIGN.md §7d, §7e).
-	routeSecrets []secret.Value
+	// out is the boundary of everything this run publishes: the terminal of the person
+	// who started the command, the journals of the attempts, the events, the state of the
+	// task and the report of the run. The credentials of the route and the secrets of the
+	// identity are learned into it, and whatever a program of this run prints — an
+	// executor that prints its own environment is one line of a journal that is kept for
+	// ever and pasted into issues — is cleaned there (docs/DESIGN.md §7d, §7e).
+	out *secret.Out
 	// admission is the record of the pair that let this run start beside another run of
 	// the project. It is worked out before the worktree of the task is made, and it is said
 	// in the journal of the attempt and in the report of the run: a run that went beside
@@ -497,30 +512,36 @@ func (r *runner) throughRoute() error {
 		return err
 	}
 	r.route = environment
-	r.routeSecrets = secret.Chosen(route.Secrets(credentials)...)
+	r.boundary().Learn(secret.Chosen(route.Secrets(credentials)...)...)
 	return nil
 }
 
-// secrets are the values this run must not write into a file of its own: the secrets of
-// the identity it works under and the credentials of the route it goes out through. The
-// two are one list and not two — a program of the run is started with both of them in its
-// environment, so an agent that prints its own environment prints them both, and a value
-// that is taken out of one file of a run and not of another is a secret kept for ever in
-// the one and nothing at all in the other (docs/DESIGN.md §7e, §7i).
+// boundary is the boundary of everything this run publishes: the terminal of the person who
+// started the command, the journals of the attempts, the events, the state of the task and
+// the report of the run.
+//
+// A run that was given no boundary of the command makes one of its own, and it is made
+// here: a run of a machine of a test has no terminal to clean, and a run that has a route
+// with credentials has something to hold back from the moment it is worked out
+// (docs.DESIGN.md §7e).
+func (r *runner) boundary() *secret.Out {
+	if r.out == nil {
+		r.out = secret.NewOut()
+	}
+	return r.out
+}
+
+// learns is what a run adds to the boundary of what it publishes when it has found
+// another value it must not write down: the secrets of the identity it works under join
+// the credentials of the route it goes out through, because a program of the run is
+// started with both of them in its environment, and an agent that prints its own
+// environment prints them both (docs.DESIGN.md §7e, §7i).
 //
 // Each value carries the rule of its own kind: a token of an hour is long and is looked
 // for from the eighth sign on, and a password of a proxy is as long as its owner made it
-// and is looked for whatever it is (docs/DESIGN.md §7e).
-func (r *runner) secrets() []secret.Value {
-	return slices.Concat(secret.Generated(r.identity.Secrets...), r.routeSecrets)
-}
-
-// quiet is what a program of this run wrote with the secrets of the run taken out of it:
-// what git and gh say about a failure goes into the error the command prints and into the
-// way out of the run, and both of them were given the route of the project in their
-// environment (docs/DESIGN.md §7e, §7i).
-func (r *runner) quiet(words string) string {
-	return secret.Redact(words, r.secrets()...)
+// and is looked for whatever it is (docs.DESIGN.md §7e).
+func (r *runner) learns() {
+	r.boundary().Learn(secret.Generated(r.identity.Secrets...)...)
 }
 
 // readings is the policy of the run: the folders the file of the project named, the
@@ -667,9 +688,10 @@ func (r *runner) git(ctx context.Context, dir string, args ...string) error {
 	_, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return r.boundary().Err(fmt.Errorf("git %s: %w", strings.Join(args, " "), err))
 	case code != 0:
-		return fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, r.quiet(firstLine(stderr)))
+		return r.boundary().Err(fmt.Errorf("git %s: exited with %d: %s",
+			strings.Join(args, " "), code, firstLine(stderr)))
 	}
 	return nil
 }
@@ -682,10 +704,10 @@ func (r *runner) output(ctx context.Context, dir string, args ...string) (string
 	stdout, stderr, code, err := r.started(ctx, "git", args, dir)
 	switch {
 	case err != nil:
-		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		return "", r.boundary().Err(fmt.Errorf("git %s: %w", strings.Join(args, " "), err))
 	case code != 0:
-		return "", fmt.Errorf("git %s: exited with %d: %s",
-			strings.Join(args, " "), code, r.quiet(firstLine(stderr)))
+		return "", r.boundary().Err(fmt.Errorf("git %s: exited with %d: %s",
+			strings.Join(args, " "), code, firstLine(stderr)))
 	}
 	return string(stdout), nil
 }
@@ -713,7 +735,7 @@ func (r *runner) started(ctx context.Context, name string, args []string, dir st
 // away instead of left behind empty (F-048, docs/DESIGN.md §7i).
 func (r *runner) reserve(started time.Time, step, reason string) (reservation, error) {
 	var mine reservation
-	state, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+	state, err := UpdateStateThrough(r.boundary(), r.journals.StatePath(r.task.Number), func(current State) (State, error) {
 		// The question of one task and one run at a time is asked under the lock and not
 		// only before it: a run that has passed the question outside may arrive here while
 		// the run it is about to double is still writing, and this is the answer that
@@ -817,7 +839,7 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 	}
 	// The bytes are written by `saveState` under the lock held above: a state of a task that
 	// is there is changed, and this run changes it by taking one attempt out of it (D-044).
-	return saveState(path, kept)
+	return saveState(r.boundary(), path, kept)
 }
 
 // aliveStep is a sign of life of the run at a step of crewflow together with whose name
@@ -841,7 +863,7 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 func (r *runner) aliveStep(state State, step, reason string, identity Identity) State {
 	now := r.env.Now()
 	r.alive.show(now, step, reason)
-	written, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+	written, err := UpdateStateThrough(r.boundary(), r.journals.StatePath(r.task.Number), func(current State) (State, error) {
 		return current.Identified(r.attempt, identity).Alive(r.attempt, now, step, reason), nil
 	})
 	if err != nil {
@@ -921,7 +943,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// nothing behind: the attempt is taken out of the state of the task again, and what
 	// another command wrote in the state of that task while this run was trying stays
 	// (F-048, §7i).
-	files, err := r.journals.Begin(r.task.Number, number)
+	files, err := r.journals.Begin(r.boundary(), r.task.Number, number)
 	if err != nil {
 		return Result{}, errors.Join(err, r.putStateBack(number, started, taken.was))
 	}
@@ -966,6 +988,11 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		stopWatch()
 		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(number, started, taken.was), r.takeRunAway(ctx))
 	}
+	// The token of the identity is learned into the boundary of the run as soon as it is
+	// signed: it is in the environment of every program this run starts from here on, and
+	// an executor that prints its own environment is one line of a journal kept for ever
+	// and pasted into issues (docs.DESIGN.md §7e, §7i).
+	r.learns()
 	// The key of the app of the host was read and a token is signed with it, so a
 	// request the run was stopped at came through. The state of the task says so and
 	// the journal of the attempt holds the event of it, in the same place the run said
@@ -1045,20 +1072,19 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// in memory, because a run is judged out of what the agent said, and the file is
 	// the only one of the two a person and a watch can read (docs/DESIGN.md §7a).
 	//
-	// The files of the run go through the redactor of the secrets of the run: the token
-	// of a run is in the environment of the executor, and so is the password of the
+	// The files of the run are the boundary of the run, made when they were opened: the
+	// token of a run is in the environment of the executor, and so is the password of the
 	// profile the owner chose the route through, and an agent that prints its own
 	// environment is one line of a journal that would carry both of them into a file kept
 	// for ever and pasted into an issue (§7e, §7i).
 	var out, errOut bytes.Buffer
-	journal, wayOut := secret.NewRedactor(files.Out, r.secrets()...), secret.NewRedactor(files.ErrOut, r.secrets()...)
 	environment := slices.Concat(rights, r.identity.Env, tempEnv(r.worktree), r.route)
 	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, environment,
-		io.MultiWriter(&out, journal), io.MultiWriter(&errOut, wayOut))
+		io.MultiWriter(&out, files.Out), io.MultiWriter(&errOut, files.ErrOut))
 	// What is held back is a beginning of a line and may be the beginning of a
 	// secret, and the run is over: it is written before the files are closed.
 	ended := r.endOf(ctx, runCtx)
-	flushed := errors.Join(journal.Flush(), wayOut.Flush())
+	flushed := files.Flush()
 	result := r.resultOf(attempt, r.env.Now(), files)
 	result.ExitCode = code
 	if err != nil {
@@ -1126,7 +1152,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 // (D-068 FINDING-4, D-068 RECHECK-FINDING-4).
 func (r *runner) stopBeforeStart(err error) (Result, error) {
 	ended := r.env.Now()
-	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
+	if _, keepErr := UpdateStateThrough(r.boundary(), r.journals.StatePath(r.task.Number), func(state State) (State, error) {
 		return state.Ended(r.attempt, ended, ExecutorFailed), nil
 	}); keepErr != nil {
 		return Result{}, errors.Join(err, keepErr)
@@ -1241,7 +1267,7 @@ func (r *runner) endOf(caller, run context.Context) Kind {
 // is what put the outcome of one of them into the state of the other (D-068
 // RECHECK-FINDING-4).
 func (r *runner) keep(ending ended, result Result, judgeErr error) error {
-	if _, err := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
+	if _, err := UpdateStateThrough(r.boundary(), r.journals.StatePath(r.task.Number), func(state State) (State, error) {
 		state = state.Ended(r.attempt, result.EndedAt, result.Outcome)
 		if ending.reason != "" {
 			state = state.Reason(r.attempt, ending.reason)
@@ -1282,13 +1308,17 @@ func (r *runner) noteError(errorJournal string, err error) string {
 
 // note adds what went wrong to a file of the run, and goes on when it cannot: the
 // file of a journal is not worth stopping a run for, and what crewflow has to say
-// about it is in the return of the caller. What is written goes through the redactor
-// of the secrets of the run: an error of a run may carry what a program of it
-// printed, and a file of a run is read by people and pasted into issues (§7e).
+// about it is in the return of the caller. What is written goes through the boundary
+// of the run: an error of a run may carry what a program of it printed, and a file of a
+// run is read by people and pasted into issues (§7e).
 func (r *runner) note(path string, err error) {
 	previous, readErr := os.ReadFile(path)
 	if readErr == nil {
-		line := fmt.Sprintf("crewflow: %v\n", secret.Redact(err.Error(), r.secrets()...))
+		said, refuse := r.boundary().Publish(secret.ChannelJournal, err.Error())
+		if refuse != nil {
+			said = secret.Redacted
+		}
+		line := fmt.Sprintf("crewflow: %v\n", said)
 		_ = writeFile(path, append(previous, []byte(line)...))
 	}
 }

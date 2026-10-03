@@ -11,6 +11,7 @@ import (
 
 	"github.com/naghuale/crewflow/internal/config"
 	"github.com/naghuale/crewflow/internal/doctor"
+	"github.com/naghuale/crewflow/internal/secret"
 )
 
 // defaultConfigPath is where a project keeps its crewflow.toml, so that
@@ -31,12 +32,12 @@ var marks = map[doctor.Status]string{
 
 // runDoctor checks the machine before a task starts, so that what is missing is
 // found out here and not in the middle of a task.
-func runDoctor(args []string, stdout, stderr io.Writer) int {
+func runDoctor(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	// `crewflow doctor network` is a check of its own: it asks the machine whether the
 	// route of the project works, one capability at a time, and a report of readiness
 	// must not stand in front of a proxy of a project every time it runs (§7d).
 	if len(args) > 0 && args[0] == "network" {
-		return runDoctorNetwork(args[1:], stdout, stderr)
+		return runDoctorNetwork(out, args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -88,7 +89,7 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 // with each capability apart from the others. A report that said one word for all three
 // would say nothing about the one that is broken — and the success of the host of the code
 // says nothing at all about the provider of the model (docs/DESIGN.md §7d).
-func runDoctorNetwork(args []string, stdout, stderr io.Writer) int {
+func runDoctorNetwork(out *secret.Out, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("doctor network", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { usage(stderr) }

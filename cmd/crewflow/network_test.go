@@ -34,7 +34,7 @@ func useNetworkOfTheTest(t *testing.T, store secret.Store, states []network.Stat
 	})
 	secretsOfTheNetwork = func() secret.Store { return store }
 	clockOfTheNetwork = func() time.Time { return time.Date(2026, time.October, 2, 9, 0, 0, 0, time.UTC) }
-	checksOfARoute = func(context.Context, config.Config, network.Route, secret.Store) ([]network.State, error) {
+	checksOfARoute = func(context.Context, *secret.Out, config.Config, network.Route, secret.Store) ([]network.State, error) {
 		return states, nil
 	}
 }
