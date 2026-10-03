@@ -117,6 +117,109 @@ func TestTheAnswerOfEveryCommandIsTheDocumentItsPolicyNames(t *testing.T) {
 	}
 }
 
+// TestTheAnswerOfTheSameRouteWithoutItsBoundaryShowsTheValueOfARun: the cases above say that a
+// value of a run is not in the answer; these say the cases can see one. Each of them runs the same
+// command of the same project as the case above, with one mechanism of the boundary left out — the
+// boundary that wrote the state, the value the boundary of the command learned, the value a name
+// of the format kept — and says that the very value the case above found cut stands in the very
+// field the case above found the marker in. A case that cannot fail on the value in the clear
+// cannot say anything about the cut one (SEC-224-015, docs.DESIGN.md §7e).
+func TestTheAnswerOfTheSameRouteWithoutItsBoundaryShowsTheValueOfARun(t *testing.T) {
+	for _, tc := range []aRouteWithoutItsBoundary{
+		{
+			what: "the-state-of-the-task-written-around-the-boundary",
+			doc:  secret.DocumentTaskList, path: "runs[].title",
+			run: theListOfAStateWrittenAroundTheBoundary,
+		},
+		{
+			what: "the-value-the-boundary-of-the-command-never-learned",
+			doc:  secret.DocumentTaskRun, path: "title",
+			run: theRunWhoseBoundaryLearnedNothing,
+		},
+		{
+			what: "the-cut-of-a-name-of-the-format",
+			doc:  secret.DocumentReview, path: "outside[]",
+			run: theReviewWhoseBoundaryLearnedNothing,
+		},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			document, canary := tc.run(t)
+
+			var tree any
+			if err := json.Unmarshal(document, &tree); err != nil {
+				t.Fatalf("the answer of the command is not a document: %v\n%s", err, document)
+			}
+			said, there := theFieldOfTheDocument(tree, tc.path)
+			if !there {
+				t.Fatalf("the field %q of the answer is not there: the document is\n%s", tc.path, document)
+			}
+			if !strings.Contains(said, canary) {
+				t.Errorf("the field %q of the answer is %q, want the value of the run %q in it: the "+
+					"case cannot see the value, and a case that cannot see it in the clear says "+
+					"nothing about the case that says it is not there (SEC-224-015)",
+					tc.path, said, canary)
+			}
+			if strings.Contains(said, secret.Redacted) {
+				t.Errorf("the field %q of the answer is %q, want no marker of a cut in it: the mechanism "+
+					"this case left out is cutting all the same", tc.path, said)
+			}
+		})
+	}
+}
+
+// aRouteWithoutItsBoundary is a command of the project, the kind of the document it prints, the
+// field the value of a run has to stand in when the boundary is not there, and the case that runs
+// the command without one mechanism of it.
+type aRouteWithoutItsBoundary struct {
+	what string
+	doc  secret.Document
+	path string
+	run  func(t *testing.T) (document []byte, canary string)
+}
+
+// theListOfAStateWrittenAroundTheBoundary is `crewflow task list -json` over the project of the case
+// above, with the state of its task written around the boundary: the value stands in the file on the
+// disk, and the command that reads the file learns no value itself.
+func theListOfAStateWrittenAroundTheBoundary(t *testing.T) ([]byte, string) {
+	const canary = "s3cr3t-of-the-run"
+	host := &host{task: taskOf(43)}
+	host.use(t)
+	project := host.config(t)
+	putRunThatEndedWithWords(t, host, "the run of a task "+canary, time.Now().Add(-time.Hour))
+
+	document, _ := theAnswerOf(t, "task", "list", "-config", project, "-json")
+
+	return document, canary
+}
+
+// theRunWhoseBoundaryLearnedNothing is `crewflow task run 43 -json` with the same task and the same
+// value in its title, and a boundary that learned nothing: the words of the task are the words of a
+// run, and a boundary that does not know the value publishes them.
+func theRunWhoseBoundaryLearnedNothing(t *testing.T) ([]byte, string) {
+	const canary = "s3cr3t-of-the-run"
+	host := &host{task: taskOf(43)}
+	host.task.Title = "the run of a task " + canary
+	host.use(t)
+
+	document, _ := theAnswerOf(t, "task", "run", "43", "-config", host.config(t), "-json")
+
+	return document, canary
+}
+
+// theReviewWhoseBoundaryLearnedNothing is `crewflow review <PR> -json` over a change that touches a
+// file named after the value of a run, with a boundary that learned nothing: a name of the format
+// stays whole, and this is what stays whole without the boundary that cut it.
+func theReviewWhoseBoundaryLearnedNothing(t *testing.T) ([]byte, string) {
+	const canary = "s3cr3t-of-the-run"
+	host := newMergeHost(t)
+	host.reviewHost.files = []string{"internal/secret/" + canary + ".go"}
+	host.remote = reviewHead
+
+	document, _ := theAnswerOf(t, "review", "7", "-config", writeConfig(t, mergeConfig), "-json")
+
+	return document, canary
+}
+
 // aCommandThatPublishes is a command of the project, the kind of the document it prints, and what
 // the case put into it: the value of a run, the fields where it has to stand cut, and the fields
 // that have to be left whole.
@@ -214,6 +317,21 @@ func putRunWithWordsIntoTheState(t *testing.T, host *host, title string, ended t
 		Identity: taskrun.Identity{Mode: "owner", Description: "owner — the login gh naghuale (shared rights)"}})
 	state = state.Ended(1, ended, taskrun.TimedOut)
 	keepsStateThroughTheBoundary(t, journals.StatePath(43), state, title)
+}
+
+// putRunThatEndedWithWords is the state of the case as it is written around the boundary: the words
+// of a run stand in the file on the disk whole, which is what a file that no run wrote through the
+// boundary looks like, and what the negative case of the list reads.
+func putRunThatEndedWithWords(t *testing.T, host *host, title string, ended time.Time) {
+	t.Helper()
+	putRunThatEnded(t, host, ended)
+	path := taskrun.JournalsOf(host.home, "naghuale-crewflow").StatePath(43)
+	state, err := taskrun.LoadState(path)
+	if err != nil {
+		t.Fatalf("read the state of the task from %s: %v", path, err)
+	}
+	state.Title = title
+	keepsState(t, path, state)
 }
 
 // keepsStateThroughTheBoundary is a state as a run writes it: the words of a run that reached the
