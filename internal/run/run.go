@@ -671,13 +671,17 @@ func (r *runner) started(ctx context.Context, name string, args []string, dir st
 // that is all that is left of a run that crewflow is killed in the middle of
 // (docs/DESIGN.md §7).
 //
+// The attempt is the one with that number, and the number is worked out before the
+// journal of it was opened: the two files of an attempt are named after it, and a state
+// that holds one attempt and points at the journal of another is a state a person reads
+// and cannot follow (docs/DESIGN.md §7).
+//
 // The sign of life of the run is what it is at this moment: crewflow is either beginning
 // the run of the task or standing in front of the window of the keychain of the machine,
 // and a run that is waiting for a person says so where a list of runs and a schedule of
 // an orchestrator read it (§6, §7a, §7i).
-func (r *runner) stateOf(before State, started time.Time, step, reason string) State {
+func (r *runner) stateOf(before State, attempt int, started time.Time, step, reason string) State {
 	state := before
-	attempt := len(state.Attempts) + 1
 	state.Number, state.Title = r.task.Number, r.task.Title
 	state.Branch, state.Worktree, state.Profile = r.branch, r.worktree, r.profile.Name()
 	state.Session = r.session
@@ -717,39 +721,67 @@ func (r *runner) stateBefore() (State, bool) {
 	return state, true
 }
 
-// putStateBack is the state of the task as it was before a run that was not a run wrote
-// itself into it, and nothing at all where there was no state: an attempt that never
-// was may not be left in the state of a task, and a state file that did not exist may
-// not be left behind empty (docs/DESIGN.md §7i).
-func (r *runner) putStateBack(before State, was bool) error {
+// putStateBack is the state of the task without the attempt of this run, and nothing at
+// all where there was no state: an attempt that never was may not be left in the state of
+// a task, and a state file that did not exist may not be left behind empty
+// (docs/DESIGN.md §7i).
+//
+// The state is put back under the lock of the task and by taking that one attempt out of
+// the state as it is there now: what another command wrote while this run was standing in
+// front of the window of the keychain is not this run's to take away (D-068 FINDING-4).
+func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 	path := r.journals.StatePath(r.task.Number)
-	if !was {
+	release, err := lockState(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	current, err := LoadState(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	kept := current.withoutAttempt(attempt, started)
+	if !was && len(kept.Attempts) == 0 {
+		// A task that was never run has no state to put back, and an empty one is a file
+		// that every reader of the folder of the states walks over for nothing (§7).
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("take the state of the task away: %w", err)
 		}
 		return nil
 	}
-	return SaveState(path, before)
+	return SaveState(path, kept)
 }
 
-// aliveStep is a sign of life of the run at a step of crewflow: the state of the task is
-// written from it, because that file is what a list of runs, a record under a task and
-// the schedule of an orchestrator are worked out of, and a run whose step is not written
-// down is a run whose step is a guess (docs/DESIGN.md §6).
+// aliveStep is a sign of life of the run at a step of crewflow together with whose name
+// the executor of it works under: the state of the task is written from them, because
+// that file is what a list of runs, a record under a task and the schedule of an
+// orchestrator are worked out of, and a run whose step is not written down is a run whose
+// step is a guess (docs/DESIGN.md §6, §7i).
+//
+// Both are written under the lock of the task and onto the state as it is there now: the
+// queue of attention of a schedule and the check of the runs that stand write that state
+// too, while the executor of this run works, and a write of the state this run holds in
+// its hands would take their records away (D-068 FINDING-4).
 //
 // A state that cannot be written is said on the way out of the run and the run goes on:
 // the first state of a run that cannot be written stops the run before its executor is
 // started, and by this point the run is going with the state of it already on disk. A
 // run that stopped because it could not write a sign of life is a run nobody is
 // watching, which is the failure the sign of life is here for.
-func (r *runner) aliveStep(state State, step, reason string) State {
+func (r *runner) aliveStep(state State, step, reason string, identity Identity) State {
 	now := r.env.Now()
 	r.alive.show(now, step, reason)
-	state = state.Alive(now, step, reason)
-	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+	written, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+		return current.Identified(identity).Alive(now, step, reason), nil
+	})
+	if err != nil {
 		r.note(state.Attempts[len(state.Attempts)-1].ErrorJournal, err)
+		return state
 	}
-	return state
+	return written
 }
 
 // process is the process of crewflow this run is happening in, and whether the machine
@@ -821,9 +853,15 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	r.alive.show(started, step, reason)
 	// Whatever the state of the task was before this run began is kept, so that a run
 	// that turns out never to have started can put it back as it was (§7i).
-	before, kept := r.stateBefore()
-	state := r.stateOf(before, started, step, reason)
-	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+	_, kept := r.stateBefore()
+	// The attempt is written under the lock of the task and onto the state as it is there
+	// now: a command of a schedule may have written something into that state while this
+	// run was reading it, and writing the whole of what this run read would take it away
+	// (D-068 FINDING-4).
+	state, err := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+		return r.stateOf(current, number, started, step, reason), nil
+	})
+	if err != nil {
 		_ = files.takeAway()
 		return Result{}, err
 	}
@@ -863,7 +901,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		// not leave an attempt behind (F-039 put the state there first, and F-048 keeps
 		// the truth of it).
 		stopWatch()
-		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(before, kept), r.takeRunAway(ctx))
+		return Result{}, errors.Join(err, files.takeAway(), r.putStateBack(number, started, kept), r.takeRunAway(ctx))
 	}
 	// The key of the app of the host was read and a token is signed with it, so a
 	// request the run was stopped at came through. The state of the task says so and
@@ -872,7 +910,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// sees what was decided and when (§7i). A continuation from the point of a model
 	// provider has no request of a person to have come through and says nothing of one.
 	if r.point == nil || r.point.Step == stepReadKey {
-		state = r.answered(state, files, WaitCompleted, EventAuthorizationCompleted)
+		r.answered(files, WaitCompleted, EventAuthorizationCompleted)
 	}
 	// The run is going to get the task ready for its executor, and that is the sign of
 	// life the state of the task holds from here on: whatever the run stood at before
@@ -882,14 +920,14 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// says it: the mode of the file of the project is what the state holds while crewflow
 	// is still working it out, and the mode the host answered with is what it holds from
 	// here on (§7i).
+	identity := Identity{Mode: r.identity.Mode, Description: r.identity.Description}
+	state = r.aliveStep(state, stepPreparing, "", identity)
 	last := len(state.Attempts) - 1
-	state.Attempts[last].Identity = Identity{Mode: r.identity.Mode, Description: r.identity.Description}
-	state = r.aliveStep(state, stepPreparing, "")
 	attempt := state.Attempts[last]
 	if err := r.scratch(ctx); err != nil {
 		stopWatch()
 		_ = files.Close()
-		return r.stopBeforeStart(state, err)
+		return r.stopBeforeStart(err)
 	}
 	// Whose name the executor of the run worked under, and what it went on with, are the
 	// first lines of the journal, before what the executor did and before the rights it
@@ -919,7 +957,7 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if err != nil {
 		stopWatch()
 		_ = files.Close()
-		return r.stopBeforeStart(state, err)
+		return r.stopBeforeStart(err)
 	}
 	// A run in the mode of the bot sets its worktree up before the executor is
 	// started: the helper git takes a fresh token from, and the hook that refuses a
@@ -927,9 +965,9 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if err := r.bot(ctx); err != nil {
 		stopWatch()
 		_ = files.Close()
-		return r.stopBeforeStart(state, err)
+		return r.stopBeforeStart(err)
 	}
-	state = r.aliveStep(state, stepExecutor, "")
+	state = r.aliveStep(state, stepExecutor, "", identity)
 
 	// The time limit of the run is on the context, and a program that is still
 	// going when it is out is asked to stop with it: the run has an end whatever the
@@ -990,15 +1028,14 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// the task, the branch of it and the session of it are where the run left them, and a
 	// person who comes back in the morning continues it with `crewflow task resume` rather
 	// than starting the task over (F-119, §6a, §7i).
-	state = r.saysWhatCameOfProvider(state, files, result.Attempt, provider, len(out.Bytes()) > 0)
+	r.saysWhatCameOfProvider(files, result.Attempt, provider, len(out.Bytes()) > 0)
 	if refused, ok := refuseProvider(provider); ok && result.Outcome == Blocked {
-		state = r.pointedAtProvider(ctx, state, files, refused)
+		r.pointedAtProvider(ctx, state.Worktree, files, refused)
 	}
 	// What the run is going on with is worked out and said in the same place: the line
 	// belongs to the attempt that ended here, and a watch of it shows why the next one
 	// was given what it was (docs.DESIGN.md §7a).
-	next, withReason := r.goesOnByItself(&result, state, calls)
-	state = withReason
+	next, ending := r.goesOnByItself(&result, state, calls)
 	if next.reason != reasonNone {
 		fmt.Fprintf(files.Out, "%s\n", next.line())
 		// The retry of a refused provider is said as an event of its own, beside the line
@@ -1014,15 +1051,21 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
 		return result, closeErr
 	}
-	return result, r.keep(state, result, judgeErr)
+	return result, r.keep(ending, result, judgeErr)
 }
 
 // stopBeforeStart is what a run does when the executor could not be started at all:
 // the attempt ends here, and the state of the task says so. An attempt left running
 // would be a run that goes on in every watch of the task, and there is none.
-func (r *runner) stopBeforeStart(state State, err error) (Result, error) {
-	ended := state.Ended(r.env.Now(), ExecutorFailed)
-	if keepErr := SaveState(r.journals.StatePath(r.task.Number), ended); keepErr != nil {
+//
+// The outcome is written onto the state as it is there now, under the lock of the task:
+// the attempt of this run is the last one, and what another command wrote beside it is
+// kept (D-068 FINDING-4).
+func (r *runner) stopBeforeStart(err error) (Result, error) {
+	ended := r.env.Now()
+	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
+		return state.Ended(ended, ExecutorFailed), nil
+	}); keepErr != nil {
 		return Result{}, errors.Join(err, keepErr)
 	}
 	return Result{}, err
@@ -1125,21 +1168,41 @@ func (r *runner) endOf(caller, run context.Context) Kind {
 // as the error of the run. The change request of the run is written into it as well,
 // so that a list of the runs of a project points at the work and not only at the
 // outcome of the run.
-func (r *runner) keep(state State, result Result, judgeErr error) error {
-	state = state.Ended(result.EndedAt, result.Outcome)
-	if result.Session != "" {
-		state.Session = result.Session
-		// The session of a run belongs to the attempt it went in, and not only to
-		// the task: every attempt of a task has its own session, and a continuation
-		// goes on in the one of the attempt it follows (docs/DESIGN.md §7h).
-		if last := len(state.Attempts) - 1; last >= 0 {
-			state.Attempts[last].Session = result.Session
+//
+// Every one of these is a change of the state of the task and not a state of it: it is
+// made under the lock of the task and onto the state as it is there now, so that what the
+// queue of attention or the check of the runs that stand wrote while the executor was
+// working is in the file beside what this run has to say (D-068 FINDING-4).
+func (r *runner) keep(ending ended, result Result, judgeErr error) error {
+	if _, err := UpdateState(r.journals.StatePath(r.task.Number), func(state State) (State, error) {
+		state = state.Ended(result.EndedAt, result.Outcome)
+		if ending.reason != "" {
+			state = state.Reason(ending.reason)
 		}
-	}
-	if change := result.ChangeRequest; change != nil {
-		state.Change = &Change{Number: change.Number, URL: change.URL}
-	}
-	if err := SaveState(r.journals.StatePath(r.task.Number), state); err != nil {
+		if ending.marked != "" {
+			state = state.Provider(ending.marked)
+		}
+		if r.point != nil {
+			// The point of the task is kept on the run itself, and the state holds what
+			// the run holds: the report, the state and the refusal of the next
+			// continuation all read one fact, and three copies of it would be three
+			// things that can disagree (docs.DESIGN.md §7h, §7i).
+			state.Checkpoint = r.point
+		}
+		if result.Session != "" {
+			state.Session = result.Session
+			// The session of a run belongs to the attempt it went in, and not only to
+			// the task: every attempt of a task has its own session, and a continuation
+			// goes on in the one of the attempt it follows (docs.DESIGN.md §7h).
+			if last := len(state.Attempts) - 1; last >= 0 {
+				state.Attempts[last].Session = result.Session
+			}
+		}
+		if change := result.ChangeRequest; change != nil {
+			state.Change = &Change{Number: change.Number, URL: change.URL}
+		}
+		return state, nil
+	}); err != nil {
 		return err
 	}
 	return judgeErr

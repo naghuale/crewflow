@@ -57,19 +57,13 @@ func (r *runner) nextAttempt() (int, error) {
 // his to do in it and goes on with `crewflow task resume`, and a run that was made to be
 // started again by hand because of a window of macOS is what F-091 is about.
 func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err error) (Result, error) {
-	ended := r.env.Now()
+	at := r.env.Now()
 	state, loadErr := LoadState(r.journals.StatePath(r.task.Number))
 	if loadErr != nil {
 		_ = files.takeAway()
 		return Result{}, loadErr
 	}
-	last := len(state.Attempts) - 1
-	// The name of the run is the mode of the file of the project: a run that was
-	// refused the key of the App is a run of the mode of the bot, and the state says
-	// so wherever the wait ended (§7i).
-	state.Attempts[last].Identity = Identity{Mode: r.cfg.Identity.Mode}
-	state = state.Ended(ended, Blocked)
-	attempt := state.Attempts[last]
+	attempt := r.ended(state)
 	// What the run is asking for, and the point to go on from, are said before the state
 	// is written: both are what the journal of the attempt holds and what a continuation
 	// is checked against, and a run that cannot say the head of its branch writes no
@@ -81,13 +75,24 @@ func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err
 		r.pointedAt(point, WaitTimeout)
 		point.sayEvent(files.Out, EventAuthorizationRequired)
 		point.sayEvent(files.Out, EventAuthorizationTimeout)
-		state.Checkpoint = r.point
 	}
-	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state); keepErr != nil {
+	// What the attempt ended with is written onto the state as it is there now, under the
+	// lock of the task: what another command wrote while this run stood in front of the
+	// window of the system is not this run's to take away (D-068 FINDING-4).
+	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+		// The name of the run is the mode of the file of the project: a run that was
+		// refused the key of the App is a run of the mode of the bot, and the state says
+		// so wherever the wait ended (§7i).
+		current = current.Identified(Identity{Mode: r.cfg.Identity.Mode}).Ended(at, Blocked)
+		if r.point != nil {
+			current.Checkpoint = r.point
+		}
+		return current, nil
+	}); keepErr != nil {
 		_ = files.takeAway()
 		return Result{}, keepErr
 	}
-	result := r.resultOf(attempt, ended, files)
+	result := r.resultOf(attempt, at, files)
 	result.Reason = fmt.Sprintf("%s: %v", reasonApproval, err)
 	// The reason is on the way out of the run in the same words as in the report of it: a
 	// person who reads the journal of the attempt afterwards is reading it when the window
@@ -111,23 +116,28 @@ func (r *runner) blockedOnApproval(ctx context.Context, files *AttemptFiles, err
 // not the task: a person who needs the task done signs this build or runs it in the mode
 // of the owner, and both are decisions of the owner (R4, §7f).
 func (r *runner) deniedOnAuthorization(files *AttemptFiles, err error) (Result, error) {
-	ended := r.env.Now()
+	at := r.env.Now()
 	state, loadErr := LoadState(r.journals.StatePath(r.task.Number))
 	if loadErr != nil {
 		_ = files.takeAway()
 		return Result{}, loadErr
 	}
-	last := len(state.Attempts) - 1
-	state = state.Ended(ended, Blocked)
-	attempt := state.Attempts[last]
+	attempt := r.ended(state)
 	r.pointedAt(r.point, WaitDenied)
 	r.point.sayEvent(files.Out, EventAuthorizationDenied)
-	state.Checkpoint = r.point
-	if keepErr := SaveState(r.journals.StatePath(r.task.Number), state); keepErr != nil {
+	// The outcome of the attempt and the refusal of the person are written onto the state
+	// as it is there now, under the lock of the task (D-068 FINDING-4).
+	if _, keepErr := UpdateState(r.journals.StatePath(r.task.Number), func(current State) (State, error) {
+		current = current.Ended(at, Blocked)
+		if r.point != nil {
+			current.Checkpoint = r.point
+		}
+		return current, nil
+	}); keepErr != nil {
 		_ = files.takeAway()
 		return Result{}, keepErr
 	}
-	result := r.resultOf(attempt, ended, files)
+	result := r.resultOf(attempt, at, files)
 	result.Reason = fmt.Sprintf("%s: %v", reasonApproval, err)
 	result.ErrorJournal = r.noteError(files.ErrorJournal, errors.New(result.Reason))
 	if closeErr := files.Close(); closeErr != nil {
@@ -181,20 +191,18 @@ func (r *runner) pointedAt(point *Checkpoint, outcome string) {
 	r.point = point
 }
 
-// answered is the state of the task with what came of the request the run was stopped at
-// written into it, and the event of it written into the journal of the attempt while it
-// is open. A run that was not going on from a point has no request to answer, and the
-// state is handed back as it was (§7i).
-func (r *runner) answered(state State, files *AttemptFiles, outcome, event string) State {
+// answered is what came of the request the run was stopped at written into the point of
+// the run, and the event of it written into the journal of the attempt while it is open. A
+// run that was not going on from a point has no request to answer, and its point stays as
+// it was (§7i).
+func (r *runner) answered(files *AttemptFiles, outcome, event string) {
 	if r.point == nil {
-		return state
+		return
 	}
 	point := *r.point
 	point.Outcome, point.DecidedAt = outcome, r.env.Now()
 	r.point = &point
 	point.sayEvent(files.Out, event)
-	state.Checkpoint = &point
-	return state
 }
 
 // takeRunAway is what a run does with the worktree and the branch it made when it is cut

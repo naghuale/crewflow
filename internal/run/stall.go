@@ -585,8 +585,19 @@ func checkOne(ctx context.Context, env ListEnv, say Say, journals Journals, repo
 		// The silence has begun and nobody has said so under the task.
 		one := recordOf(ctx, env, say, repo, state, silence, true)
 		if one.Said {
-			state = state.Reported(now)
-			_ = SaveState(journals.StatePath(state.Number), state)
+			// The record is written into the attempt the silence was measured on, under
+			// the lock of the task and onto the state as it is there now: a run that has
+			// begun since this check read the state keeps its attempt, and the silence of
+			// that run is a new episode with a record of its own (D-068 FINDING-4, §6).
+			//
+			// A state that cannot be written is not a reason to stop the check over the
+			// other tasks of the project: the run stands either way, and the next check
+			// will leave the record again rather than forget that it did (§6).
+			if written, err := UpdateState(journals.StatePath(state.Number), func(current State) (State, error) {
+				return current.ReportedIn(last.Number, now), nil
+			}); err == nil {
+				state = written
+			}
 		}
 		return &one, state
 	case standing:
@@ -603,8 +614,11 @@ func checkOne(ctx context.Context, env ListEnv, say Say, journals Journals, repo
 		// it and a person who reads it has to learn where it went.
 		one := recordOf(ctx, env, say, repo, state, silence, false)
 		if one.Said {
-			state = state.NoLongerReported()
-			_ = SaveState(journals.StatePath(state.Number), state)
+			if written, err := UpdateState(journals.StatePath(state.Number), func(current State) (State, error) {
+				return current.NoLongerReportedIn(last.Number), nil
+			}); err == nil {
+				state = written
+			}
 		}
 		return &one, state
 	default:

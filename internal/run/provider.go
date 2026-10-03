@@ -182,8 +182,8 @@ func (r *runner) providerTriesSpent(state State) int {
 //
 // A point crewflow cannot check is no point at all, and the run says why in the way out of
 // it: a continuation from a point crewflow cannot check would be a guess about the work.
-func (r *runner) providerPoint(ctx context.Context, state State) (*Checkpoint, error) {
-	head, err := r.head(ctx, state.Worktree)
+func (r *runner) providerPoint(ctx context.Context, worktree string) (*Checkpoint, error) {
+	head, err := r.head(ctx, worktree)
 	if err != nil {
 		return nil, err
 	}
@@ -245,20 +245,19 @@ func saidAtEvent(when time.Time) string {
 	return "at=" + when.Format(time.RFC3339)
 }
 
-// pointedAtProvider is the state of the task with the point of a run that stopped for the
-// model provider written into it, and what the journal of the attempt holds of it. A point
-// crewflow cannot write is not a point at all — a continuation from a guess about the work
-// is worse than no continuation — and the run says why in the way out of it and goes on to
-// hold the work where it is (§7i).
-func (r *runner) pointedAtProvider(ctx context.Context, state State, files *AttemptFiles, refused refusal) State {
-	point, err := r.providerPoint(ctx, state)
+// pointedAtProvider is the point of a run that stopped for the model provider, kept on the
+// run itself and written into the state of the task with everything else the run ends
+// with, and what the journal of the attempt holds of it. A point crewflow cannot write is
+// not a point at all — a continuation from a guess about the work is worse than no
+// continuation — and the run says why in the way out of it and goes on to hold the work
+// where it is (§7i).
+func (r *runner) pointedAtProvider(ctx context.Context, worktree string, files *AttemptFiles, refused refusal) {
+	point, err := r.providerPoint(ctx, worktree)
 	if err != nil {
 		r.note(files.ErrorJournal, fmt.Errorf("the point of task %d: %w", r.task.Number, err))
-		return state
+		return
 	}
 	r.point = point
-	state.Checkpoint = point
-	return state
 }
 
 // saysWhatCameOfProvider is what the journal of the attempt holds about the model provider
@@ -275,7 +274,7 @@ func (r *runner) pointedAtProvider(ctx context.Context, state State, files *Atte
 // (`PROVIDER_RETRY_SCHEDULED`, beside the line of the run), so that the two facts a reader
 // of the journal needs — what happened and what crewflow did about it — stand next to one
 // another (§6a, §7a).
-func (r *runner) saysWhatCameOfProvider(state State, files *AttemptFiles, attempt int, failure profile.Failure, wrote bool) State {
+func (r *runner) saysWhatCameOfProvider(files *AttemptFiles, attempt int, failure profile.Failure, wrote bool) {
 	refused, ok := refuseProvider(failure)
 	switch {
 	case ok:
@@ -285,9 +284,8 @@ func (r *runner) saysWhatCameOfProvider(state State, files *AttemptFiles, attemp
 	case r.wentOnFromProvider() && wrote:
 		sayEvent(files.Out, EventProviderAvailable,
 			"resource="+SubjectModelProvider, "attempt="+strconv.Itoa(attempt), saidAtEvent(r.env.Now()))
-		return r.spentPoint(state)
+		r.spentPoint()
 	}
-	return state
 }
 
 // wentOnFromProvider is whether this attempt is a run that goes on from a refusal of the
@@ -299,18 +297,17 @@ func (r *runner) wentOnFromProvider() bool {
 		(r.point != nil && r.point.Step == stepModelProvider)
 }
 
-// spentPoint is the state of the task with the point of the provider spent written into it:
-// the run went on from that place, the provider answered, and a continuation from there is
-// not offered any more — the same thing §7i does with a point whose request a person
-// answered, and for the same reason: a point that stands where nothing stands is a question
-// nobody asked.
-func (r *runner) spentPoint(state State) State {
+// spentPoint is the point of the provider marked as spent: the run went on from that
+// place, the provider answered, and a continuation from there is not offered any more — the
+// same thing §7i does with a point whose request a person answered, and for the same
+// reason: a point that stands where nothing stands is a question nobody asked. It is kept
+// on the run and written into the state of the task with everything else the run ends
+// with.
+func (r *runner) spentPoint() {
 	if !r.wentOnFromProvider() {
-		return state
+		return
 	}
 	point := *r.point
 	point.Outcome, point.DecidedAt = WaitCompleted, r.env.Now()
 	r.point = &point
-	state.Checkpoint = &point
-	return state
 }

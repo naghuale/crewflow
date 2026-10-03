@@ -387,26 +387,59 @@ func (s State) Alive(at time.Time, step, reason string) State {
 	return s
 }
 
-// Reported is the moment crewflow said under the task that the attempt that is going
-// stands, and it is the sign of one episode of silence: a run that is not reported any
-// more is a run whose silence is over — it is working again, or it is over — and the
-// next silence of it is a new one to write about (docs/DESIGN.md §6).
-func (s State) Reported(at time.Time) State {
-	if len(s.Attempts) == 0 {
-		return s
+// ReportedIn is the moment crewflow said under the task that the attempt with that number
+// stands, written into that attempt and not into the last one whatever it is now: the
+// record is the sign of one episode of the silence of one run, and a run that has begun
+// since the state was read is a run whose silence is a new episode to write about in its
+// own right (docs.DESIGN.md §6).
+func (s State) ReportedIn(number int, at time.Time) State {
+	for said := range s.Attempts {
+		if s.Attempts[said].Number == number {
+			saidAt := at
+			s.Attempts[said].ReportedAt = &saidAt
+		}
 	}
-	reported := at
-	s.Attempts[len(s.Attempts)-1].ReportedAt = &reported
 	return s
 }
 
-// NoLongerReported is an attempt nobody is holding as standing any more: the record of
-// its silence has been closed, and a run that stands again is a new episode of it.
-func (s State) NoLongerReported() State {
+// NoLongerReportedIn is the attempt with that number nobody is holding as standing any
+// more: the record of its silence has been closed, and a run that stands again is a new
+// episode of it (docs.DESIGN.md §6).
+func (s State) NoLongerReportedIn(number int) State {
+	for said := range s.Attempts {
+		if s.Attempts[said].Number == number {
+			s.Attempts[said].ReportedAt = nil
+		}
+	}
+	return s
+}
+
+// Identified is the state of the task with whose name the attempt that is going worked
+// under written into it: the mode of the file of the project and the one line a report
+// of the run shows (docs/DESIGN.md §7h, §7i).
+func (s State) Identified(identity Identity) State {
 	if len(s.Attempts) == 0 {
 		return s
 	}
-	s.Attempts[len(s.Attempts)-1].ReportedAt = nil
+	s.Attempts[len(s.Attempts)-1].Identity = identity
+	return s
+}
+
+// withoutAttempt is the state of the task with the attempt with that number taken away: a
+// run that turned out never to have started puts the state of its task back as it was, and
+// the attempt of it is not left behind (F-048, docs/DESIGN.md §7i). The attempts of the
+// runs beside it stay, and so does everything another command wrote in the meantime — the
+// state is put back by taking one attempt out of it and not by writing the whole of what
+// the run had read before it began (D-068 FINDING-4).
+func (s State) withoutAttempt(number int, started time.Time) State {
+	kept := s.Attempts[:0]
+	for _, attempt := range s.Attempts {
+		if attempt.Number == number && attempt.StartedAt.Equal(started) {
+			continue
+		}
+		kept = append(kept, attempt)
+	}
+	s.Attempts = kept
 	return s
 }
 
@@ -604,6 +637,10 @@ func LoadState(path string) (State, error) {
 // goes on with it writes what it knows today. It is written whole or not at all: a
 // file cut in half by an interruption is a file that says the wrong thing about a
 // run, and a state that is wrong is worse than none.
+//
+// It is for the writer that holds the whole state: a command that leaves a record of
+// its own in a state it read earlier writes it with `UpdateState`, which keeps the
+// records of the writers that went beside it (D-068 FINDING-4).
 func SaveState(path string, state State) error {
 	state.Schema = Schema
 	data, err := json.MarshalIndent(state, "", "  ")
@@ -611,6 +648,76 @@ func SaveState(path string, state State) error {
 		return fmt.Errorf("the state of the task: %w", err)
 	}
 	return writeFileAtomic(path, append(data, '\n'))
+}
+
+// UpdateState is what a command writes into the state of a task without taking a record
+// of another command away, and it answers the state as it was written.
+//
+// Two commands write one state of a task at the same time: a run of the task writes the
+// sign of life of its attempt and how the attempt ended, and the queue of attention of a
+// schedule writes what the host said about the run and what it left under the task
+// (docs/DESIGN.md §6a). Each of them read the state before the other one wrote, and a
+// write of the whole of what a command holds in its hands keeps the records of the
+// writer that went last: the attempt of a run goes away together with the memory of what
+// the host said about the change of the run before it, and a settled that is gone is a
+// queue that walks the network about a finished run every minute again (F-061, F-105,
+// D-068 FINDING-4).
+//
+// Therefore the write is a change and not a state: the lock of the task is taken, the
+// state is read again as it is there now, the change is made on that and the whole is
+// written — whole or not at all, as `SaveState` writes it. A writer that cannot take the
+// lock is refused and says so: a record lost without a word about it is worse than a
+// record that was not written.
+func UpdateState(path string, change func(State) (State, error)) (State, error) {
+	release, err := lockState(path)
+	if err != nil {
+		return State{}, err
+	}
+	defer release()
+	state, err := LoadState(path)
+	switch {
+	case os.IsNotExist(err):
+		// A task that was never run has no state to change, and the change is made on
+		// an empty one: this is how the state of a task comes to be at all.
+		state = State{}
+	case err != nil:
+		// A state that cannot be read is the file a person has to open by hand, and a
+		// write over it would take it away.
+		return State{}, err
+	}
+	changed, err := change(state)
+	if err != nil {
+		return State{}, err
+	}
+	if err := SaveState(path, changed); err != nil {
+		return State{}, err
+	}
+	return changed, nil
+}
+
+// lockState takes the lock of the state of one task and answers how to give it back. The
+// lock is a file of its own next to the state, and the name of it is not the name of a
+// task: every reader of the folder of the states skips it, and nothing of it is ever
+// taken away — a lock taken away is a second lock made of a different file while the
+// first one is still held, and two locks protect nothing.
+func lockState(path string) (func(), error) {
+	name := path + ".lock"
+	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+		return nil, fmt.Errorf("make %s: %w", filepath.Dir(name), err)
+	}
+	file, err := os.OpenFile(name, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("lock %s: %w", name, err)
+	}
+	held, err := holdFile(file)
+	if err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("lock %s: %w", name, err)
+	}
+	return func() {
+		held()
+		_ = file.Close()
+	}, nil
 }
 
 // writeFileAtomic writes through a file of its own next to the one it writes and

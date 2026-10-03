@@ -1,10 +1,13 @@
 package run
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -399,6 +402,166 @@ func TestAStateOfBeforeIsReadAsItIs(t *testing.T) {
 	if again.Attempts[1].Session != "ses_7fKq2" {
 		t.Errorf("the second attempt is in the session %q, want the one it went on in", again.Attempts[1].Session)
 	}
+}
+
+// TestTheQueueAndTheNextRunKeepBothRecordsOfOneState: two commands write one state of a
+// task at the same time, and this is the race of D-068 FINDING-4 on the machine of a
+// test. The run of the task opened its change request and stopped; the queue of attention
+// read the state of the task and went to the host to ask what came of that change; while
+// it was asking, the review asked for changes and the run of the task went on — and the
+// answer of the host came after that.
+//
+// Both records have to be in the state at the end: the attempt of the second run, which
+// exists only in the file, and the memory of what the host said about the change of the
+// first one, which is what keeps the queue from walking the network about a finished run
+// every minute (F-061, F-105, §6a). A write of the whole state a command holds in its
+// hands keeps one of them and loses the other.
+func TestTheQueueAndTheNextRunKeepBothRecordsOfOneState(t *testing.T) {
+	m := newMachine(t)
+	m.answers["opencode"] = answer{stdout: theRun}
+	origin := &host{task: taskOf(43), opened: true}
+	cfg := projectOf(t, m.worktrees, "")
+
+	if _, err := Run(t.Context(), m.env(), cfg, origin.set(), Request{Number: 43, RepoDir: m.repo}); err != nil {
+		t.Fatalf("the first run returned an error: %v", err)
+	}
+
+	// The queue is asked about the change of the run that has ended, and the host of
+	// the test answers only when the test has let the next run write its attempt.
+	asked, answered := make(chan struct{}), make(chan struct{})
+	queue := make(chan Queue, 1)
+	go func() {
+		read, err := CheckAttention(t.Context(), m.home, cfg.RepoName(), attentionEnvOf(m.at().Add(time.Hour)),
+			&hostAnsweredLate{asked: asked, answered: answered,
+				facts: HostFacts{Asked: true, Change: &ChangeFacts{Number: 44, State: "merged", Head: theHead}}}, nil)
+		if err != nil {
+			t.Errorf("CheckAttention returned an error: %v", err)
+		}
+		queue <- read
+	}()
+	<-asked
+
+	if _, err := Run(t.Context(), m.env(), cfg, origin.set(),
+		Request{Number: 43, RepoDir: m.repo, Continue: "the review asked for a test of the timeout"}); err != nil {
+		t.Fatalf("the second run returned an error: %v", err)
+	}
+	close(answered)
+	if read := <-queue; len(read.Entries) != 0 {
+		t.Errorf("the queue holds %v, want nothing: a merged change takes the run out of it", tasksOfQueue(read))
+	}
+
+	state := stateOf(t, m, 43)
+	if len(state.Attempts) != 2 {
+		t.Errorf("the state holds %d attempts, want both: a write of the state the queue read takes the "+
+			"attempt of the run that went on away", len(state.Attempts))
+	}
+	if state.Settled == nil || state.Settled.By != ReasonChangeMerged {
+		t.Errorf("the state remembers %+v, want what the host said about the change of the first run", state.Settled)
+	}
+}
+
+// TestAStateOfATaskUnderRacingWriters: many writers at once, each of them with its own
+// attempt to leave in the state of one task — the sign of life of a run, the record of a
+// standing one, the memory of what the host said. Every attempt is in the file at the
+// end: the state is written under the lock of the task and onto the state as it is there
+// now, and a writer that read the file before the others wrote does not take their
+// attempts away (D-068 FINDING-4).
+func TestAStateOfATaskUnderRacingWriters(t *testing.T) {
+	const writers = 8
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	started := monday.Add(8 * time.Hour)
+	if err := SaveState(path, State{Number: 43, Title: "the run of a task"}); err != nil {
+		t.Fatalf("SaveState returned an error: %v", err)
+	}
+
+	var group sync.WaitGroup
+	written := make(chan error, writers)
+	for at := range writers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_, err := UpdateState(path, func(state State) (State, error) {
+				return state.NextAttempt(StartOf{
+					Started:      started.Add(time.Duration(at) * time.Minute),
+					Step:         stepExecutor,
+					Journal:      fmt.Sprintf("journal-of-the-writer-%d.jsonl", at),
+					ErrorJournal: fmt.Sprintf("way-out-of-the-writer-%d.err", at),
+					Executor:     "opencode",
+					Identity:     Identity{Mode: "owner"},
+				}), nil
+			})
+			written <- err
+		}()
+	}
+	group.Wait()
+	close(written)
+	for err := range written {
+		if err != nil {
+			t.Fatalf("UpdateState returned an error: %v", err)
+		}
+	}
+
+	kept, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState returned an error: %v", err)
+	}
+	if len(kept.Attempts) != writers {
+		t.Fatalf("the state holds %d attempts, want the %d that were written at once", len(kept.Attempts), writers)
+	}
+	for _, attempt := range kept.Attempts {
+		if attempt.Number < 1 || attempt.Number > writers {
+			t.Errorf("the state holds the attempt %d, want every number from 1 to %d exactly once: "+
+				"two writers took the same number of an attempt", attempt.Number, writers)
+		}
+	}
+
+	// The lock of the task is a file of its own next to the state, and it is not the state of
+	// a task: a queue that counted it as one would tell a person it is reading more tasks than
+	// it is, and a list would show a run of a task that never was (docs/DESIGN.md §6a).
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read the folder of the state: %v", err)
+	}
+	for _, entry := range entries {
+		if isStateOfATask(entry.Name()) != (entry.Name() == "43.json") {
+			t.Errorf("the folder of the state holds %q, and a reader counts it as a task: %t",
+				entry.Name(), isStateOfATask(entry.Name()))
+		}
+	}
+	if count := countOfStates(entries); count != 1 {
+		t.Errorf("the queue would say it is reading %d states, want the one task", count)
+	}
+}
+
+// hostAnsweredLate is the host of a project in a test that is asked about a task and
+// answers only when the test lets it: what a test of two writers of one state needs is
+// for the answer of the host to come after the run of the task has written what it had to
+// write, because that is the order in which the two of them write the same file.
+type hostAnsweredLate struct {
+	// asked is closed when the host is asked the first time, and answered is released by
+	// the test to let the answer through.
+	asked    chan struct{}
+	answered chan struct{}
+	// facts is what the host says about every task it is asked about.
+	facts HostFacts
+}
+
+// FactsOf is what the host of the test says about a task, once the test has let it: the
+// queue asks the host in a goroutine of its own, and both the closing of `asked` and the
+// closing of `answered` may be reached by more than one of those goroutines.
+func (h *hostAnsweredLate) FactsOf(ctx context.Context, _, _ int) (HostFacts, error) {
+	select {
+	case <-h.asked:
+	default:
+		close(h.asked)
+	}
+	select {
+	case <-h.answered:
+	case <-ctx.Done():
+		return HostFacts{}, ctx.Err()
+	}
+	return h.facts, nil
 }
 
 // TestAStateOfANewerCrewflowIsRefused: a file of a format nobody looked at is a file

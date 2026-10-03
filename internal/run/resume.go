@@ -235,9 +235,8 @@ var heads = map[reason]string{
 }
 
 // goesOnByItself is what crewflow goes on with after an attempt that stopped on a
-// habit it knows, an empty resume where a run has to stop, and the state of the task
-// with the reason of the refusal written into the attempt that has just ended. Five
-// things keep a run from going on by itself:
+// habit it knows, an empty resume where a run has to stop, and what the attempt that has
+// just ended is written with. Five things keep a run from going on by itself:
 //
 //   - it did not stop on a refusal at all, or it was stopped by a person or by the
 //     time of the project: those are decided by a person, and the orchestrator knows
@@ -255,7 +254,7 @@ var heads = map[reason]string{
 //   - the attempt that ended went on by itself for this very habit: an executor that
 //     was told where its scratch is and wrote into /tmp again is not to be told a
 //     second time, and the orchestrator decides (docs/DESIGN.md §7a, §7j).
-func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Call) (resume, State) {
+func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Call) (resume, ended) {
 	// A run that stopped for the model provider is a wait for a resource, and what crewflow
 	// makes of it is worked out before anything about permissions: the provider refused the
 	// run before a permission was ever asked, and the habit of a refusal is of no use to it
@@ -263,7 +262,7 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 	// go into the attempt that has just ended, because that is where the queue of attention
 	// reads them from and it reads no journal (§6a, §7h).
 	if next, marked, ok := r.afterProvider(result, state); ok {
-		return next, state.Reason(result.Reason).Provider(marked)
+		return next, ended{reason: result.Reason, marked: marked}
 	}
 	// A run that could not reach the host through either route of the project has said so in
 	// its reason, and the reason goes into the attempt that has just ended: the queue of
@@ -271,27 +270,27 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 	// by itself — the one second attempt of the mode `fallback` is spent, and a third attempt
 	// is a decision a person makes, not a program of crewflow (§7a.1, §7j).
 	if named(result.Reason) == ReasonRouteUnavailable {
-		return resume{}, state.Reason(result.Reason)
+		return resume{}, ended{reason: result.Reason}
 	}
 	// A run crewflow stopped because it stood with a provider that has answered is a run
 	// whose agent has hung, and it goes on in the same session once — the same habit of a
 	// known shape, and the same one line in the journal (F-143, docs.DESIGN.md §7a).
 	if result.Outcome == Stalled {
-		return r.afterStanding(state)
+		return r.afterStanding()
 	}
 	if result.Outcome != BlockedPermission {
-		return resume{}, state
+		return resume{}, ended{}
 	}
 	// A task that was stopped for reaching a secret is not continued by crewflow at all,
 	// whatever the next attempt was refused: the attempt before this one is what says
 	// that, and its outcome is what a person reads before the next run (docs/DESIGN.md
 	// §7a.1, §8).
 	if before, was := r.before(state); was && before.Outcome == BlockedSecret {
-		return resume{}, state
+		return resume{}, ended{}
 	}
 	next, known := r.oneHabitOf(result.Rejections, calls)
 	if !known {
-		return resume{}, state
+		return resume{}, ended{}
 	}
 	// The attempt of the run that has just ended is the one before the resume that is
 	// being worked out, and its own mark says whether crewflow is the one that went on
@@ -301,9 +300,28 @@ func (r *runner) goesOnByItself(result *Result, state State, calls []profile.Cal
 	// run that has been told (docs/DESIGN.md §7a.1, §7j).
 	if before := r.ended(state); before.AutoResumed == string(next.reason) {
 		result.Reason = reasonRepeated + ": " + string(next.reason)
-		return resume{}, state.Reason(result.Reason)
+		return resume{}, ended{reason: result.Reason}
 	}
-	return next, state
+	return next, ended{}
+}
+
+// ended is what the state of the task is written with when the attempt that has just ended
+// comes to an end: the reason of the stop, which the queue of attention reads out of the
+// state and not out of a journal, and what the model provider said about whether the
+// refusal may be repeated (docs/DESIGN.md §6a, §7a.1).
+//
+// It is a change and not a state on purpose: a run says what it has to say with it, and
+// the state of the task is that change made on the state as it is there now — beside the
+// records of the commands that wrote it while this run worked (D-068 FINDING-4). Both
+// fields are empty for a run that stopped for neither, and an empty reason is not written
+// at all, so that the reason an earlier step of the run put into the attempt stays.
+type ended struct {
+	// reason is the reason of the stop of the attempt that has just ended.
+	reason string
+	// marked is what the model provider said about the refusal it stopped the run for:
+	// `retryable` where it marked it itself, and `unknown` where it said nothing that
+	// makes the failure temporary.
+	marked string
 }
 
 // The reason of a run that crewflow stopped because it had shown nothing and was refused
@@ -338,16 +356,16 @@ const (
 // The attempt that stood keeps no reason of its own: a run that stands a second time is a
 // run nobody knows what it waits for, and that is what the queue says about it, with the
 // last step of the run in the entry (§6a).
-func (r *runner) afterStanding(state State) (resume, State) {
+func (r *runner) afterStanding() (resume, ended) {
 	silence, stood := r.hang.stoodOnce()
 	if !stood {
-		return resume{}, state
+		return resume{}, ended{}
 	}
 	return resume{habit: habit{
 		reason:   reason(reasonStanding),
 		headline: fmt.Sprintf(standingHeadline, Idle(silence.For)),
 		text:     fmt.Sprintf(standingTells, Idle(silence.For), silence.LastStep),
-	}}, state
+	}}, ended{}
 }
 
 // oneHabitOf is the habit every refusal of an attempt is about, and whether crewflow

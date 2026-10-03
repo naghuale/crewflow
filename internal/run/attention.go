@@ -858,8 +858,14 @@ func attentionOf(ctx context.Context, home, repo string, env AttentionEnv, host 
 			// Что хостинг сказал о завершении работы, помнится рядом с прогоном: и очередь,
 			// и список прогонов читают это вместо того, чтобы спрашивать заново, а по
 			// истечении срока памяти вопрос задаётся снова (F-105, §6, §6a).
-			settled := one.state.SettledBy(env.Now(), settledBy(facts))
-			_ = SaveState(one.path, settled)
+			//
+			// Память пишется под замком задачи и на то состояние, какое оно сейчас: очередь
+			// читала файл до того, как ходила к хостингу, и запись из того снимка увела бы
+			// попытку прогона, который пошёл между чтением и ответом (D-068 FINDING-4).
+			by := settledBy(facts)
+			_, _ = UpdateState(one.path, func(state State) (State, error) {
+				return state.SettledBy(env.Now(), by), nil
+			})
 		default:
 			entry, wanted := AttentionOf(env, repo, one.state, facts)
 			if !wanted {
@@ -1032,7 +1038,12 @@ func leaveRecord(ctx context.Context, env AttentionEnv, say SayAttention, path s
 	}
 	said, problem := say(ctx, one)
 	if said {
-		_ = SaveState(path, state.Noticed(now, one.Key()))
+		// What was left under the task is remembered on the state as it is there now and
+		// under the lock of the task: a run that has begun while the queue was writing
+		// keeps its attempt (D-068 FINDING-4).
+		_, _ = UpdateState(path, func(current State) (State, error) {
+			return current.Noticed(now, one.Key()), nil
+		})
 	}
 	return said, problem
 }
