@@ -51,7 +51,7 @@ func runReview(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 		return exitUsage
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := loadFor(*configPath)
 	if err != nil {
 		return reviewFailed(stderr, err)
 	}

@@ -316,6 +316,12 @@ func Run(ctx context.Context, env Env) Report {
 	if !readable {
 		return c.report()
 	}
+	// What the program on this machine is comes before the keychain of macOS and before the
+	// roles of the project: it is the question §5 asks of a machine, and everything under it
+	// is answered by the build that is installed rather than by the one that is written
+	// (docs.DESIGN.md §5, §7i, F-178).
+	c.step("this build of crewflow")
+	c.build(ctx, cfg)
 	// The two questions about the keychain of macOS and about the signature of this
 	// program come before the roles of the project, because the checks of the roles read
 	// the key of an App and that read is what makes macOS open a window of the system: a

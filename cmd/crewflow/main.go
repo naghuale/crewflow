@@ -82,7 +82,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // runVersion prints the version, the commit and the build time that were stamped
-// into the binary at link time.
+// into the binary at link time, and what this build can do: the capabilities of §5 are
+// what a project requires of the program on the machine, and a person has to be able to
+// see them without reading the code of the project.
 func runVersion(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("version", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -96,6 +98,7 @@ func runVersion(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	fmt.Fprintln(stdout, buildinfo.String())
+	fmt.Fprintln(stdout, capabilities())
 	return exitOK
 }
 
@@ -136,7 +139,7 @@ Subcommands:
                   fallback (§7d)
   network proxy  The named proxies of the project: list, add, edit, use, remove, test (§7d)
   help           Show this message
-  version        Print the version, the commit and the build time
+  version        Print the version, the commit, the build time and what this build can do
 
   crewflow task run <N> [-config path] [-repo path] [-continue "message"] [-json]
   crewflow task resume <N> [-config path] [-repo path] [-json]

@@ -1,5 +1,23 @@
 # crewflow settings for crewflow itself. See docs/DESIGN.md §5.
 
+[crewflow]
+# What the program on this machine has to have for this project to be worked on at all
+# (§5, F-178). Every name here is a mechanism the process of this repository relies on and
+# that no other program of the project can stand in for: the admission of a pair of tasks
+# (§7c), the refusal of a second run of a task while its first run is going (§7), the one
+# boundary of §7e, the separation of the subjects of §7i and this list itself. A command
+# whose safety depends on one of them refuses with `crewflow-capability-missing` before it
+# does anything — so an installed build that is older than this file says so instead of
+# quietly working without the mechanism (03.10: `crewflow task admit` answered «unknown
+# subcommand» on a machine where #182 and #208 had been merged for hours).
+requires = [
+  "capability-requires",
+  "identity-separation",
+  "output-boundary",
+  "parallel-admission",
+  "task-run-going",
+]
+
 [project]
 repo = "naghuale/crewflow"
 default_branch = "main"

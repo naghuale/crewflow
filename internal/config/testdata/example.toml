@@ -1,3 +1,11 @@
+[crewflow]
+# Механизмы сборки, без которых командам этого проекта нельзя начинать (§5, F-178). Команда,
+# безопасность которой зависит от названного здесь механизма — `task run` (и `-continue`),
+# `task resume`, `review`, `merge` — отказывает словом `crewflow-capability-missing` до
+# любого действия, когда установленная сборка этого механизма не имеет: слито в `main` ≠
+# установлено на машине. Имя, которого нет ни в одной сборке, отказ тот же.
+requires = ["parallel-admission", "task-run-going", "output-boundary"]
+
 [project]
 repo = "naghuale/tele"
 default_branch = "main"

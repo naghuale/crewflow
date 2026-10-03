@@ -1,0 +1,11 @@
+# The same capability twice: the file would ask for one mechanism twice, and a person
+# reading it cannot tell whether two of them were meant.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[crewflow]
+requires = ["parallel-admission", "output-boundary", "parallel-admission"]

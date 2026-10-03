@@ -31,6 +31,14 @@ func TestLoadExample(t *testing.T) {
 		got  any
 		want any
 	}{
+		// What the project needs of the program that runs it: the example writes three
+		// mechanisms out, because the names of them are what `crewflow version` and
+		// `crewflow doctor` show and what a command refuses without (F-178, §5).
+		{
+			"crewflow.requires",
+			cfg.Crewflow.Requires,
+			[]string{"parallel-admission", "task-run-going", "output-boundary"},
+		},
 		{"project.repo", cfg.Project.Repo, "naghuale/tele"},
 		{"project.default_branch", cfg.Project.DefaultBranch, "main"},
 		{"project.language", cfg.Project.Language, "ru"},

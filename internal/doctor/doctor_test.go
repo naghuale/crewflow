@@ -61,7 +61,11 @@ run = ["golangci-lint", "run", "./..."]
 	report := runOn(t, m, config)
 
 	want := []string{
-		"config", "git", "gh", "gh login", "executor identity", "orchestrator identity", "authority separation", "executor",
+		// What the program on the machine is comes before the rest: the version, the commit
+		// and the capabilities of the build the project relies on, and how far it is behind
+		// the main of the repository it was made from (docs.DESIGN.md §5, F-178).
+		"config", "git", "installed build",
+		"gh", "gh login", "executor identity", "orchestrator identity", "authority separation", "executor",
 		"access read", "executor rights", "network route", "gate format", "gate lint", "tool go", "tool golangci-lint", "tool libtdjson",
 	}
 	if got := checkNames(report); !slices.Equal(got, want) {

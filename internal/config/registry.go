@@ -86,6 +86,11 @@ func (a Asked) String() string {
 // missing is a key nobody has promised anything about, and the meta-test of the
 // registry fails until it is here (docs/DESIGN.md §5).
 var settings = []Setting{
+	// [crewflow] — what the project needs of the program that runs it. The names are the
+	// capabilities of the build, and the commands whose safety depends on one of them
+	// refuse before they act where the installed build has not got it (F-178, §5).
+	{Key: "crewflow.requires", Status: Supported, Applies: "cfg.Crewflow.Requires"},
+
 	// [project] — the project itself. Every command reads the repository out of
 	// it, and a run and the gate read the branch, the language of the tasks and
 	// the style of the commits.

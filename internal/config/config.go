@@ -13,6 +13,7 @@ import (
 // Config is a whole crewflow.toml: which project it is, which agent runs a task
 // in which worktree, and which commands must pass before a commit is reviewed.
 type Config struct {
+	Crewflow     Crewflow     `toml:"crewflow"`
 	Project      Project      `toml:"project"`
 	Forge        Forge        `toml:"forge"`
 	Tracker      Tracker      `toml:"tracker"`
@@ -32,6 +33,30 @@ type Config struct {
 	Requirements Requirements `toml:"requirements"`
 	Isolation    Isolation    `toml:"isolation"`
 	Capabilities []Capability `toml:"capabilities"`
+}
+
+// Crewflow is what the file says about the program itself: the mechanisms of the build
+// that runs this project, without which the commands whose safety depends on them refuse
+// to act (docs.DESIGN.md §5).
+//
+// It is the answer to «слито ≠ установлено» (F-178): a mechanism written into `main` is
+// in no installed program, and a project that relies on one has to be able to say so where
+// the program that runs it will see it.
+type Crewflow struct {
+	// Requires are the capabilities of the build this project needs, as `crewflow
+	// version` and `crewflow doctor` name them: "parallel-admission",
+	// "task-run-going", "output-boundary", "identity-separation",
+	// "capability-requires". A command whose safety depends on one of them —
+	// `task run`, `task run -continue`, `task resume`, `review`, `merge` — refuses with
+	// `crewflow-capability-missing` before it creates a branch, a worktree or an attempt,
+	// and before it reads a key of an App, where the installed build has not one of them.
+	// A name no build has is refused the same way: a project that asks for a mechanism
+	// nobody can act is a project whose commands do nothing at all.
+	//
+	// Empty is not a mistake and is not a promise: a project that says nothing is a
+	// project that works with whatever build is on the machine, as it did before this key
+	// was there.
+	Requires []string `toml:"requires"`
 }
 
 // Project is the repository crewflow works on.

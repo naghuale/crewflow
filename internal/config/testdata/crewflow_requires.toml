@@ -1,0 +1,13 @@
+# What the program on the machine has to have: the mechanisms the safety of the commands
+# of this project depends on. A command whose safety depends on one of them refuses with
+# `crewflow-capability-missing` before it does anything, where the installed build has not
+# one of them (docs.DESIGN.md §5).
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[crewflow]
+requires = ["parallel-admission", "output-boundary"]

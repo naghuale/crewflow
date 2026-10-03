@@ -54,6 +54,9 @@ func TestLoadRejects(t *testing.T) {
 		{"network_active_proxy_unknown.toml", []string{"network.active_proxy", "office"}},
 		{"requirements_tool_duplicate.toml", []string{"requirements.tools[1].name", "go"}},
 		{"capabilities_duplicate.toml", []string{"capabilities[1].name", "github-keys"}},
+		{"crewflow_requires_empty_name.toml", []string{"crewflow.requires[1]", "empty name"}},
+		{"crewflow_requires_spaces.toml", []string{"crewflow.requires[0]", "parallel-admission", "one word"}},
+		{"crewflow_requires_duplicate.toml", []string{"crewflow.requires[2]", "duplicate capability", "parallel-admission"}},
 		{"fallback_command_no_prompt.toml", []string{"executor.fallback[0].command", "{prompt}"}},
 		{"fallback_timeout_invalid.toml", []string{"executor.fallback[0].timeout", "half an hour"}},
 		{"tasks_owner_approval_unknown.toml", []string{"tasks.owner_approval", "sometimes", "risky"}},
@@ -97,6 +100,7 @@ func TestLoadAccepts(t *testing.T) {
 	for _, name := range []string{
 		"example.toml", "minimal.toml", "identity_bot.toml", "orchestrator_separate.toml",
 		"attention_thresholds.toml", "resume_within_custom.toml", "network_proxy.toml",
+		"crewflow_requires.toml",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := loadFile(t, name); err != nil {

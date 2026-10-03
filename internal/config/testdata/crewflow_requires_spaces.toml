@@ -1,0 +1,11 @@
+# A name with spaces around it: the name of a capability is one word, and a name written
+# with spaces is a name no build has, only a slip of the hand.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[crewflow]
+requires = [" parallel-admission"]

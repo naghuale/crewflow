@@ -46,9 +46,17 @@ func runMerge(out *secret.Out, args []string, stdout, stderr *secret.Writer) int
 		return code
 	}
 
+	// The file of the project and the capabilities of this build are asked before the
+	// roles of the orchestrator are built and before a key of an App is read: a merge is
+	// pushed as the orchestrator of the project, and the safety of that push depends on
+	// the mechanisms the project names (F-178, docs.DESIGN.md §5, §7i).
+	cfg, err := loadFor(*configPath)
+	if err != nil {
+		return mergeFailed(stderr, err)
+	}
 	ctx, stop := stoppedBy()
 	defer stop()
-	deps, _, err := depsOfChange(ctx, out, *configPath, *repoDir, change, stderr)
+	deps, err := depsOfChange(ctx, out, cfg, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -86,7 +94,15 @@ func runVerify(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 
 	ctx, stop := stoppedBy()
 	defer stop()
-	deps, cfg, err := depsOfChange(ctx, out, *configPath, *repoDir, change, stderr)
+	// A check of a merge only shows what came of the merge that was made, and the machine
+	// it reads is the machine of that merge; it asks nothing of the build that runs it
+	// beyond the file, and a report that refused here would hide the one thing a person
+	// came to read (F-178, docs.DESIGN.md §5).
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return mergeFailed(stderr, err)
+	}
+	deps, err := depsOfChange(ctx, out, cfg, *configPath, *repoDir, change, stderr)
 	if err != nil {
 		return mergeFailed(stderr, err)
 	}
@@ -121,18 +137,18 @@ func runVerify(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 // from, the task the change is of and the state of that task. The task comes out of what
 // crewflow kept of the runs of this project, and a change no run of it opened still says
 // which task it is of (docs/DESIGN.md §7, §7h).
-func depsOfChange(ctx context.Context, out *secret.Out, configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, config.Config, error) {
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return merge.Deps{}, config.Config{}, err
-	}
+func depsOfChange(ctx context.Context, out *secret.Out, cfg config.Config, configPath, repoDir string, change int, stderr io.Writer) (merge.Deps, error) {
+	// The file of the project is given and not read here, because a merge and a check of
+	// a merge are not the same command over it: a merge asks of the build first whether it
+	// has the capabilities the project requires of it, and a check of a merge only shows
+	// what came of the merge that was made (F-178, docs.DESIGN.md §5).
 	home, err := cfg.ExpandPath(crewflowHome)
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	set, err := mergeRoles(cfg, roleEnv(configPath, secret.NewNotices(stderr), out))
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	// Whose name the merge writes and pushes as is asked of the roles of the orchestrator
 	// and goes into the report and the journal of the merge: a merge that was pushed as
@@ -140,15 +156,15 @@ func depsOfChange(ctx context.Context, out *secret.Out, configPath, repoDir stri
 	// one that was pushed as the orchestrator (docs/DESIGN.md §7h, §7i).
 	orchestrator, err := orchestratorOf(ctx, set)
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	reviewers, err := reviewersOf(ctx, cfg, set)
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	owners, err := ownersOf(ctx, cfg, set)
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	number := taskOfChange(home, cfg, change)
 	state := stateOfTaskAt(home, cfg, number)
@@ -157,7 +173,7 @@ func depsOfChange(ctx context.Context, out *secret.Out, configPath, repoDir stri
 	// machine dressed as the answer of this one (docs/DESIGN.md §7d).
 	checkoutEnvironment, err := gitEnvironment(ctx, cfg, set, stderr)
 	if err != nil {
-		return merge.Deps{}, config.Config{}, err
+		return merge.Deps{}, err
 	}
 	return merge.Deps{
 		Gate: gate.Deps{
@@ -185,7 +201,7 @@ func depsOfChange(ctx context.Context, out *secret.Out, configPath, repoDir stri
 		Home:         home,
 		Repo:         cfg.RepoName(),
 		Orchestrator: merge.Orchestrator{Mode: orchestrator.Mode, Description: orchestrator.Description},
-	}, cfg, nil
+	}, nil
 }
 
 // headRefOf is the ref the host keeps the head of the change under, and an empty string

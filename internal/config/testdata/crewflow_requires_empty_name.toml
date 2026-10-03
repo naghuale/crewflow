@@ -1,0 +1,11 @@
+# A name with nothing in it: no build has such a capability, and a file that requires one
+# would be refused by every command with a refusal nobody could read.
+
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[crewflow]
+requires = ["parallel-admission", ""]

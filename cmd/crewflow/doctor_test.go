@@ -53,6 +53,10 @@ func TestRunDoctorReady(t *testing.T) {
 	}
 	for _, want := range []string{
 		"✓", "config", "git", "gh", "executor", "nothing is missing",
+		// The program that is going to work on this project is named on the report, with
+		// what it can do: a project relies on the mechanisms of §5, and a person has to see
+		// which build is on the machine before a task starts (F-178, docs.DESIGN.md §5).
+		"installed build", "capabilities:", "commit", "behind main: unknown",
 		// The one thing a machine of the pilot is told about itself: the powers of its
 		// executor are the powers of the login, and the mode of the bot is the answer
 		// (docs.DESIGN.md §7i).
@@ -161,7 +165,10 @@ func TestRunDoctorJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatalf("crewflow doctor -json wrote %q, which is not JSON: %v", stdout.String(), err)
 	}
-	want := []string{"config", "git", "gh", "gh login", "executor identity", "orchestrator identity",
+	// What the program on the machine is comes before the checks of the host: the version,
+	// the commit and the capabilities of the build the project relies on, and how far it is
+	// behind the main of the repository it was made from (docs.DESIGN.md §5, F-178).
+	want := []string{"config", "git", "installed build", "gh", "gh login", "executor identity", "orchestrator identity",
 		"authority separation", "executor", "access read", "executor rights", "network route"}
 	got := make([]string, 0, len(report.Checks))
 	for _, check := range report.Checks {

@@ -177,7 +177,38 @@ crewflow task run 12 -continue "fix the failing test"   # the same session, afte
 crewflow changelog build     # build the unreleased part of CHANGELOG.md out of changelog.d/
 crewflow changelog check     # every fragment is a fragment of a task, and no two say one thing
 crewflow doctor network      # what the route to the network can do, one capability at a time
+crewflow version             # the version, the commit and what this build can do
 ```
+
+**What the program on the machine can do** is a list of its own, out of the code of the
+build and not out of a text: `parallel-admission` (the written admission of a pair and the
+refusal of a second run without it), `task-run-going` (the refusal of a second run of a
+task while its first run is going), `output-boundary` (the one boundary every text of a
+command goes out through), `identity-separation` (a run and a review under accounts of their
+own) and `capability-requires` (this list). `crewflow version` prints it, `crewflow doctor`
+prints it as the `installed build` line together with the commit, and the project says what
+it needs of the build in its file:
+
+```toml
+[crewflow]
+requires = ["parallel-admission", "task-run-going", "output-boundary"]
+```
+
+`task run` (with `-continue` too), `task resume`, `review` and `merge` then refuse with
+`crewflow-capability-missing` **before anything happens** — before a branch, before a
+worktree, before an attempt and before a key of an App is read — where the installed build
+has none of the mechanisms named there. A name no build has is refused the same way. This is
+the answer to «merged ≠ installed»: on 03.10 a machine stood on v0.2.0 for a whole day while
+`task admit` and the refusal of a second run were already in `main`, and that showed up only
+when `crewflow task admit` answered «unknown subcommand».
+
+`doctor` also says how far the installed build is behind `main` of the repository it was
+built from, and where that cannot be told — no network, no `origin/main` here, a repository
+that is not the one the commit came from — it says `unknown` and never that the build is up
+to date. Nothing updates the installed program for you; `make install` is still yours.
+
+A project that says nothing in `[crewflow] requires` is worked on as before: the key is
+optional, and the defaults of the file are what crewflow does.
 
 Every key of `crewflow.toml` has a status in the code: `supported`, which the code
 applies, or `specified`, which the design describes and the code has not written

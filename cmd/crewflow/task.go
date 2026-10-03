@@ -112,7 +112,7 @@ func runTaskRun(out *secret.Out, args []string, stdout, stderr *secret.Writer) i
 		return exitUsage
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := loadFor(*configPath)
 	if err != nil {
 		return failed(stderr, err)
 	}
@@ -196,7 +196,7 @@ func runTaskResume(out *secret.Out, args []string, stdout, stderr *secret.Writer
 		return exitUsage
 	}
 
-	cfg, err := config.Load(*configPath)
+	cfg, err := loadFor(*configPath)
 	if err != nil {
 		return failed(stderr, err)
 	}

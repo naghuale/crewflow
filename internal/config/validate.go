@@ -46,6 +46,9 @@ var (
 // and the value that is wrong, so that a person can fix the file without
 // guessing.
 func (c Config) Validate() error {
+	if err := validateRequires(c.Crewflow.Requires); err != nil {
+		return err
+	}
 	if err := validateRepo(c.Project.Repo); err != nil {
 		return err
 	}
@@ -137,6 +140,28 @@ func (c Config) Validate() error {
 		return err
 	}
 	return uniqueNames("capabilities", c.Capabilities, func(c Capability) string { return c.Name })
+}
+
+// validateRequires checks the capabilities a project names: each of them is a name and no
+// name is twice. What the build on the machine has of them is not asked here — that is a
+// fact about the build and not about the file, and it is asked where a command acts and in
+// `crewflow doctor`, with the word `crewflow-capability-missing` (docs.DESIGN.md §5, F-178).
+func validateRequires(requires []string) error {
+	seen := make(map[string]struct{}, len(requires))
+	for i, name := range requires {
+		key := fmt.Sprintf("crewflow.requires[%d]", i)
+		switch {
+		case strings.TrimSpace(name) == "":
+			return fmt.Errorf("%s: an empty name is not a capability, and no build has one", key)
+		case name != strings.TrimSpace(name):
+			return fmt.Errorf("%s: %q has a space around it, and the name of a capability is one word", key, name)
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("%s: duplicate capability %q, one name of a mechanism is asked for once", key, name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 // validateIdentity checks the mode of the executor against the host of the project

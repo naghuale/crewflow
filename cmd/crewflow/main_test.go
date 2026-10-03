@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/naghuale/crewflow/internal/buildinfo"
 	"github.com/naghuale/crewflow/internal/secret"
 )
 
@@ -152,14 +153,23 @@ func clientOfTheServerNamedInTheEnvironment() *http.Client {
 	}
 }
 
+// TestRunVersion shows what the program on the machine is: the version and the commit it
+// was built from, and the capabilities its code has — the list a project writes in
+// `[crewflow] requires` and the list a command refuses without (F-178, docs.DESIGN.md §5).
 func TestRunVersion(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"version"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("run(version) = %d, want 0 (stderr: %q)", code, stderr.String())
 	}
-	want := "crewflow dev (commit unknown, built unknown)\n"
+	want := "crewflow dev (commit unknown, built unknown)\n" +
+		"capabilities: " + strings.Join(buildinfo.Capabilities(), ", ") + "\n"
 	if got := stdout.String(); got != want {
 		t.Errorf("run(version) wrote %q, want %q", got, want)
+	}
+	for _, capability := range buildinfo.Capabilities() {
+		if !strings.Contains(stdout.String(), capability) {
+			t.Errorf("run(version) wrote %q, want it to name the capability %q", stdout.String(), capability)
+		}
 	}
 	if stderr.Len() != 0 {
 		t.Errorf("run(version) wrote %q to stderr, want nothing", stderr.String())
@@ -241,7 +251,8 @@ func TestBinary(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("crewflow version = %d, want 0 (stderr: %q)", code, stderr)
 		}
-		want := "crewflow dev (commit unknown, built unknown)\n"
+		want := "crewflow dev (commit unknown, built unknown)\n" +
+			"capabilities: " + strings.Join(buildinfo.Capabilities(), ", ") + "\n"
 		if stdout != want {
 			t.Errorf("crewflow version wrote %q, want %q", stdout, want)
 		}
@@ -252,7 +263,8 @@ func TestBinary(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("crewflow version = %d, want 0 (stderr: %q)", code, stderr)
 		}
-		want := "crewflow 1.2.3 (commit deadbeef, built 2026-09-28T09:00:00Z)\n"
+		want := "crewflow 1.2.3 (commit deadbeef, built 2026-09-28T09:00:00Z)\n" +
+			"capabilities: " + strings.Join(buildinfo.Capabilities(), ", ") + "\n"
 		if stdout != want {
 			t.Errorf("crewflow version wrote %q, want %q", stdout, want)
 		}
