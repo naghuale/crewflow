@@ -218,7 +218,7 @@ func runAuthAppCheck(args []string, stdout, stderr *secret.Writer) int {
 			fmt.Fprintf(stdout, "key: not there in the store of this machine, as %q\n", secret.AppKey(answer.AppID))
 		}
 		if *asJSON {
-			if err := printJSON(stdout, answer); err != nil {
+			if err := printJSON(stdout, secret.DocumentAuthAppCheck, answer); err != nil {
 				return authFailed(stderr, err)
 			}
 		}
@@ -233,14 +233,14 @@ func runAuthAppCheck(args []string, stdout, stderr *secret.Writer) int {
 	installation, err := source.Installation(ctx)
 	if err != nil {
 		if *asJSON {
-			_ = printJSON(stdout, answer)
+			_ = printJSON(stdout, secret.DocumentAuthAppCheck, answer)
 		}
 		fmt.Fprintf(stderr, "crewflow auth app check: %v\n", err)
 		return exitFailure
 	}
 	answer.Installation = &installation
 	if *asJSON {
-		if err := printJSON(stdout, answer); err != nil {
+		if err := printJSON(stdout, secret.DocumentAuthAppCheck, answer); err != nil {
 			return authFailed(stderr, err)
 		}
 	} else {

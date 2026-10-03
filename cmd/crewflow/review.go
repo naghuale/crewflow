@@ -81,7 +81,7 @@ func runReview(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 	}
 	summary := gate.Summarize(facts, gate.Evaluate(facts))
 	if *asJSON {
-		if err := printJSON(stdout, summary); err != nil {
+		if err := printJSON(stdout, secret.DocumentReview, summary); err != nil {
 			return reviewFailed(stderr, err)
 		}
 	} else {

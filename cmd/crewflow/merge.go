@@ -65,7 +65,7 @@ func runMerge(out *secret.Out, args []string, stdout, stderr *secret.Writer) int
 		return mergeFailed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, result); err != nil {
+		if err := printJSON(stdout, secret.DocumentMerge, result); err != nil {
 			return mergeFailed(stderr, err)
 		}
 	} else {
@@ -120,7 +120,7 @@ func runVerify(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 		return mergeFailed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, result); err != nil {
+		if err := printJSON(stdout, secret.DocumentVerify, result); err != nil {
 			return mergeFailed(stderr, err)
 		}
 	} else {

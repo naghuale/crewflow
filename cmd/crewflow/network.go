@@ -187,7 +187,7 @@ func runNetworkList(args []string, stdout, stderr *secret.Writer) int {
 		return networkFailed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, profiles); err != nil {
+		if err := printJSON(stdout, secret.DocumentNetworkProxyList, profiles); err != nil {
 			return networkFailed(stderr, err)
 		}
 		return exitOK
@@ -561,7 +561,7 @@ func runNetworkTest(out *secret.Out, args []string, stdout, stderr *secret.Write
 			Route        network.Route   `json:"route"`
 			Capabilities []network.State `json:"capabilities"`
 		}{Route: route, Capabilities: states}
-		if err := printJSON(stdout, answer); err != nil {
+		if err := printJSON(stdout, secret.DocumentNetworkProxyTest, answer); err != nil {
 			return networkFailed(stderr, err)
 		}
 	} else {

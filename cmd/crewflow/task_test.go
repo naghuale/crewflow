@@ -2039,12 +2039,23 @@ func TestWhatACommandHeldBackIsWrittenWhenItReturns(t *testing.T) {
 // number of a report that happens to be such a password — the number of the task, the
 // number of an attempt — is a number of the report: the cleaning of a ready document put
 // `[redacted]` in the place of it, and the document stopped being a document that any
-// program can read (R5-NEW-4, docs/DESIGN.md §7e).
+// program can read (R5-NEW-4, docs.DESIGN.md §7e).
+//
+// The same password is also a part of the names of the format here — the branch and the
+// folder of the worktree of the run carry the number of the task — and those names are kept
+// whole: a branch, a worktree and a journal are what a program looks a run up by, and a name
+// of the format with a cut in it is not a name of the format. What is cut is the words of the
+// run — here the reason of the refusal of the host (D-082, R224-002, §7e).
 func TestTheAnswerOfACommandIsAWholeDocumentWithNoNumberOfItCutOut(t *testing.T) {
 	// The value of this case is a number on purpose: it stands for the password of a proxy
 	// that is three digits, which is a password a proxy takes (docs/DESIGN.md §7e).
 	const value = "43"
-	host := &host{task: taskOf(43)}
+	// The title of the task holds the value as well: it is the one field of this answer
+	// that is the words of a person and not a name of the format, and it is what the
+	// boundary has to cut.
+	task := taskOf(43)
+	task.Title = "the run of a task " + value
+	host := &host{task: task}
 	host.use(t)
 	project := host.config(t)
 	refused := aHostThatRefusesWithTheRoute{
@@ -2067,6 +2078,7 @@ func TestTheAnswerOfACommandIsAWholeDocumentWithNoNumberOfItCutOut(t *testing.T)
 		Branch   string `json:"branch"`
 		Worktree string `json:"worktree"`
 		Journal  string `json:"journal"`
+		Title    string `json:"title"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &answer); err != nil {
 		t.Fatalf("the answer of `crewflow task run -json` is not a document: %v\n%s", err, stdout.String())
@@ -2080,12 +2092,16 @@ func TestTheAnswerOfACommandIsAWholeDocumentWithNoNumberOfItCutOut(t *testing.T)
 		{"the worktree", answer.Worktree},
 		{"the journal", answer.Journal},
 	} {
-		if strings.Contains(where.said, value) {
-			t.Errorf("%s of the answer is %q, want the value of the run taken out of it", where.name, where.said)
+		if !strings.Contains(where.said, value) {
+			t.Errorf("%s of the answer is %q, want the name of the format as it is: it is what a program "+
+				"looks a run up by", where.name, where.said)
 		}
-		if !strings.Contains(where.said, secret.Redacted) {
-			t.Errorf("%s of the answer is %q, want %q in the place of the value", where.name, where.said, secret.Redacted)
-		}
+	}
+	if strings.Contains(answer.Title, value) {
+		t.Errorf("the title of the answer is %q, want the value of the run taken out of it", answer.Title)
+	}
+	if !strings.Contains(answer.Title, secret.Redacted) {
+		t.Errorf("the title of the answer is %q, want %q in the place of the value", answer.Title, secret.Redacted)
 	}
 	if !strings.Contains(stderr.String(), "HTTP 403") || strings.Contains(stderr.String(), value) {
 		t.Errorf("crewflow task run wrote %q to stderr, want what the host answered and no value of the run in it",

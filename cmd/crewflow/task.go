@@ -153,7 +153,7 @@ func runTaskRun(out *secret.Out, args []string, stdout, stderr *secret.Writer) i
 		failed(stderr, err)
 	}
 	if *asJSON {
-		if printErr := printJSON(stdout, result); printErr != nil {
+		if printErr := printJSON(stdout, secret.DocumentTaskRun, result); printErr != nil {
 			return failed(stderr, printErr)
 		}
 	} else if result.Task != 0 {
@@ -229,7 +229,7 @@ func runTaskResume(out *secret.Out, args []string, stdout, stderr *secret.Writer
 		failed(stderr, err)
 	}
 	if *asJSON {
-		if printErr := printJSON(stdout, result); printErr != nil {
+		if printErr := printJSON(stdout, secret.DocumentTaskResume, result); printErr != nil {
 			return failed(stderr, printErr)
 		}
 	} else if result.Task != 0 {
@@ -275,7 +275,7 @@ func runTaskCheck(out *secret.Out, args []string, stdout, stderr *secret.Writer)
 		return failed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, readiness); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskCheck, readiness); err != nil {
 			return failed(stderr, err)
 		}
 	} else {
@@ -351,7 +351,7 @@ func runTaskAdmit(out *secret.Out, args []string, stdout, stderr *secret.Writer)
 	}
 	path := taskrun.JournalsOf(home, cfg.RepoName()).AdmissionPath(record.Tasks)
 	if *asJSON {
-		if err := printJSON(stdout, admissionAnswer{Admission: record, Path: path}); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskAdmit, admissionAnswer{Admission: record, Path: path}); err != nil {
 			return failed(stderr, err)
 		}
 	} else {
@@ -549,7 +549,7 @@ func runTaskList(out *secret.Out, args []string, stdout, stderr *secret.Writer) 
 		// program that reads the state of the process reads one format whatever command
 		// it asked (docs/DESIGN.md §6a).
 		document := runs.Document(taskClock())
-		if err := printJSON(stdout, document); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskList, document); err != nil {
 			return failed(stderr, err)
 		}
 		if err := runs.Notes(stderr); err != nil {
@@ -633,7 +633,7 @@ func runTaskAttention(out *secret.Out, args []string, stdout, stderr *secret.Wri
 		// формата, один момент, от которого считаны все ожидания, и один набор записей
 		// внимания — программа не разбирает, какую из двух команд она спрашивала
 		// (docs/DESIGN.md §6a).
-		if err := printJSON(stdout, queue.Document(taskClock())); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskAttention, queue.Document(taskClock())); err != nil {
 			return failed(stderr, err)
 		}
 	} else if queue.Interrupted {
@@ -696,7 +696,7 @@ func attentionOfEveryProject(ctx context.Context, configPath string, asJSON bool
 	}
 	document := taskrun.MachineOf(queues).AttentionOfEveryProject(taskClock())
 	if asJSON {
-		if err := printJSON(stdout, document); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskAttentionAll, document); err != nil {
 			return failed(stderr, err)
 		}
 	} else {
@@ -834,7 +834,7 @@ func runTaskCheckStalled(out *secret.Out, args []string, stdout, stderr *secret.
 		if answer == nil {
 			answer = []taskrun.Standing{}
 		}
-		if err := printJSON(stdout, answer); err != nil {
+		if err := printJSON(stdout, secret.DocumentTaskCheckStalled, answer); err != nil {
 			return failed(stderr, err)
 		}
 	} else {
@@ -1293,8 +1293,8 @@ func printWatch(w io.Writer, watch *taskrun.Watcher) {
 // number of it that happens to be one of those values — a password of a proxy is three
 // signs more often than one would like — stays a number, so that the document is a
 // document a program can read (docs/DESIGN.md §7e).
-func printJSON(w *secret.Writer, answer any) error {
-	if err := w.Report(answer); err != nil {
+func printJSON(w *secret.Writer, doc secret.Document, answer any) error {
+	if err := w.Report(doc, answer); err != nil {
 		return fmt.Errorf("print the answer: %w", err)
 	}
 	return nil

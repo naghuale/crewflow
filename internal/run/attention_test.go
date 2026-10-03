@@ -1115,7 +1115,10 @@ func TestTheQueueOfAProjectThatIsOverHasNoEntryInIt(t *testing.T) {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	if _, err := UpdateState(newJournals(home, repo).StatePath(43), func(state State) (State, error) {
-		state.MergedSHA = "abc123"
+		// The commit the default branch of the host is at, in the words of the host: a
+		// state of a task holds the whole of it, and a state that holds a word where the
+		// format says a commit is a state the boundary refuses to write (D-082, §7e).
+		state.MergedSHA = "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342"
 		return state, nil
 	}); err != nil {
 		t.Fatalf("write the state of the task: %v", err)

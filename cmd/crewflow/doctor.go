@@ -71,7 +71,7 @@ func runDoctor(out *secret.Out, args []string, stdout, stderr *secret.Writer) in
 		// them and they ask for it again with -json — and it is an answer of the
 		// command like every other one, so it goes through the boundary of the
 		// command and not as bytes into its terminal (docs/DESIGN.md §7e).
-		if err := printJSON(stdout, report); err != nil {
+		if err := printJSON(stdout, secret.DocumentDoctor, report); err != nil {
 			fmt.Fprintf(stderr, "crewflow doctor: %v\n", err)
 			return exitFailure
 		}
@@ -115,7 +115,7 @@ func runDoctorNetwork(out *secret.Out, args []string, stdout, stderr *secret.Wri
 	env := systemEnv(*configPath, folder, false, stderr)
 	checks := doctor.Network(context.Background(), env, cfg)
 	if *asJSON {
-		if err := printJSON(stdout, checks); err != nil {
+		if err := printJSON(stdout, secret.DocumentDoctorNetwork, checks); err != nil {
 			return doctorFailed(stderr, err)
 		}
 	} else {

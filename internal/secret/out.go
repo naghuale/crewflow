@@ -155,150 +155,45 @@ func (o *Out) Err(err error) error {
 	return &said{words: o.Text(err.Error()), cause: err}
 }
 
-// Report is the answer of a command as it may be published to the channel of the report,
-// in the document a program reads it in: every string of the answer with the values of this
-// boundary taken out of it, and everything else of it as it was made.
+// Report is the answer of a command as it may be published to the channel of the report, in
+// the document a program reads it in: every string of the answer with the values of this
+// boundary taken out of it, every protected word and name of the format kept whole, and
+// everything else of it as it was made.
+//
+// The caller names the document: a program knows what it publishes, and a policy is chosen by
+// the document and not by the name of a field — `reason` is a code of the closed list in the
+// document of the queue of attention and the words of a run in the document of a run (D-082,
+// R224-4, docs/DESIGN.md §6a, §7e). There is no publication without a document: a signature
+// that asks for one is what keeps a program from publishing somewhere nobody wrote a policy for.
 //
 // The answer is written as JSON, read back as the tree of a document — objects, arrays and
 // the leaves of them — the strings of the leaves are cut, and the tree is written again. The
 // walk is over the tree of the document and not over the types the caller made the answer of:
 // those types are a pointer, a type of its own, an interface, and a cleaned string belongs to
-// none of them, so the walk put a plain `string` into a field of another type and the report
-// of a command fell over instead of answering — a pointer took a string in place of the nil
-// pointer built for it (R5-NEW-6), a named type took a string that was not of that type
-// (R5-NEW-7). A document has no pointers and no types of its own, so the document of an
-// answer is always valid and says what the answer said.
+// none of them, so the walk over the types put a plain `string` into a field of another type
+// and the report of a command fell over instead of answering — a pointer took a string in
+// place of the nil pointer built for it (R5-NEW-6), a named type took a string that was not of
+// that type (R5-NEW-7).
 //
 // The values are cut where the answer is put together and not out of the document that came
 // out of it. A number of a report that happens to be a value of a run is a number of the
 // report — the password of a proxy is three signs more often than one would like — and a
 // document with `[redacted]` in the place of a number is a document no program can read
-// (docs/DESIGN.md §7e).
-func (o *Out) Report(answer any) ([]byte, error) {
-	document, err := json.Marshal(answer)
+// (R5-NEW-4, docs.DESIGN.md §7e).
+func (o *Out) Report(doc Document, value any) ([]byte, error) {
+	document, err := json.Marshal(value)
 	if err != nil {
 		return nil, fmt.Errorf("the answer as a document: %w", err)
 	}
-	var tree any
-	reader := json.NewDecoder(bytes.NewReader(document))
-	// A number of the answer is a number of the document and not a float64 that prints
-	// `1e+06` where the answer said 1000000.
-	reader.UseNumber()
-	if err := reader.Decode(&tree); err != nil {
-		return nil, fmt.Errorf("the answer as a document: %w", err)
+	tree, err := treeOfDocument(document)
+	if err != nil {
+		return nil, err
 	}
-	// What this boundary knows is asked of it once for the whole document: a document is one
-	// publication, and a value a run learned while it was written belongs to the next one
-	// (§7e).
-	if values := o.Values(); len(values) > 0 {
-		tree = cleanDocument(tree, "", func(said string) string { return Redact(said, values...) })
+	cleaned, err := cleanDocumentOf(doc, tree, "", o.cutting(), nil)
+	if err != nil {
+		return nil, err
 	}
-	var published bytes.Buffer
-	encoder := json.NewEncoder(&published)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(tree); err != nil {
-		return nil, fmt.Errorf("write the document of the answer: %w", err)
-	}
-	return published.Bytes(), nil
-}
-
-// closed is what a field of a closed list of the format carries in its value. Its zero is the
-// words of a run: a field that [closedFields] does not name is cut whatever it holds.
-type closed uint8
-
-const (
-	// oneWord is a field whose whole value is a word out of a closed list of the format.
-	oneWord closed = iota + 1
-	// codeThenWords is a field that carries a word out of a closed list and then, behind a
-	// colon, the words of what happened.
-	codeThenWords
-)
-
-// closedFields are the fields of the documents of crewflow whose value is a word out of a
-// closed list of the format, by the names the schema of a document gives them. A program reads
-// these words to decide what a run did — the outcome of a run, the profile of an executor, a
-// state of the queue, the code of a reason — and a value of a run that happens to be a part of
-// one of them makes the document say something else about the run than the run said about
-// itself: a password of `pr` turned `pr-opened` into `[redacted]-opened`, and no program can
-// read that word (R5-NEW-8, docs/DESIGN.md §6a, §7e).
-//
-// A value of such a field is not a secret: it is a word of a fixed set, one of the words
-// crewflow itself writes there. Every other field is cut whatever it holds, and a field of a
-// closed list that this table does not name is cut as well — the table is the whole of the
-// schema the boundary knows, and a row is what it takes to add a closed value of the format to
-// it (D-044: one place).
-var closedFields = map[string]closed{
-	// The outcome of a run, of a merge and of a request of a person: the words of §7a, §7h
-	// and §7i, which a program switches on.
-	"outcome": oneWord,
-	// The profile of the executor and the profile of a proxy: names out of the file of the
-	// project, which a run of the same task goes on with (§7d, §7e).
-	"profile": oneWord,
-	// The state of a change and of a check on the host, and the states of the queue of
-	// attention under the two names the schema gives them: §6a, §7g, §7h.
-	"state":           oneWord,
-	"attention_state": oneWord,
-	"escalated_from":  oneWord,
-	"merge_state":     oneWord,
-	// What crewflow does with a key of the file of the project, how a run was settled, who
-	// acts next, whether it may be acted on now, and what a check of it ended as: the words
-	// of §5 and §6a.
-	"status":     oneWord,
-	"by":         oneWord,
-	"next_actor": oneWord,
-	"priority":   oneWord,
-	"actable":    oneWord,
-	"result":     oneWord,
-	// What a record of a review decided and what the gate answered about one change: the
-	// words of §7h.
-	"decision": oneWord,
-	// A reason is a word out of the closed list of the codes and then the words of what
-	// happened behind it (§6a).
-	"reason": codeThenWords,
-}
-
-// cleanDocument is the tree of a document of an answer with the values of a run taken out of
-// its strings, and nothing else of it touched: a number, a flag, a moment and the shape of a
-// document are not values a run must not write down (docs/DESIGN.md §7e).
-//
-// The field it stands under goes down with it, because whether a string is cut is a property
-// of the place it is in and not of the string: a word of a closed list of the format is not
-// cut wherever it stands.
-func cleanDocument(node any, field string, text func(string) string) any {
-	switch held := node.(type) {
-	case string:
-		return cleanValue(field, held, text)
-	case map[string]any:
-		cleaned := make(map[string]any, len(held))
-		for name, value := range held {
-			// A name in the keys of a document is as printable as a name in the values of
-			// it, and a program reads a document by its keys (§7e).
-			cleaned[text(name)] = cleanDocument(value, name, text)
-		}
-		return cleaned
-	case []any:
-		cleaned := make([]any, len(held))
-		for at, item := range held {
-			cleaned[at] = cleanDocument(item, field, text)
-		}
-		return cleaned
-	default:
-		return node
-	}
-}
-
-// cleanValue is one string of a document as it may be published: cut where the words of a run
-// are, kept whole where the schema says the value is a word of a closed list of the format
-// (R5-NEW-8, docs/DESIGN.md §6a, §7e).
-func cleanValue(field, said string, text func(string) string) string {
-	switch closedFields[field] {
-	case oneWord:
-		return said
-	case codeThenWords:
-		return cleanReason(said, text)
-	default:
-		return text(said)
-	}
+	return asDocument(cleaned)
 }
 
 // cleanReason is a reason as it may be published: a word out of the closed list of the codes
@@ -456,20 +351,22 @@ func (w *Writer) flush() error {
 }
 
 // Report publishes the answer of a command — the document a program reads with `-json` —
-// with the values of this boundary taken out of every string of it, and writes it whole.
+// with the values of this boundary taken out of every string of it, and writes it whole. The
+// caller names the document: a policy is chosen by the document and not by the name of a
+// field, and a document outside the table of them is not published at all (D-082, §7e).
 //
 // It is the boundary itself that writes the document into the stream of the machine and
 // not a [Writer.Write] of it: a document that went through the boundary twice was cleaned
 // twice, and the second cleaning is the one that cannot tell a string from a number — it
 // takes the values out of the ready document byte by byte, and a number that happened to
 // be the password of a person stopped being a number (R5-NEW-4, §7e).
-func (w *Writer) Report(answer any) error {
+func (w *Writer) Report(doc Document, answer any) error {
 	if w == nil || w.to == nil {
 		return nil
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	document, err := w.out.Report(answer)
+	document, err := w.out.Report(doc, answer)
 	if err != nil {
 		return err
 	}

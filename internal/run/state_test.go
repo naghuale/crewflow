@@ -742,7 +742,7 @@ func TestTheWordsOfTheFormatSurviveTheReportOfARun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			out := secret.NewOut(secret.Chosen(tc.password)...)
 
-			document, fallen := theReport(t, out, tc.result)
+			document, fallen := theReport(t, out, secret.DocumentTaskRun, tc.result)
 			if fallen != nil {
 				t.Fatalf("the report of the run fell over: %v", fallen)
 			}
@@ -762,10 +762,10 @@ func TestTheWordsOfTheFormatSurviveTheReportOfARun(t *testing.T) {
 // boundary given back to the test instead of taken the program that prints it with it: an
 // answer crewflow cannot write is a refusal of a command and not the end of a command
 // (R5-NEW-7, docs/DESIGN.md §7e).
-func theReport(t *testing.T, out *secret.Out, answer any) (document []byte, fallen any) {
+func theReport(t *testing.T, out *secret.Out, doc secret.Document, answer any) (document []byte, fallen any) {
 	t.Helper()
 	defer func() { fallen = recover() }()
-	document, err := out.Report(answer)
+	document, err := out.Report(doc, answer)
 	if err != nil {
 		t.Fatalf("Report: %v", err)
 	}
@@ -814,5 +814,42 @@ func TestTheReasonOfAnAttemptKeepsItsMarkerWhenTheStateIsWrittenAgain(t *testing
 		if reason := written.Attempts[0].Reason; reason != want {
 			t.Errorf("the reason in the state of the task after write %d is %q, want %q", write, reason, want)
 		}
+	}
+}
+
+// TestAGapInThePolicyOfTheStateIsSaidAsAnEventAndTheStateIsWritten: the state of a task is a
+// record of what crewflow did, written after the actions of a run, and a field of it that the
+// policy of the document does not name must not cost the run its record: the field is cleaned
+// as free text, the gap is said as an event of the attempt the state is of, and the state is
+// written whole. An event that could not be said anywhere a journal is said on the standard
+// error of the command, and the state is written either way (R224-16, D-082, §7h).
+func TestAGapInThePolicyOfTheStateIsSaidAsAnEventAndTheStateIsWritten(t *testing.T) {
+	folder := t.TempDir()
+	journals := newJournals(folder, "naghuale-crewflow")
+	state := State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-task", Schema: Schema}
+	state = state.NextAttempt(state.NextNumber(), StartOf{
+		Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+		Journal: journals.JournalPath(43, 1),
+	})
+
+	if err := saveState(secret.NewOut(), journals.StatePath(43), state); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	written, err := LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("read the state of the task: %v", err)
+	}
+	if written.Number != 43 || len(written.Attempts) != 1 {
+		t.Fatalf("the state of the task is %+v, want the record of the attempt of the run", written)
+	}
+
+	sayPolicyGaps(written, []string{"attempts[].field_of_tomorrow"})
+
+	said, err := os.ReadFile(journals.JournalPath(43, 1))
+	if err != nil {
+		t.Fatalf("read the journal of the attempt: %v", err)
+	}
+	if !strings.Contains(string(said), "crewflow: event state-policy-gap path=attempts[].field_of_tomorrow") {
+		t.Errorf("the journal of the attempt is %q, want the gap of the policy said as an event in it", said)
 	}
 }

@@ -750,29 +750,47 @@ func LoadState(path string) (State, error) {
 // it is not a code (R5-NEW-8, §6a, §7e).
 func saveState(out *secret.Out, path string, state State) error {
 	state.Schema = Schema
-	data, err := json.MarshalIndent(state.published(out), "", "  ")
+	data, gaps, err := out.StateDocument(state)
 	if err != nil {
 		return fmt.Errorf("the state of the task: %w", err)
 	}
+	sayPolicyGaps(state, gaps)
 	return writeFileAtomic(path, append(data, '\n'))
 }
 
-// published is the state of a task as the state of a task may be written down: every
-// word of a run that is in it published through the boundary of the run, and every other
-// word of it left as it is.
-//
-// The reason of an attempt is the only word of a state that a program of the machine
-// wrote, and it is a word of the run: what an executor said about itself, what a provider
-// said about its refusal, and what crewflow made of a route that could not be reached. The
-// rest of a state is the words of crewflow and the facts of the machine, and a program
-// reads them to decide — `bot` is the mode of an identity and `denied` is the answer of a
-// person, and a value of a person that is a part of them must not take the words of a
-// program away from the programs that read them (docs/DESIGN.md §7e, §7i).
-func (s State) published(out *secret.Out) State {
-	for at, attempt := range s.Attempts {
-		s.Attempts[at].Reason, _ = out.Reason(secret.ChannelState, attempt.Reason)
+// sayPolicyGaps is what a state says about the fields of it the policy of the document does
+// not name. The gap is a defect of the program and not of the run, and it is said as an event
+// in the journal of the attempt the state is of: a field nobody classified is a field nobody
+// looked at, and it must not stay a secret between the state and the person who reads it. The
+// state is written either way — a record after an action is never lost for the sake of a
+// policy (R224-16, D-082).
+func sayPolicyGaps(state State, gaps []string) {
+	for _, gap := range gaps {
+		path := ""
+		if attempts := state.Attempts; len(attempts) > 0 {
+			path = attempts[len(attempts)-1].Journal
+		}
+		if path != "" && sayEventTo(path, "state-policy-gap", "path="+gap) {
+			continue
+		}
+		sayEvent(os.Stderr, "state-policy-gap", "path="+gap)
 	}
-	return s
+}
+
+// sayEventTo is one event of a run said into the journal of its attempt, and whether it was
+// said: a journal that cannot be opened is not a reason to keep the event to oneself, the
+// caller says it where it can.
+func sayEventTo(path, event string, facts ...string) bool {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return false
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	sayEvent(file, event, facts...)
+	return true
 }
 
 // UpdateState is what a command writes into the state of a task without taking a record

@@ -121,7 +121,7 @@ func runChangelogCheck(out *secret.Out, args []string, stdout, stderr *secret.Wr
 		return changelogFailed(stderr, err)
 	}
 	if *asJSON {
-		if err := printJSON(stdout, changelog.Answer{Problems: problems}); err != nil {
+		if err := printJSON(stdout, secret.DocumentChangelogCheck, changelog.Answer{Problems: problems}); err != nil {
 			return changelogFailed(stderr, err)
 		}
 	} else if err := printChangelogProblems(stdout, problems, project, asked); err != nil {

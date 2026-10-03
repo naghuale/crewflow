@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"math/rand"
 	"reflect"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -219,36 +217,41 @@ func TestTheBoundaryKnowsAValueInEveryFormAMachineWritesItIn(t *testing.T) {
 // by the strings of it and not by the bytes of the document that came out of it. A number
 // of a report that happens to be the password of a proxy is a number of the report: the
 // password of three signs is a number a person really chooses, and a document that says
-// `"attempts": 42` where the password is 42 is a document a program cannot read
-// (R5-NEW-4, docs/DESIGN.md §7e).
+// `"change": 42` where the password is 42 is a document a program cannot read. A commit of
+// the host that happens to hold the password is a commit, and a document with a cut in a
+// commit is a document no program can look the change up by (R5-NEW-4, R224-002,
+// docs.DESIGN.md §7e).
 func TestTheReportOfACommandIsCleanedByItsStringsAndNotByItsBytes(t *testing.T) {
 	const password = "42"
-	type record struct {
-		Reason string `json:"reason"`
-	}
-	type route struct {
-		Port int    `json:"port"`
-		Why  string `json:"why"`
+	const commit = "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342"
+	type check struct {
+		Name  string `json:"name"`
+		SHA   string `json:"sha"`
+		State string `json:"state"`
 	}
 	type answerOfACommand struct {
-		Task     int      `json:"task"`
-		Attempts int      `json:"attempts"`
-		Detail   string   `json:"detail"`
-		Route    route    `json:"route"`
-		Records  []record `json:"records"`
+		Change  int `json:"change"`
+		Task    int `json:"task"`
+		Files   int `json:"files"`
+		Verdict struct {
+			Ready  bool   `json:"ready"`
+			Reason string `json:"reason"`
+			Detail string `json:"detail"`
+		} `json:"verdict"`
+		Checks  []check  `json:"checks"`
+		Outside []string `json:"outside"`
 	}
 	out := boundaryOf(Chosen(password)...)
 	var document bytes.Buffer
 	said := out.Writer(&document)
-	answer := answerOfACommand{
-		Task:     43,
-		Attempts: 42,
-		Detail:   "the proxy asked for 42 and left",
-		Route:    route{Port: 1080, Why: "the address of the profile holds " + password},
-		Records:  []record{{Reason: "the login is 42 and the pair is ann:" + password}},
-	}
+	answer := answerOfACommand{Change: 42, Task: 42, Files: 42}
+	answer.Verdict.Ready = true
+	answer.Verdict.Reason = "required-check-failed"
+	answer.Verdict.Detail = "the check asked for 42 and left"
+	answer.Checks = []check{{Name: "tests", SHA: commit, State: "failure"}}
+	answer.Outside = []string{"internal/run/state.go:42"}
 
-	if err := said.Report(answer); err != nil {
+	if err := said.Report(DocumentReview, answer); err != nil {
 		t.Fatalf("Report: %v", err)
 	}
 
@@ -260,19 +263,26 @@ func TestTheReportOfACommandIsCleanedByItsStringsAndNotByItsBytes(t *testing.T) 
 		name  string
 		got   int
 		which int
-	}{{name: "the task", got: read.Task, which: 43},
-		{name: "the attempts", got: read.Attempts, which: 42},
-		{name: "the port", got: read.Route.Port, which: 1080}} {
+	}{{name: "the change", got: read.Change, which: 42},
+		{name: "the task", got: read.Task, which: 42},
+		{name: "the files", got: read.Files, which: 42}} {
 		if number.got != number.which {
 			t.Errorf("%s of the answer is %d, want the number %d: a number of a report is not a value of a run",
 				number.name, number.got, number.which)
 		}
 	}
+	if read.Checks[0].SHA != commit {
+		t.Errorf("the commit of the check is %q, want %q: an identifier of the format is not a value of a run",
+			read.Checks[0].SHA, commit)
+	}
+	if read.Verdict.Reason != "required-check-failed" {
+		t.Errorf("the reason of the verdict is %q, want the word of the gate: a word of a closed list is not a value of a run",
+			read.Verdict.Reason)
+	}
 	for _, where := range []struct {
 		name string
 		said string
-	}{{"the detail", read.Detail}, {"the route", read.Route.Why},
-		{"the record", read.Records[0].Reason}} {
+	}{{"the detail", read.Verdict.Detail}, {"the file out of the boundaries", strings.Join(read.Outside, " ")}} {
 		if strings.Contains(where.said, password) {
 			t.Errorf("%s of the answer is %q, want the value of the run taken out of it", where.name, where.said)
 		}
@@ -285,13 +295,8 @@ func TestTheReportOfACommandIsCleanedByItsStringsAndNotByItsBytes(t *testing.T) 
 // told is a type of its own, as the outcome of a run and the reason of a merge are: a field of
 // such a type takes a value of that type and not any other, and the boundary used to answer
 // with a cleaned `string` and set it into a field of another type (R5-NEW-7,
-// docs/DESIGN.md §7e).
+// docs.DESIGN.md §7e).
 type told string
-
-// routeUnavailable is a code of a reason of §6a as the format writes it, named here so that
-// the closed values under test are the words the project writes and not ones invented for the
-// test (docs/DESIGN.md §6a).
-const routeUnavailable = "network-route-unavailable"
 
 // TestTheReportOfACommandIsWrittenThroughAPointerAndKeepsItsShape: the answer of a command is
 // put together out of the types its caller made it of, and among them are pointers — a change
@@ -299,47 +304,60 @@ const routeUnavailable = "network-route-unavailable"
 // walked those types and built the answer again field by field, and for a pointer it built a
 // new value of the pointer type, which is a nil pointer, and put a string into it: the report
 // of a command whose answer holds a value of a run behind a pointer fell over instead of
-// answering (R5-NEW-6, docs/DESIGN.md §7e).
+// answering (R5-NEW-6, docs.DESIGN.md §7e).
+//
+// The answer here is the document of a merge with its string fields behind pointers, as a
+// caller may build one out of what it has: the boundary reads a document and not the types of
+// the answer, so what the answer holds behind a pointer does not matter to it — a pointer is a
+// string in the document, and a document is always valid.
 func TestTheReportOfACommandIsWrittenThroughAPointerAndKeepsItsShape(t *testing.T) {
-	type inside struct {
-		Why  string `json:"why"`
-		When string `json:"when"`
+	type verdict struct {
+		Ready  bool    `json:"ready"`
+		Detail *string `json:"detail"`
 	}
 	type answerOfACommand struct {
-		Login  *string            `json:"login"`
-		Record *inside            `json:"record"`
-		Names  *[]string          `json:"names"`
-		Deep   **string           `json:"deep"`
-		Any    any                `json:"any"`
-		Fields map[string]*inside `json:"fields"`
-		None   *inside            `json:"none"`
+		Task    int       `json:"task"`
+		Branch  *string   `json:"branch"`
+		Head    **string  `json:"head"`
+		Journal *string   `json:"journal"`
+		Left    *[]string `json:"left"`
+		Verdict *verdict  `json:"verdict"`
+		None    *verdict  `json:"orchestrator"`
 	}
-	login := "the proxy asked for " + canaryShort + " and left"
-	why := "the address of the profile holds " + canaryLong
-	deep := &why
+	branch := "crewflow/224-fix-secret-json-recheck-216"
+	head := "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342"
+	journal := "/tmp/crewflow/state/43/1.jsonl"
+	detail := "the proxy asked for " + canaryShort + " and left"
+	deeper := &head
 	out := boundaryOf(theCanaries()...)
 
-	document, fallen := theDocument(t, out, answerOfACommand{
-		Login:  &login,
-		Record: &inside{Why: why, When: "2026-10-03T09:00:00Z"},
-		Names:  &[]string{canaryLong, canaryShort + "@proxy.example.com"},
-		Deep:   &deep,
-		Any:    inside{Why: why},
-		Fields: map[string]*inside{"second": {Why: why}},
-		None:   nil,
+	document, fallen := theDocument(t, out, DocumentMerge, answerOfACommand{
+		Task:    43,
+		Branch:  &branch,
+		Head:    &deeper,
+		Journal: &journal,
+		Left:    &[]string{canaryLong, canaryShort + "@proxy.example.com"},
+		Verdict: &verdict{Ready: false, Detail: &detail},
+		None:    nil,
 	})
 	if fallen != nil {
 		t.Fatalf("the report of an answer behind a pointer fell over: %v", fallen)
 	}
 
 	var read struct {
-		Login  string            `json:"login"`
-		Record inside            `json:"record"`
-		Names  []string          `json:"names"`
-		Deep   string            `json:"deep"`
-		Any    inside            `json:"any"`
-		Fields map[string]inside `json:"fields"`
-		None   *inside           `json:"none"`
+		Task    int      `json:"task"`
+		Branch  string   `json:"branch"`
+		Head    string   `json:"head"`
+		Journal string   `json:"journal"`
+		Left    []string `json:"left"`
+		Verdict struct {
+			Ready  bool   `json:"ready"`
+			Detail string `json:"detail"`
+		} `json:"verdict"`
+		Orchestrator *struct {
+			Mode        string `json:"mode"`
+			Description string `json:"description"`
+		} `json:"orchestrator"`
 	}
 	if err := json.Unmarshal(document, &read); err != nil {
 		t.Fatalf("the document of the answer is not a document: %v\n%s", err, document)
@@ -347,69 +365,57 @@ func TestTheReportOfACommandIsWrittenThroughAPointerAndKeepsItsShape(t *testing.
 	for _, where := range []struct {
 		name string
 		said string
-	}{{"the login", read.Login}, {"the record", read.Record.Why},
-		{"the names", strings.Join(read.Names, " ")}, {"the deep pointer", read.Deep},
-		{"the interface", read.Any.Why}, {"the field of the map", read.Fields["second"].Why}} {
+	}{{"the branch", read.Branch}, {"the head", read.Head}, {"the journal", read.Journal},
+		{"the deep pointer", read.Head}, {"the list behind a pointer", strings.Join(read.Left, " ")},
+		{"the field behind two pointers", read.Verdict.Detail}} {
 		if strings.Contains(where.said, canaryShort) || strings.Contains(where.said, canaryLong) {
 			t.Errorf("%s of the answer is %q, want the values of the run taken out of it", where.name, where.said)
 		}
-		if !strings.Contains(where.said, Redacted) {
-			t.Errorf("%s of the answer is %q, want %q in the place of the value", where.name, where.said, Redacted)
-		}
 	}
-	if read.Record.When != "2026-10-03T09:00:00Z" {
-		t.Errorf("the moment of the record is %q, want it as it was: a moment of a report is not a value of a run",
-			read.Record.When)
+	if !strings.Contains(read.Verdict.Detail, Redacted) {
+		t.Errorf("the detail of the verdict is %q, want %q in the place of the value",
+			read.Verdict.Detail, Redacted)
 	}
-	if read.None != nil {
-		t.Errorf("the answer holds a record where there was none: %+v", *read.None)
+	if read.Orchestrator != nil {
+		t.Errorf("the answer holds an orchestrator where there was none: %+v", *read.Orchestrator)
 	}
 }
 
 // TestTheReportOfACommandKeepsTheTypesOfTheAnswerInTheDocument: a field of a type of its own —
-// the outcome of a run, the reason of a merge, the verdict of a gate — takes a value of that
+// the outcome of a run, the mode of an identity, the reason of a gate — takes a value of that
 // type, and the boundary used to answer with a cleaned `string` and to set it into a field of
 // another type: the report of a command whose answer holds a value of a run in such a field
-// fell over instead of answering (R5-NEW-7, docs/DESIGN.md §7e).
+// fell over instead of answering (R5-NEW-7, docs.DESIGN.md §7e).
 func TestTheReportOfACommandKeepsTheTypesOfTheAnswerInTheDocument(t *testing.T) {
-	type inside struct {
-		Why told `json:"why"`
-	}
 	type answerOfACommand struct {
-		Words  told            `json:"words"`
-		List   []told          `json:"list"`
-		Deep   *told           `json:"deep"`
-		Any    any             `json:"any"`
-		Inside inside          `json:"inside"`
-		Names  map[told]string `json:"names"`
+		Task   int     `json:"task"`
+		Branch told    `json:"branch"`
+		Left   *[]told `json:"left"`
+		Mode   struct {
+			Mode        told `json:"mode"`
+			Description told `json:"description"`
+		} `json:"orchestrator"`
 	}
-	why := told("the proxy asked for " + canaryShort + " and left")
-	deep := why
+	branch := told("crewflow/224-fix-secret-json-recheck-216")
+	words := told("the token of the run is " + canaryLong)
+	answer := answerOfACommand{Task: 43, Branch: branch,
+		Left: &[]told{words, told("the login is " + canaryShort)}}
+	answer.Mode.Mode = told("shared")
+	answer.Mode.Description = told("the login is " + canaryShort)
 	out := boundaryOf(theCanaries()...)
 
-	document, fallen := theDocument(t, out, answerOfACommand{
-		Words:  why,
-		List:   []told{why, told("the token is " + canaryLong)},
-		Deep:   &deep,
-		Any:    inside{Why: why},
-		Inside: inside{Why: why},
-		Names:  map[told]string{told("route-" + canaryShort): string(why)},
-	})
+	document, fallen := theDocument(t, out, DocumentMerge, answer)
 	if fallen != nil {
 		t.Fatalf("the report of an answer with a named type fell over: %v", fallen)
 	}
 
 	var read struct {
-		Words string   `json:"words"`
-		List  []string `json:"list"`
-		Deep  string   `json:"deep"`
-		Any   struct {
-			Why string `json:"why"`
-		} `json:"any"`
-		Inside struct {
-			Why string `json:"why"`
-		} `json:"inside"`
-		Names map[string]string `json:"names"`
+		Branch       string   `json:"branch"`
+		Left         []string `json:"left"`
+		Orchestrator struct {
+			Mode        string `json:"mode"`
+			Description string `json:"description"`
+		} `json:"orchestrator"`
 	}
 	if err := json.Unmarshal(document, &read); err != nil {
 		t.Fatalf("the document of the answer is not a document: %v\n%s", err, document)
@@ -417,249 +423,232 @@ func TestTheReportOfACommandKeepsTheTypesOfTheAnswerInTheDocument(t *testing.T) 
 	for _, where := range []struct {
 		name string
 		said string
-	}{{"the word", read.Words}, {"the list", strings.Join(read.List, " ")}, {"the deep pointer", read.Deep},
-		{"the interface", read.Any.Why}, {"the record", read.Inside.Why},
-		{"the field of the map", read.Names["route-"+Redacted]}} {
+	}{{"the list of a named type behind a pointer", strings.Join(read.Left, " ")},
+		{"the description of the orchestrator", read.Orchestrator.Description}} {
 		if strings.Contains(where.said, canaryShort) || strings.Contains(where.said, canaryLong) {
 			t.Errorf("%s of the answer is %q, want the values of the run taken out of it", where.name, where.said)
 		}
 		if !strings.Contains(where.said, Redacted) {
 			t.Errorf("%s of the answer is %q, want %q in the place of the value", where.name, where.said, Redacted)
-		}
-	}
-	// A name in the keys of an answer is cut as a word of a run is: the answer was keyed by
-	// it and a program reads the answer by its keys (R5-NEW-4, docs/DESIGN.md §7e).
-	for name := range read.Names {
-		if name != "route-"+Redacted {
-			t.Errorf("the keys of the answer of the map are %q, want the name cut with the values", name)
 		}
 	}
 }
 
 // TestTheReportOfACommandKeepsTheExactNumberAndLeavesTheAnswerAsItWas: the identifiers of
 // the host are numbers, and a number that happens to be bigger than 2^53 loses its last signs
-// on the way through a float64 — a repository id that reads back as another repository id is a
+// on the way through a float64 — a change number that reads back as another change number is a
 // document a program acts on wrongly. And the answer of a command is the value of the caller:
 // the boundary writes a document and does not change what it was given (R224-010, R224-013,
-// docs/DESIGN.md §7e).
+// docs.DESIGN.md §7e).
 func TestTheReportOfACommandKeepsTheExactNumberAndLeavesTheAnswerAsItWas(t *testing.T) {
 	type answerOfACommand struct {
-		Repository int64   `json:"repository_id"`
-		Attempts   int     `json:"attempts"`
-		Waiting    float64 `json:"waiting_seconds"`
-		Detail     string  `json:"detail"`
+		Change int    `json:"change"`
+		Task   int64  `json:"task"`
+		Note   string `json:"note"`
 	}
 	answer := answerOfACommand{
-		Repository: 9007199254740993, // 2^53+1: the last sign is lost in a float64
-		Attempts:   42,
-		Waiting:    1080.5,
-		Detail:     "the proxy asked for " + canaryShort + " and left",
+		Change: 42,
+		Task:   9007199254740993, // 2^53+1: the last sign is lost in a float64
+		Note:   "the proxy asked for " + canaryShort + " and left",
 	}
 	whole := answer
 	out := boundaryOf(theCanaries()...)
 
-	document, fallen := theDocument(t, out, answer)
+	document, fallen := theDocument(t, out, DocumentVerify, answer)
 	if fallen != nil {
 		t.Fatalf("the report of an answer with a big number fell over: %v", fallen)
 	}
 
-	var read answerOfACommand
+	var read struct {
+		Change int    `json:"change"`
+		Task   int64  `json:"task"`
+		Note   string `json:"note"`
+	}
 	if err := json.Unmarshal(document, &read); err != nil {
 		t.Fatalf("the document of the answer is not a document: %v\n%s", err, document)
 	}
-	if read.Repository != whole.Repository {
-		t.Errorf("the repository of the answer is %d, want %d: a number of a report keeps its exact value",
-			read.Repository, whole.Repository)
+	if read.Task != whole.Task {
+		t.Errorf("the task of the answer is %d, want %d: a number of a report keeps its exact value",
+			read.Task, whole.Task)
 	}
-	if read.Attempts != whole.Attempts || read.Waiting != whole.Waiting {
-		t.Errorf("the numbers of the answer are %d and %g, want %d and %g",
-			read.Attempts, read.Waiting, whole.Attempts, whole.Waiting)
+	if read.Change != whole.Change {
+		t.Errorf("the change of the answer is %d, want %d: a number of a report is not a value of a run",
+			read.Change, whole.Change)
 	}
 	if answer != whole {
 		t.Errorf("the answer of the caller is %+v, want it as it was: %+v", answer, whole)
 	}
 }
 
-// TestAClosedValueOfTheFormatIsNotCutOutOfTheReportOfACommand: a program reads a report to
-// decide what a run did, and the words it decides by are out of the closed lists of the
-// format: the outcome of a run, the profile of an executor, a state of the queue, the code of
-// a reason. A password that happens to be a part of one of them — `pr` of `pr-opened`,
-// `open` of `opencode`, `awaits` of `awaits-owner`, `route` of `network-route-unavailable` —
-// cut out of one of them makes the report say something else about the run than the run said
-// about itself, and a reason with a cut in its code is not a reason of the format at all
-// (R5-NEW-8, docs/DESIGN.md §6a, §7e).
-func TestAClosedValueOfTheFormatIsNotCutOutOfTheReportOfACommand(t *testing.T) {
+// TestAWordOfTheFormatSurvivesTheValueOfTheRunThatStandsInsideIt: a program reads a report to
+// decide what a run did, and it decides by the words out of the closed lists of the format and
+// by the names the format has a shape for. A password that happens to be a part of one of them —
+// `pr` of `pr-opened`, `bot` of the mode of an identity, `awaits` of `awaits-owner`, `route` of
+// `network-route-unavailable`, a commit that holds the password — is not a secret there and is
+// not a leak either: the word of the format stays whole, and the words of the run around it are
+// cut (R224-001, R224-002, R224-003, docs/DESIGN.md §6a, §7e).
+func TestAWordOfTheFormatSurvivesTheValueOfTheRunThatStandsInsideIt(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
+		doc      Document
 		password string
-		field    string
-		value    string
-		want     string
+		answer   map[string]any
+		want     map[string]any
 	}{
-		{name: "the outcome of a run", password: "pr", field: "outcome", value: "pr-opened", want: "pr-opened"},
-		{name: "the profile of the executor", password: "open", field: "profile", value: "opencode", want: "opencode"},
-		{name: "the state of the queue", password: "awaits", field: "state", value: "awaits-owner", want: "awaits-owner"},
-		{name: "the state of the change", password: "clo", field: "state", value: "closed", want: "closed"},
-		{name: "the code of a reason", password: "route", field: "reason", value: routeUnavailable, want: routeUnavailable},
-		{name: "the verdict of a gate", password: "missing", field: "reason", value: "approval-missing",
-			want: "approval-missing"},
-		{name: "the words behind a code", password: "route", field: "reason",
-			value: routeUnavailable + ": the host of the project is not reachable",
-			want:  routeUnavailable + ": the host of the project is not reachable"},
-		{name: "the state a record was escalated from", password: "unseen", field: "escalated_from",
-			value: "finished-unseen", want: "finished-unseen"},
-		{name: "the state of the queue under its own name", password: "unseen", field: "attention_state",
-			value: "finished-unseen", want: "finished-unseen"},
-		{name: "the merge state on the host", password: "irt", field: "merge_state", value: "DIRTY", want: "DIRTY"},
-		{name: "what crewflow does with a key", password: "port", field: "status", value: "supported", want: "supported"},
-		{name: "how a run was settled", password: "chang", field: "by", value: "change-merged", want: "change-merged"},
-		{name: "who acts next", password: "orch", field: "next_actor", value: "orchestrator", want: "orchestrator"},
-		{name: "the priority of a record", password: "crit", field: "priority", value: "critical", want: "critical"},
-		{name: "whether it may be acted on now", password: "unk", field: "actable", value: "unknown", want: "unknown"},
-		{name: "what a check ended as", password: "unavail", field: "result", value: "unavailable", want: "unavailable"},
-		{name: "what a record of a review decided", password: "requested", field: "decision",
-			value: "changes_requested", want: "changes_requested"},
+		{
+			name:     "the outcome of a run",
+			doc:      DocumentTaskRun,
+			password: "pr",
+			answer: map[string]any{"outcome": "pr-opened", "profile": "opencode",
+				"title": "the run asked for pr and left"},
+			want: map[string]any{"outcome": "pr-opened", "profile": "opencode",
+				"title": "the run asked for " + Redacted + " and left"},
+		},
+		{
+			name:     "the mode of an identity",
+			doc:      DocumentTaskRun,
+			password: "bot",
+			answer:   map[string]any{"identity": "bot", "title": "the run went out as bot"},
+			want:     map[string]any{"identity": "bot", "title": "the run went out as " + Redacted},
+		},
+		{
+			name:     "the code of a reason and the words behind it",
+			doc:      DocumentTaskRun,
+			password: "route",
+			answer:   map[string]any{"reason": "network-route-unavailable: the route is not reachable"},
+			want: map[string]any{"reason": "network-route-unavailable: the " + Redacted +
+				" is not reachable"},
+		},
+		{
+			name:     "the state of the queue",
+			doc:      DocumentTaskAttention,
+			password: "awaits",
+			answer: map[string]any{"attention": []any{map[string]any{
+				"attention_state": "awaits-owner", "reason": "owner-acceptance-required",
+				"hint": "the owner has to answer, and it awaits"}}},
+			want: map[string]any{"attention": []any{map[string]any{
+				"attention_state": "awaits-owner", "reason": "owner-acceptance-required",
+				"hint": "the owner has to answer, and it " + Redacted}}},
+		},
+		{
+			name:     "the commit of the head of a change",
+			doc:      DocumentReview,
+			password: "2342",
+			answer: map[string]any{"head": "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342",
+				"outside": []any{"internal/secret/policy.go:2342"}},
+			want: map[string]any{"head": "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342",
+				"outside": []any{"internal/secret/policy.go:" + Redacted}},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := boundaryOf(Chosen(tc.password)...)
 
-			document, fallen := theDocument(t, out, map[string]any{
-				tc.field: tc.value,
-				"detail": "the proxy asked for " + tc.password + " and left",
-			})
-			if fallen != nil {
-				t.Fatalf("the report of an answer with a closed value fell over: %v", fallen)
+			document, err := out.Report(tc.doc, tc.answer)
+			if err != nil {
+				t.Fatalf("Report(%s): %v", tc.doc, err)
 			}
-
 			var read map[string]any
 			if err := json.Unmarshal(document, &read); err != nil {
 				t.Fatalf("the document of the answer is not a document: %v\n%s", err, document)
 			}
-			if got := read[tc.field]; got != tc.want {
-				t.Errorf("the %s of the answer is %v, want %q: a word of a closed list is not a value of a run",
-					tc.field, got, tc.want)
-			}
-			detail, _ := read["detail"].(string)
-			// The words of a free text are cut wherever the value stands in them, and a
-			// value of two signs is a part of a word of every sentence: `pr` is in
-			// `proxy` too, and a document that kept it there is not clean.
-			said := "the proxy asked for " + tc.password + " and left"
-			if want := strings.ReplaceAll(said, tc.password, Redacted); detail != want {
-				t.Errorf("the detail of the answer is %q, want %q: a free text is cleaned whatever it holds",
-					detail, want)
+			if !reflect.DeepEqual(read, tc.want) {
+				t.Errorf("the document of the answer is\n%s\nwant\n%s", document, asJSON(t, tc.want))
 			}
 		})
 	}
 }
 
-// TestWhateverDocumentAnAnswerMakesTheBoundaryCleansItsFreeTextAndKeepsItsClosedValues: an
-// answer of a command is put together out of whatever types its caller made it of — pointers,
-// interfaces, named types, maps with named keys, arrays, numbers — and the boundary cannot
-// know which of them the next answer will hold. So the answers are made of random ones and
-// the three promises are read off every document of them: no shape of an answer makes the
-// boundary fall over, the values of a run are gone from the free text of the document, and the
-// words of the closed lists of the format are in it as they were (R5-NEW-6, R5-NEW-7, R5-NEW-8,
+// TestWhateverTypesAnAnswerIsMadeOfTheDocumentIsTheSame: the fields of a document are what the
+// schema of the format says, and a caller may hold a field of it in whatever Go type it has —
+// a string, a pointer, a type of its own — and the boundary reads the document and not the types
+// of the answer. So one document is built again and again out of answers of different types, and
+// the document is the same every time: no shape of an answer makes the boundary fall over, and
+// the values of a run are out of the free text of it (R5-NEW-6, R5-NEW-7, R224-013,
 // docs.DESIGN.md §7e).
-func TestWhateverDocumentAnAnswerMakesTheBoundaryCleansItsFreeTextAndKeepsItsClosedValues(t *testing.T) {
-	// The fields of the closed lists of the format as the schema of a document names them,
-	// and in each of them a value of the run standing where a password of a person stands
-	// inside a word of the format. The words of the format themselves — `pr-opened`,
-	// `opencode`, `awaits-owner` — are under test in the case above and in `internal/run`.
-	closed := map[string]string{
-		"outcome":         "pr-" + canaryShort + "ed",
-		"profile":         "open" + canaryShort + "de",
-		"state":           "aw" + canaryShort + "s-owner",
-		"attention_state": "escal" + canaryShort + "ed",
-		"reason":          "network-" + canaryShort + "-unavailable",
+func TestWhateverTypesAnAnswerIsMadeOfTheDocumentIsTheSame(t *testing.T) {
+	type verdictOfAChange struct {
+		Ready  bool    `json:"ready"`
+		Reason string  `json:"reason"`
+		Detail *string `json:"detail"`
 	}
-	// The fields a person and a program read the words of a run in. Everything else the
-	// documents of the project hold is one of them.
-	free := []string{"title", "detail", "why", "subject", "problem", "journal", "answer", "step"}
-	random := rand.New(rand.NewSource(20261003))
+	type plain struct {
+		Task    int               `json:"task"`
+		Branch  string            `json:"branch"`
+		Head    string            `json:"head"`
+		Journal string            `json:"journal"`
+		Left    []string          `json:"left"`
+		Outcome string            `json:"outcome"`
+		Verdict any               `json:"verdict"`
+		Nothing *verdictOfAChange `json:"orchestrator"`
+	}
+	type named struct {
+		Task    int               `json:"task"`
+		Branch  *told             `json:"branch"`
+		Head    **told            `json:"head"`
+		Journal told              `json:"journal"`
+		Left    *[]told           `json:"left"`
+		Outcome told              `json:"outcome"`
+		Verdict any               `json:"verdict"`
+		Nothing *verdictOfAChange `json:"orchestrator"`
+	}
+	detail := "the proxy asked for " + canaryShort + " and left"
+	branch := told("crewflow/224-fix-secret-json-recheck-216")
+	head := told("9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342")
+	journal := told("/tmp/crewflow/state/43/1.jsonl")
+	headPointer := &head
+	out := boundaryOf(theCanaries()...)
+	// What the document says, whatever the answer was made of: the words of the run are cut
+	// and the words and the names of the format are whole.
+	want := map[string]any{
+		"task":         float64(43),
+		"branch":       "crewflow/224-fix-secret-json-recheck-216",
+		"head":         "9f2b1c4a7d3e5f60718293a4b5c6d7e8f9012342",
+		"journal":      "/tmp/crewflow/state/43/1.jsonl",
+		"left":         []any{Redacted, "the proxy asked for " + Redacted},
+		"outcome":      "merged",
+		"orchestrator": nil,
+		"verdict": map[string]any{"ready": false, "reason": "approval-missing",
+			"detail": "the proxy asked for " + Redacted + " and left"},
+	}
 
 	for attempt := range 400 {
-		answer, want := map[string]any{}, map[string]any{}
-		for range 1 + random.Intn(6) {
-			// Every fourth field of an answer is a field of a closed list: the two are
-			// cleaned differently, and a document that mixes them up says something else.
-			if random.Intn(4) == 0 {
-				names := slices.Sorted(maps.Keys(closed))
-				name := names[random.Intn(len(names))]
-				answer[name], want[name] = closed[name], closed[name]
-				continue
-			}
-			name := free[random.Intn(len(free))]
-			answer[name], want[name] = randomText(random, name)
+		answer := any(named{Task: 43, Branch: &branch, Head: &headPointer, Journal: journal,
+			Left:    &[]told{told(canaryLong), told("the proxy asked for " + canaryShort)},
+			Outcome: told("merged"),
+			Verdict: verdictOfAChange{Reason: "approval-missing", Detail: &detail}})
+		if attempt%2 == 0 {
+			answer = plain{Task: 43, Branch: string(branch), Head: string(head), Journal: string(journal),
+				Left:    []string{canaryLong, "the proxy asked for " + canaryShort},
+				Outcome: "merged",
+				Verdict: map[string]any{"ready": false, "reason": "approval-missing", "detail": detail}}
 		}
-		out := boundaryOf(theCanaries()...)
 
-		document, fallen := theDocument(t, out, answer)
+		document, fallen := theDocument(t, out, DocumentMerge, answer)
 		if fallen != nil {
 			t.Fatalf("the report of answer %d (%#v) fell over: %v", attempt, answer, fallen)
 		}
-		var got any
+		var got map[string]any
 		if err := json.Unmarshal(document, &got); err != nil {
-			t.Fatalf("the document of answer %d (%#v) is not a document: %v\n%s", attempt, answer, err, document)
+			t.Fatalf("the document of answer %d is not a document: %v\n%s", attempt, err, document)
 		}
 		if !reflect.DeepEqual(got, want) {
-			t.Fatalf("the document of answer %d (%#v) is\n%s\nwant\n%s", attempt, answer, document, asJSON(t, want))
+			t.Fatalf("the document of answer %d (%#v) is\n%s\nwant\n%s",
+				attempt, answer, document, asJSON(t, want))
 		}
 	}
 }
 
-// randomText is one field of a free text of an answer and what the document of it is to say:
-// the answer is made of the types a caller happened to make it of — a pointer, a type of its
-// own, an interface, a map with a name in its keys, a list, a number — and the document says
-// the same about every one of them, with the values of a run taken out of its strings. What
-// the document is to say is what it says here, so that the property is read off a document and
-// not off the code that wrote it.
-func randomText(random *rand.Rand, name string) (any, any) {
-	said := "the words of a run about " + name + ": the proxy asked for " + canaryShort + " and the token is " + canaryLong
-	clean := "the words of a run about " + name + ": the proxy asked for " + Redacted + " and the token is " + Redacted
-	one := "the words of a run about " + name + ": " + canaryLong
-	gone := "the words of a run about " + name + ": " + Redacted
-	word := told("why of " + name + ": " + canaryLong)
-	switch random.Intn(8) {
-	case 0:
-		return said, clean
-	case 1:
-		return &one, gone
-	case 2:
-		return word, "why of " + name + ": " + Redacted
-	case 3:
-		return []told{word, told("and " + canaryShort)},
-			[]any{"why of " + name + ": " + Redacted, "and " + Redacted}
-	case 4:
-		return map[told]string{told("route-" + canaryShort): one},
-			map[string]any{"route-" + Redacted: gone}
-	case 5:
-		return map[string]any{"why": one, "port": 1080},
-			map[string]any{"why": gone, "port": float64(1080)}
-	case 6:
-		return struct {
-				Why  string `json:"why"`
-				Seen bool   `json:"seen"`
-			}{Why: one, Seen: true},
-			map[string]any{"why": gone, "seen": true}
-	default:
-		return any(struct {
-				Why string `json:"why"`
-			}{Why: one}),
-			map[string]any{"why": gone}
-	}
-}
-
-// theDocument is the answer of a command as the boundary publishes it, with a fall of the
-// boundary given back to the test instead of taken the program that prints it with it: an
-// answer crewflow cannot write is a refusal of a command and not the end of a command
-// (R5-NEW-6, R5-NEW-7, docs/DESIGN.md §7e).
-func theDocument(t *testing.T, out *Out, answer any) (document []byte, fallen any) {
+// theDocument is the answer of a command as the boundary publishes it as the document the
+// caller names, with a fall of the boundary given back to the test instead of taken the program
+// that prints it with it: an answer crewflow cannot write is a refusal of a command and not the
+// end of a command (R5-NEW-6, R5-NEW-7, docs/DESIGN.md §7e).
+func theDocument(t *testing.T, out *Out, doc Document, answer any) (document []byte, fallen any) {
 	t.Helper()
 	defer func() { fallen = recover() }()
 	var published bytes.Buffer
 	said := out.Writer(&published)
-	if err := said.Report(answer); err != nil {
-		t.Fatalf("Report: %v", err)
+	if err := said.Report(doc, answer); err != nil {
+		t.Fatalf("Report(%s): %v", doc, err)
 	}
 	return published.Bytes(), nil
 }
