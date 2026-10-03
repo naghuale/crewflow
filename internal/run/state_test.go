@@ -2,6 +2,7 @@ package run
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -669,4 +670,104 @@ func TestTheReasonOfAnAttemptIsPublishedWhenTheStateOfTheTaskIsWritten(t *testin
 	if want := "the run stopped itself: it could not reach " + canary; written.Attempts[0].Reason != want {
 		t.Errorf("the reason in the state of a caller with no boundary is %q, want %q", written.Attempts[0].Reason, want)
 	}
+}
+
+// TestTheCodeOfTheReasonOfAnAttemptSurvivesTheStateOfTheTask: a reason of §6a is a word out of
+// the closed list of the codes and then the words of what happened, and the state of a task is
+// a file kept for ever that programs read a reason out of. The code was published through the
+// boundary like the words, and a password that happened to be a part of it left a reason of
+// nothing in the file — the queue names a reason by the word before the colon, and
+// `network-[redacted]-unavailable` is not a reason of the format, so a run that waited for a
+// resource read as a run that stopped by itself (R5-NEW-8, docs/DESIGN.md §6a, §7e).
+func TestTheCodeOfTheReasonOfAnAttemptSurvivesTheStateOfTheTask(t *testing.T) {
+	const password = "route"
+	reason := ReasonRouteUnavailable + ": the route of the project is not reachable"
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	withReason := func(current State) (State, error) {
+		started := current
+		started.Number, started.Title, started.Branch = 43, "the run of a task", "crewflow/43-task"
+		return started.NextAttempt(started.NextNumber(), StartOf{
+			Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+			Journal: journals.JournalPath(43, 1),
+		}).Reason(1, reason), nil
+	}
+
+	if _, err := UpdateStateThrough(secret.NewOut(secret.Chosen(password)...), journals.StatePath(43), withReason); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	written, err := LoadState(journals.StatePath(43))
+	if err != nil {
+		t.Fatalf("read the state of the task: %v", err)
+	}
+
+	want := ReasonRouteUnavailable + ": the " + secret.Redacted + " of the project is not reachable"
+	if got := written.Attempts[0].Reason; got != want {
+		t.Errorf("the reason in the state of the task is %q, want %q: a code of §6a is not a value of a run", got, want)
+	}
+	if got := refusalOf(written.Attempts[0].Reason); got != ReasonRouteUnavailable {
+		t.Errorf("the queue names the run %q by the reason %q, want %q",
+			got, written.Attempts[0].Reason, ReasonRouteUnavailable)
+	}
+}
+
+// TestTheWordsOfTheFormatSurviveTheReportOfARun: a program reads the report of a run to decide
+// what it did, and it decides by the words out of the closed lists of the format — the outcome
+// of the run, the profile of the executor, the code of a reason. Cut out of them, they are not
+// the words of the format any more: a password that happened to be a part of `no-change-request`
+// made the report say of the run something else than the run was (R5-NEW-8, R5-NEW-7,
+// docs/DESIGN.md §6a, §7e).
+func TestTheWordsOfTheFormatSurviveTheReportOfARun(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		password string
+		result   Result
+		want     Result
+	}{
+		{
+			name:     "the outcome of the run",
+			password: "change",
+			result:   Result{Task: 43, Outcome: NoChangeRequest, Profile: "opencode", Reason: "the run pushed and stopped"},
+			want: Result{Task: 43, Outcome: NoChangeRequest, Profile: "opencode",
+				Reason: "the run pushed and stopped"},
+		},
+		{
+			name:     "the code of the reason and the words behind it",
+			password: "route",
+			result: Result{Task: 43, Outcome: Blocked, Profile: "opencode",
+				Reason: ReasonRouteUnavailable + ": the route of the project is not reachable"},
+			want: Result{Task: 43, Outcome: Blocked, Profile: "opencode",
+				Reason: ReasonRouteUnavailable + ": the " + secret.Redacted + " of the project is not reachable"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := secret.NewOut(secret.Chosen(tc.password)...)
+
+			document, fallen := theReport(t, out, tc.result)
+			if fallen != nil {
+				t.Fatalf("the report of the run fell over: %v", fallen)
+			}
+			var read Result
+			if err := json.Unmarshal(document, &read); err != nil {
+				t.Fatalf("the report of the run is not a document: %v\n%s", err, document)
+			}
+			if read.Task != tc.want.Task || read.Outcome != tc.want.Outcome ||
+				read.Profile != tc.want.Profile || read.Reason != tc.want.Reason {
+				t.Errorf("the report of the run is %+v, want %+v", read, tc.want)
+			}
+		})
+	}
+}
+
+// theReport is the answer of a command as the boundary publishes it, with a fall of the
+// boundary given back to the test instead of taken the program that prints it with it: an
+// answer crewflow cannot write is a refusal of a command and not the end of a command
+// (R5-NEW-7, docs/DESIGN.md §7e).
+func theReport(t *testing.T, out *secret.Out, answer any) (document []byte, fallen any) {
+	t.Helper()
+	defer func() { fallen = recover() }()
+	document, err := out.Report(answer)
+	if err != nil {
+		t.Fatalf("Report: %v", err)
+	}
+	return document, nil
 }

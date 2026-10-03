@@ -742,8 +742,12 @@ func LoadState(path string) (State, error) {
 //
 // The reason of an attempt is what a program of the run said, and it is published through the
 // boundary of the run before it is written: the state of a task is a file kept for ever and read
-// by programs that decide by the words of crewflow, and a reason of a run with the password of a
-// proxy in it is a password of a person in a file of a task (docs/DESIGN.md §7e).
+// by programs that decide by the words of crewflow, and a reason of a run with the password of
+// a proxy in it is a password of a person in a file of a task (docs/DESIGN.md §7e).
+//
+// It is published as a reason and not as a text: a reason is a code of §6a and then the words
+// of what happened, the queue reads it by the code before the colon, and a code with a cut in
+// it is not a code (R5-NEW-8, §6a, §7e).
 func saveState(out *secret.Out, path string, state State) error {
 	state.Schema = Schema
 	data, err := json.MarshalIndent(state.published(out), "", "  ")
@@ -766,7 +770,7 @@ func saveState(out *secret.Out, path string, state State) error {
 // program away from the programs that read them (docs/DESIGN.md §7e, §7i).
 func (s State) published(out *secret.Out) State {
 	for at, attempt := range s.Attempts {
-		s.Attempts[at].Reason, _ = out.Publish(secret.ChannelState, attempt.Reason)
+		s.Attempts[at].Reason, _ = out.Reason(secret.ChannelState, attempt.Reason)
 	}
 	return s
 }
