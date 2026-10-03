@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/network"
+	"github.com/naghuale/crewflow/internal/secret"
 	"github.com/naghuale/crewflow/internal/task"
 )
 
@@ -113,7 +114,11 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 	if len(secrets.reached) > 0 {
 		return result.spent(BlockedSecret), nil
 	}
-	reason := r.profile.Blocked(stdout)
+	// What the agent said about itself and what the provider said about the failure are the
+	// words of the executor, and they go through the secrets of the run like every other
+	// thing it printed: a reason is written into the state of the task and shown in the
+	// report of a run, and both of those are pasted into issues (docs/DESIGN.md §7e, §7i).
+	reason := secret.Redact(r.profile.Blocked(stdout), r.secrets()...)
 	// What the model provider said about the failure it stopped the run for is read
 	// before anything the run said about itself: a provider that refused the run is a wait
 	// for a resource and not a defect of the task, however the task of the run ended, and
@@ -142,7 +147,7 @@ func (r *runner) outcome(ctx context.Context, result Result, stdout, stderr []by
 		// wait: the name is the code of §6a that a program reads, and the words are what
 		// a person reads when the queue says which resource of the machine the task
 		// waits for (§6a, §7i).
-		result.Reason = provider.reason + ": " + provider.said
+		result.Reason = provider.reason + ": " + secret.Redact(provider.said, r.secrets()...)
 		return result.spent(Blocked), nil
 	case reason != "":
 		result.Reason = reason

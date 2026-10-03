@@ -415,6 +415,11 @@ type runner struct {
 	// `direct`, because a run that hands its executor a proxy nobody chose is a run that
 	// sends a task of a person to a machine of somebody else (docs/DESIGN.md §7d).
 	route []string
+	// routeSecrets are the values of the credentials of that route which must not reach a
+	// file of the run: they are in the environment of every program this run starts, and
+	// an executor that prints its own environment is one line of a journal that is kept
+	// for ever and pasted into issues (docs/DESIGN.md §7d, §7e).
+	routeSecrets []string
 	// admission is the record of the pair that let this run start beside another run of
 	// the project. It is worked out before the worktree of the task is made, and it is said
 	// in the journal of the attempt and in the report of the run: a run that went beside
@@ -479,7 +484,18 @@ func (r *runner) throughRoute() error {
 		return err
 	}
 	r.route = environment
+	r.routeSecrets = route.Secrets(credentials)
 	return nil
+}
+
+// secrets are the values this run must not write into a file of its own: the secrets of
+// the identity it works under and the credentials of the route it goes out through. The
+// two are one list and not two — a program of the run is started with both of them in its
+// environment, so an agent that prints its own environment prints them both, and a value
+// that is taken out of one file of a run and not of another is a secret kept for ever in
+// the one and nothing at all in the other (docs/DESIGN.md §7e, §7i).
+func (r *runner) secrets() []string {
+	return slices.Concat(r.identity.Secrets, r.routeSecrets)
 }
 
 // readings is the policy of the run: the folders the file of the project named, the
@@ -929,12 +945,13 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 	// in memory, because a run is judged out of what the agent said, and the file is
 	// the only one of the two a person and a watch can read (docs/DESIGN.md §7a).
 	//
-	// The files of the run go through the redactor of the secrets of the identity: the
-	// token of a run is in the environment of the executor, and an agent that prints
-	// its own environment is one line of a journal that would carry a token of an hour
-	// into a file kept for ever and pasted into an issue (§7e, §7i).
+	// The files of the run go through the redactor of the secrets of the run: the token
+	// of a run is in the environment of the executor, and so is the password of the
+	// profile the owner chose the route through, and an agent that prints its own
+	// environment is one line of a journal that would carry both of them into a file kept
+	// for ever and pasted into an issue (§7e, §7i).
 	var out, errOut bytes.Buffer
-	journal, wayOut := secret.NewRedactor(files.Out, r.identity.Secrets...), secret.NewRedactor(files.ErrOut, r.identity.Secrets...)
+	journal, wayOut := secret.NewRedactor(files.Out, r.secrets()...), secret.NewRedactor(files.ErrOut, r.secrets()...)
 	environment := slices.Concat(rights, r.identity.Env, tempEnv(r.worktree), r.route)
 	code, err := r.env.Stream(runCtx, command[0], command[1:], r.worktree, environment,
 		io.MultiWriter(&out, journal), io.MultiWriter(&errOut, wayOut))
@@ -1138,12 +1155,12 @@ func (r *runner) noteError(errorJournal string, err error) string {
 // note adds what went wrong to a file of the run, and goes on when it cannot: the
 // file of a journal is not worth stopping a run for, and what crewflow has to say
 // about it is in the return of the caller. What is written goes through the redactor
-// of the secrets of the identity: an error of a run may carry what a program of it
+// of the secrets of the run: an error of a run may carry what a program of it
 // printed, and a file of a run is read by people and pasted into issues (§7e).
 func (r *runner) note(path string, err error) {
 	previous, readErr := os.ReadFile(path)
 	if readErr == nil {
-		line := fmt.Sprintf("crewflow: %v\n", secret.Redact(err.Error(), r.identity.Secrets...))
+		line := fmt.Sprintf("crewflow: %v\n", secret.Redact(err.Error(), r.secrets()...))
 		_ = writeFile(path, append(previous, []byte(line)...))
 	}
 }

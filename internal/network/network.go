@@ -206,6 +206,36 @@ func EnvironmentOf(cfg config.Config, target, credentials string) ([]string, err
 	return route.Environment(cfg.Network.NoProxy, credentials)
 }
 
+// Secrets are the values of this route that must not reach a file crewflow writes: the
+// credentials as they were read out of the store, the password on its own, and the pair as
+// the address a program is given writes it. The last one is not the same text as the first:
+// an address writes the password percent-encoded, and the value an agent prints out of its
+// own environment is the address and not the store — a value taken out of a text in one
+// spelling and shown in another is a secret in every file a run writes (docs/DESIGN.md §7d,
+// §7e).
+//
+// The address of the profile is not among them: it is in every report of a check of a
+// route and in every event of a change of it, and a person who cannot see where the
+// traffic of a project goes cannot say that it goes where the owner of the project said.
+func (r Route) Secrets(credentials string) []string {
+	if r.Direct || credentials == "" {
+		return nil
+	}
+	values := []string{credentials}
+	if _, password, found := strings.Cut(credentials, ":"); found && password != "" {
+		values = append(values, password)
+	}
+	// The pair as the address writes it is worked out of that address and not out of a
+	// second spelling of the same value: the address is the only text a program is given,
+	// and it is that text a program can print.
+	if address, err := r.URL(credentials); err == nil && address != nil && address.User != nil {
+		if written := address.User.String(); written != "" {
+			values = append(values, written)
+		}
+	}
+	return values
+}
+
 // Terms are the two durations of the network of a project: how long a check of a route
 // waits for an answer, and how long that answer is a fact about the machine.
 func Terms(cfg config.Config) (connect, validFor time.Duration, err error) {

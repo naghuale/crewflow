@@ -371,12 +371,9 @@ func (m Machine) ask(ctx context.Context, capability string, route Route, enviro
 	state.Duration = m.Now().Sub(started).Round(time.Millisecond).String()
 	if credentials != "" {
 		// Nothing of a credential of the profile is in what a person reads, whatever the
-		// program that answered wrote: the value goes through the redactor of the
-		// secrets of the machine, whole and by its password (docs/DESIGN.md §7e).
-		state.Detail = secret.Redact(state.Detail, credentials)
-		if _, password, found := strings.Cut(credentials, ":"); found {
-			state.Detail = secret.Redact(state.Detail, password)
-		}
+		// program that answered wrote: the values of the route go through the redactor of
+		// the secrets of the machine (docs.DESIGN.md §7e).
+		state.Detail = secret.Redact(state.Detail, route.Secrets(credentials)...)
 	}
 	if m.Now().Sub(started) > m.ValidFor {
 		state.Result = StateStale

@@ -461,6 +461,72 @@ func TestAProfileThatTakesCredentialsAndHasNoneIsARefusal(t *testing.T) {
 	}
 }
 
+// theCredentialsOfAProfile is what the store of a machine holds for a profile that takes a
+// login: a pair, and a password with a sign in it that a URL writes another way — a value
+// that is taken out of a text in one spelling and stands in it in another is a secret in
+// every file a program writes (docs/DESIGN.md §7e).
+const theCredentialsOfAProfile = "ann:s3cret with/a space"
+
+// TestWhatARouteSaysIsASecretIsWhatItHandsAChild: a program of a run is given the address
+// of the profile with the credentials in it, and an agent that prints its own environment
+// prints that address. The values a route says are a secret therefore have to include the
+// pair as it is written into the address — percent-encoded — and not only the value of the
+// store, or the password of the proxy stands in a journal kept for ever
+// (docs/DESIGN.md §7d, §7e).
+func TestWhatARouteSaysIsASecretIsWhatItHandsAChild(t *testing.T) {
+	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"work"`))
+	route, err := Choose(cfg, "api.github.com")
+	if err != nil {
+		t.Fatalf("the route of a request: %v", err)
+	}
+	environment, err := route.Environment(cfg.Network.NoProxy, theCredentialsOfAProfile)
+	if err != nil {
+		t.Fatalf("the environment of a child process: %v", err)
+	}
+
+	values := route.Secrets(theCredentialsOfAProfile)
+
+	for _, given := range environment {
+		if redacted := secret.Redact(given, values...); strings.Contains(redacted, "s3cret") {
+			t.Errorf("the value %q is given to a child and %q is what a person reads from it: "+
+				"the password of the profile is in it", given, redacted)
+		}
+	}
+	// The pair of the store and the password on its own are there as well: a program that
+	// says what it was given is not the only one that can print a credential, and a value
+	// of the store reaches an error of a run as readily as it reaches an environment.
+	for _, want := range []string{theCredentialsOfAProfile, "s3cret with/a space"} {
+		if !slices.Contains(values, want) {
+			t.Errorf("the values a route says are a secret are %q, want %q in them", values, want)
+		}
+	}
+	// The address of the profile is not a secret: it is in every report of a check of a
+	// route and in every event of a change of it, and a person who cannot see where the
+	// traffic of a project goes cannot say that it goes where the owner of the project said
+	// (docs/DESIGN.md §7d, §7i).
+	for _, said := range []string{"proxy.example.com:1080", "socks5://"} {
+		if slices.Contains(values, said) {
+			t.Errorf("the values a route says are a secret are %q, want the address of the profile %q not in them",
+				values, said)
+		}
+	}
+}
+
+// TestARouteWithNoCredentialsSaysNoSecret: a profile that takes no login has nothing to
+// hide, and a list of values a redactor would look in for nothing is a list that makes every
+// write of a file of a run slower and says nothing about it.
+func TestARouteWithNoCredentialsSaysNoSecret(t *testing.T) {
+	_, cfg := withFile(t, keysOf("mode", `"proxy"`, "active_proxy", `"home"`))
+	route, err := Choose(cfg, "api.github.com")
+	if err != nil {
+		t.Fatalf("the route of a request: %v", err)
+	}
+
+	if values := route.Secrets(""); len(values) != 0 {
+		t.Errorf("the values a profile without credentials says are a secret are %q, want none", values)
+	}
+}
+
 // storeOfTheTest is the store of secrets of a machine of a test: it keeps values by the
 // name of the item and counts how many times it was read, so that a report that says a
 // secret is there without reading it can be shown to have done so.
