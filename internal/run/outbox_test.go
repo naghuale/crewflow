@@ -1,0 +1,1254 @@
+package run
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/naghuale/crewflow/internal/secret"
+)
+
+// TestAMaterializedEventIsOneLineOfTheOutboxAndTheBacklogIsEmpty: the outbox is the projection of
+// the backlog that is not written over, and one line of it is one event of the task: the news of
+// the transition with the whole of the record it rests on, under the name the backlog holds it by
+// and in the place it took in the file. The backlog of the task lets the event go in the same
+// call — that is what lets the outbox be the record of what was told rather than a second copy of
+// what was not — and the revision of the record of the task does not move: a confirmation of what
+// was told is not a change of the task (docs/DESIGN.md §7h, #243, #247).
+func TestAMaterializedEventIsOneLineOfTheOutboxAndTheBacklogIsEmpty(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	at := monday.Add(9 * time.Hour)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst))
+	before := stateOfTheTask(t, statePath)
+
+	done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+	if err != nil {
+		t.Fatalf("MaterializePendingEvents returned an error: %v", err)
+	}
+	if len(done.Written) != 1 {
+		t.Fatalf("the call wrote %v into the outbox, want one record of the event", done.Written)
+	}
+	wrote := done.Written[0]
+	if wrote.EventID != event.ID || wrote.Seq != 1 {
+		t.Errorf("the record is at the place %d under the name %q, want the first record under the name the "+
+			"backlog holds the event by: %q", wrote.Seq, wrote.EventID, event.ID)
+	}
+	if !sameNews(wrote, event) {
+		t.Errorf("the record is %+v, want the whole of the news of the transition %s→%s at %s on %s",
+			wrote, event.From, event.To, event.At, event.Basis)
+	}
+	if len(done.Told) != 1 || done.Told[0] != event.ID {
+		t.Errorf("the call confirmed %v, want the name of the event it wrote: %q", done.Told, event.ID)
+	}
+	if len(done.Duplicated) != 0 || len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %v duplicated and %v in conflict, want a file that held neither",
+			done.Duplicated, done.Conflicted)
+	}
+	// One line per event, the line break being what says the record is in the file, and the line
+	// is the record as the format of it writes it.
+	lines := linesOfOutbox(t, outboxPath)
+	if len(lines) != 1 {
+		t.Fatalf("the outbox of the task holds %d lines, want one line per event: %q", len(lines), lines)
+	}
+	held, err := recordOfLine([]byte(lines[0]))
+	if err != nil {
+		t.Fatalf("the line of the outbox is not a record of it: %v", err)
+	}
+	if !sameRecord(held, wrote) {
+		t.Errorf("the line of the outbox is %+v, want the record that was written: %+v", held, wrote)
+	}
+	after := stateOfTheTask(t, statePath)
+	if len(after.PendingEvents) != 0 {
+		t.Errorf("the backlog of the task on the disk holds %v, want nothing that was told", idsOf(after))
+	}
+	if after.Revision != before.Revision {
+		t.Errorf("the record of the task stands at the revision %d after the materialization, want %d: what "+
+			"was told is not a change of the task", after.Revision, before.Revision)
+	}
+}
+
+// TestTheOutboxOfATaskIsOnlyAppendedTo: the record of a task is written whole and a person opens
+// it looking for the branch, which is why the news of a transition is a projection of its own
+// with a road of its own. A file that is rewritten on every event is a file that says what is in
+// it now and nothing about what came before it, so the outbox is appended to and never rewritten:
+// the lines that were there are the same bytes after the next event and the places go one after
+// another (docs/DESIGN.md §7h, #247).
+func TestTheOutboxOfATaskIsOnlyAppendedTo(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	at := monday.Add(9 * time.Hour)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	first := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst))
+
+	one, err := MaterializePendingEvents(nil, statePath, outboxPath)
+	if err != nil {
+		t.Fatalf("MaterializePendingEvents returned an error: %v", err)
+	}
+	before := read(t, outboxPath)
+	second := recorded(t, statePath, went(AttentionAwaitsReview, AttentionFinishedUnseen, at.Add(time.Hour),
+		headOfTheSecond))
+
+	two, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+	if err != nil {
+		t.Fatalf("the second MaterializePendingEvents returned an error: %v", err)
+	}
+	if len(two.Written) != 1 || two.Written[0].EventID != second.ID {
+		t.Fatalf("the second call wrote %v, want one new record of the transition that was recorded", two.Written)
+	}
+	if two.Written[0].Seq != one.Written[0].Seq+1 {
+		t.Errorf("the second record is at the place %d, want %d: the places of the outbox are the order the "+
+			"events were materialized in", two.Written[0].Seq, one.Written[0].Seq+1)
+	}
+	after := read(t, outboxPath)
+	if !strings.HasPrefix(after, before) {
+		t.Errorf("the outbox after the second event is\n%s\nwant it to begin with what it held\n%s", after, before)
+	}
+	lines := linesOfOutbox(t, outboxPath)
+	if len(lines) != 2 || lines[0] != before[:len(before)-1] {
+		t.Errorf("the outbox holds %q, want the first line byte for byte as it was and one line after it", lines)
+	}
+	if !strings.Contains(lines[0], first.ID) {
+		t.Errorf("the first line is %q, want the record of the event %q", lines[0], first.ID)
+	}
+}
+
+// TestTwoMaterializersOfOneEventLeaveOneLine: the lock of the outbox file is of the file itself and
+// serializes reading it, checking it, taking the next place in it and appending to it, so two
+// materializers of one task at the same time do not write two lines of one event. Both of them
+// finish without a refusal: the one that came second either sees the record already in the file and
+// confirms the same news again, or finds the backlog of the task empty because the first one told
+// it (R1, docs/DESIGN.md §7h).
+func TestTwoMaterializersOfOneEventLeaveOneLine(t *testing.T) {
+	const writers = 4
+	statePath, outboxPath := pathsOfATask(t)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+
+	var group sync.WaitGroup
+	results := make(chan Materialized, writers)
+	failures := make(chan error, writers)
+	for range writers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+			if err != nil {
+				failures <- err
+				return
+			}
+			results <- done
+		}()
+	}
+	group.Wait()
+	close(failures)
+	close(results)
+	for err := range failures {
+		t.Errorf("MaterializePendingEvents of another materializer returned an error: %v", err)
+	}
+
+	lines := linesOfOutbox(t, outboxPath)
+	if len(lines) != 1 {
+		t.Fatalf("the outbox holds %d lines for one event, want one: %q", len(lines), lines)
+	}
+	held, err := recordOfLine([]byte(lines[0]))
+	if err != nil {
+		t.Fatalf("the line of the outbox is not a record of it: %v", err)
+	}
+	if held.EventID != event.ID || !sameNews(held, event) {
+		t.Errorf("the line of the outbox is %+v, want the news of the event %q", held, event.ID)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 0 {
+		t.Errorf("the backlog of the task holds %v after %d materializers, want nothing that was told",
+			idsOf(kept), writers)
+	}
+	written, told := 0, 0
+	for done := range results {
+		written += len(done.Written)
+		told += len(done.Told)
+	}
+	if written != 1 {
+		t.Errorf("%d of the calls reported a record written, want exactly one: the line of the event is written once",
+			written)
+	}
+	if told > 1 {
+		t.Errorf("%d of the calls reported the event confirmed, want at most one: the backlog holds each event once",
+			told)
+	}
+}
+
+// TestTheSameNewsAlreadyInTheOutboxIsConfirmedAndNothingIsAppended: the crash this step is written
+// against is a materializer that was killed between the append and the confirmation. Its record is
+// in the file and its event is still in the backlog of the task, and the next materializer finds
+// the news already there under its own name: it appends nothing — the same news told to the file
+// twice is one line of it — and the name goes into the list of what is confirmed, so that the
+// backlog of the task does not keep the event for ever (R2, docs/DESIGN.md §7h).
+func TestTheSameNewsAlreadyInTheOutboxIsConfirmedAndNothingIsAppended(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	at := monday.Add(9 * time.Hour)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	transition := went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst)
+	event := recorded(t, statePath, transition)
+	// What a materializer that was killed between the append and the confirmation leaves
+	// behind: the record of the outbox is in the file and the event is still in the backlog of
+	// the task, under the name it was told in and with the whole of the news beside it.
+	if _, err := materializeInto(statePath, outboxPath); err != nil {
+		t.Fatalf("the part of the road that appends and does not confirm: %v", err)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 {
+		t.Fatalf("the backlog of the task holds %v after the append without the confirmation, want the "+
+			"event still in it", idsOf(kept))
+	}
+	before := read(t, outboxPath)
+
+	done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+	if err != nil {
+		t.Fatalf("MaterializePendingEvents of the news already in the outbox returned an error: %v", err)
+	}
+	if len(done.Written) != 0 {
+		t.Errorf("the call appended %v to the outbox, want nothing: the news is in the file already", done.Written)
+	}
+	if len(done.Duplicated) != 1 || done.Duplicated[0] != event.ID {
+		t.Errorf("the call reported %v as the news the outbox held already, want the name of the event: %q",
+			done.Duplicated, event.ID)
+	}
+	if len(done.Told) != 1 || done.Told[0] != event.ID {
+		t.Errorf("the call confirmed %v, want the name of the news the outbox held already: %q",
+			done.Told, event.ID)
+	}
+	if kept := read(t, outboxPath); kept != before {
+		t.Errorf("the outbox after the second call is\n%s\nwant the one line that was there\n%s", kept, before)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 0 {
+		t.Errorf("the backlog of the task holds %v, want the event that was in the outbox already to be gone",
+			idsOf(kept))
+	}
+}
+
+// TestAnotherNewsUnderTheNameOfAnEventIsAConflictAndNothingIsWritten: the name of an event is a
+// digest kept to twelve signs and nothing proves that two different transitions of a task do not
+// have one. A record that is there under the name of a transition of the backlog is not that
+// transition, so it is not written over and its news is not confirmed: what is on the disk stays
+// byte for byte, the transition stays in the backlog where a person is asked about it, and the
+// refusal is a name a caller can tell apart (R5, docs/DESIGN.md §7h).
+func TestAnotherNewsUnderTheNameOfAnEventIsAConflictAndNothingIsWritten(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	at := monday.Add(9 * time.Hour)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst))
+	// The same name under another news: the same two states and the same moment of the task, on
+	// another record of the host.
+	line, err := lineOfOutboxRecord(OutboxRecord{
+		Seq:     1,
+		EventID: event.ID,
+		From:    event.From,
+		To:      event.To,
+		At:      event.At,
+		Basis:   headOfTheSecond,
+	})
+	if err != nil {
+		t.Fatalf("the record of another news under the same name: %v", err)
+	}
+	if err := writeFile(outboxPath, line); err != nil {
+		t.Fatalf("write the outbox of the task: %v", err)
+	}
+	before := read(t, outboxPath)
+
+	done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+	if !errors.Is(err, ErrOutboxConflict) {
+		t.Fatalf("the materialization of a transition another news is written under = %v, want %v", err, ErrOutboxConflict)
+	}
+	if !strings.Contains(err.Error(), event.ID) {
+		t.Errorf("the refusal %q does not name the event it is about, want %q in it", err, event.ID)
+	}
+	if len(done.Written) != 0 || len(done.Told) != 0 {
+		t.Errorf("the call wrote %v and confirmed %v, want nothing: a record that is there is not written over",
+			done.Written, done.Told)
+	}
+	if len(done.Conflicted) != 1 || done.Conflicted[0] != event.ID {
+		t.Errorf("the call reported %v in conflict, want the name of the event of the backlog: %q",
+			done.Conflicted, event.ID)
+	}
+	if kept := read(t, outboxPath); kept != before {
+		t.Errorf("the outbox after the refusal is\n%s\nwant the record that was there\n%s", kept, before)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 {
+		t.Errorf("the backlog of the task holds %v after the refusal, want the transition that was not told",
+			idsOf(kept))
+	}
+}
+
+// TestAnOutboxWithAnUncommittedTailIsRefusedAndItsTailIsKept: the file is one line per record and
+// the line break of a line is what says the record is in the file — nothing said those bytes
+// reached the disk, and `Sync` is not called to say it. So a tail that reads as a whole record and
+// is not one is refused whole: nothing is appended after it, nothing is taken out of the backlog
+// of the task, and the tail stays byte for byte, because what is to be done with a file that was
+// cut in the middle is a decision of a person and not of this step (R3, R6, docs/DESIGN.md §7h).
+func TestAnOutboxWithAnUncommittedTailIsRefusedAndItsTailIsKept(t *testing.T) {
+	whole := `{"seq":1,"event_id":"0123456789ab","from":"stands","to":"awaits-review",` +
+		`"at":"2026-09-28T19:00:00Z","basis":"` + headOfTheFirst + `"}`
+	for _, tail := range []struct {
+		name string
+		what string
+	}{
+		{name: "a whole record without the line break that commits it", what: whole},
+		{name: "a record cut in the middle after a whole one", what: whole + "\n" + `{"seq":2,"event_id":"abc"`},
+		{name: "a record cut in the middle", what: `{"seq":1,"event_id":"0123456789ab"`},
+	} {
+		t.Run(tail.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			if err := writeFile(outboxPath, []byte(tail.what)); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+
+			_, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, ErrOutboxCorrupt) {
+				t.Fatalf("the materialization into an outbox with %s = %v, want %v",
+					tail.name, err, ErrOutboxCorrupt)
+			}
+			if kept := read(t, outboxPath); kept != tail.what {
+				t.Errorf("the outbox after the refusal is\n%q\nwant the tail byte for byte as it was\n%q",
+					kept, tail.what)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 {
+				t.Errorf("the backlog of the task holds %v after the refusal, want the transition that was not told",
+					idsOf(kept))
+			}
+		})
+	}
+}
+
+// TestALineOfTheOutboxThatIsNotOfTheClosedSchemaIsRefused: the file is held to the closed schema of
+// the format. A field the schema does not name is a field nobody looked at, a value of a kind its
+// own row does not name is a document that stopped being the document the format describes, and a
+// value that is not of the form its field holds is a record nobody may go and read — the commit a
+// transition rests on and the name it is kept under are what a program reads. Every one of them is
+// refused with a short code that names neither the line nor the path of the file, and the file is
+// left byte for byte as it was (docs/DESIGN.md §7e, §7h, #247).
+func TestALineOfTheOutboxThatIsNotOfTheClosedSchemaIsRefused(t *testing.T) {
+	for _, what := range []struct {
+		name    string
+		changes map[string]any
+		taken   []string
+		raw     string
+	}{
+		{name: "a field of tomorrow", changes: map[string]any{"payload": "the words of a run"}},
+		{name: "a field nobody filled in", taken: []string{"basis"}},
+		{name: "a field with nothing in it", changes: map[string]any{"basis": nil}},
+		{name: "a state out of the list of §6a", changes: map[string]any{"from": "in-progress"}},
+		{name: "a commit that is not of its form", changes: map[string]any{"basis": strings.Repeat("z", 40)}},
+		{name: "a name that is not a digest", changes: map[string]any{"event_id": "the first event"}},
+		{name: "a moment that is not of its form", changes: map[string]any{"at": "yesterday"}},
+		{name: "a place that is a word", changes: map[string]any{"seq": "one"}},
+		{name: "a place out of the file", changes: map[string]any{"seq": 0}},
+		{name: "a line that is not a record", raw: `{"seq":1,"basis":`},
+		{name: "a record that is not one event", raw: `[{"seq":1}]`},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			line := []byte(what.raw + "\n")
+			if what.raw == "" {
+				line = lineWithFields(t, what.changes, what.taken...)
+			}
+			if err := writeFile(outboxPath, line); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+
+			_, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, ErrOutboxCorrupt) {
+				t.Fatalf("the materialization into an outbox with %s = %v, want %v",
+					what.name, err, ErrOutboxCorrupt)
+			}
+			for _, unwanted := range []string{headOfTheFirst, outboxPath} {
+				if strings.Contains(err.Error(), unwanted) {
+					t.Errorf("the refusal %q holds %q, want the line and the path out of it", err, unwanted)
+				}
+			}
+			if kept := read(t, outboxPath); kept != string(line) {
+				t.Errorf("the outbox after the refusal is\n%q\nwant the line that was there\n%q", kept, line)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 {
+				t.Errorf("the backlog of the task holds %v after the refusal, want the transition that was not told",
+					idsOf(kept))
+			}
+		})
+	}
+}
+
+// TestARecordThatTheOutboxDoesNotHoldIsNotWritten: a record of the outbox is bounded in its size
+// and held to the schema of the format before a byte of it is written, and a record that does not
+// fit either is refused whole: the file is read through the same schema, and a line this call
+// cannot read back is a line nobody may read afterwards — the outbox is appended to and never
+// rewritten. The bound of the state of a task is the tighter of the two, and a transition whose
+// record is not a commit of the host never gets here at all (docs/DESIGN.md §7e, §7h, #247).
+func TestARecordThatTheOutboxDoesNotHoldIsNotWritten(t *testing.T) {
+	record := OutboxRecord{
+		Seq:     1,
+		EventID: "0123456789ab",
+		From:    AttentionStands,
+		To:      AttentionAwaitsReview,
+		At:      monday,
+		Basis:   headOfTheFirst,
+	}
+	t.Run("the record of the format is one line with the line break that commits it", func(t *testing.T) {
+		line, err := lineOfOutboxRecord(record)
+		if err != nil {
+			t.Fatalf("the record of the outbox as a line: %v", err)
+		}
+		written, err := json.Marshal(record)
+		if err != nil {
+			t.Fatalf("the record of the outbox as a document: %v", err)
+		}
+		if string(line) != string(written)+"\n" {
+			t.Errorf("the line of the outbox is %q, want the record as the format writes it and the line break "+
+				"that commits it: %q", line, written)
+		}
+		if len(line) > OutboxRecordLimit {
+			t.Errorf("the line of the outbox is %d bytes, want at most the bound of %d", len(line), OutboxRecordLimit)
+		}
+	})
+	for _, what := range []struct {
+		name   string
+		change func(OutboxRecord) OutboxRecord
+		code   string
+	}{
+		{name: "a record that does not fit one line of the outbox",
+			change: func(r OutboxRecord) OutboxRecord { r.Basis = strings.Repeat("a", OutboxRecordLimit); return r },
+			code:   "bytes"},
+		{name: "a record whose commit is not of the form of one",
+			change: func(r OutboxRecord) OutboxRecord { r.Basis = strings.Repeat("z", 40); return r },
+			code:   "outbox-value-not-of-its-form"},
+		{name: "a record whose name is not of the form of one",
+			change: func(r OutboxRecord) OutboxRecord { r.EventID = "the first event"; return r },
+			code:   "outbox-value-not-of-its-form"},
+		{name: "a record whose state is out of the list of §6a",
+			change: func(r OutboxRecord) OutboxRecord { r.From = AttentionState("in-progress"); return r },
+			code:   "outbox-state-word-unknown"},
+		{name: "a record whose place is out of the file",
+			change: func(r OutboxRecord) OutboxRecord { r.Seq = 0; return r },
+			code:   "outbox-place-not-of-the-file"},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			_, err := lineOfOutboxRecord(what.change(record))
+
+			if !errors.Is(err, ErrOutboxRecordRefused) {
+				t.Fatalf("the line of %s = %v, want %v", what.name, err, ErrOutboxRecordRefused)
+			}
+			if !strings.Contains(err.Error(), what.code) {
+				t.Errorf("the refusal %q does not hold %q, want the code of what is wrong with the record",
+					err, what.code)
+			}
+			if strings.Contains(err.Error(), headOfTheFirst) {
+				t.Errorf("the refusal %q holds the record the transition rests on, want no payload in it", err)
+			}
+		})
+	}
+	t.Run("a transition whose record is not a commit is refused by the state of the task", func(t *testing.T) {
+		statePath, outboxPath := pathsOfATask(t)
+		keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+
+		_, err := RecordPendingEvent(nil, statePath,
+			went(AttentionStands, AttentionAwaitsReview, monday.Add(9*time.Hour), strings.Repeat("z", 40)),
+			runWentOn(1))
+
+		if !errors.Is(err, secret.ErrProtectedFieldInvalid) {
+			t.Fatalf("the transition on a record that is not a commit of the host = %v, want the refusal of the "+
+				"policy of the state: %v", err, secret.ErrProtectedFieldInvalid)
+		}
+		if _, err := os.Stat(outboxPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the outbox of the task is there: %v, want the bound of the state to have been the one that "+
+				"refused it", err)
+		}
+	})
+}
+
+// TestTheConfirmationOfWhatWasToldIsOneListAndOnlyWhatIsLeftOfItIsTried: the confirmation of what
+// was materialized is one call of the road of #243 with one list in it, and it is made against the
+// backlog as it is there now — a name that is in the backlog and is not in the list is a refusal.
+// So a refusal of that kind is not the end of the road: the backlog is read again under the lock
+// of the task, the names of the list that are still in it are worked out of it, and only those are
+// tried once more (docs/DESIGN.md §7h, #243, #247).
+func TestTheConfirmationOfWhatWasToldIsOneListAndOnlyWhatIsLeftOfItIsTried(t *testing.T) {
+	statePath, _ := pathsOfATask(t)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+	// A name of the list that the backlog of the task does not hold: the confirmation is made
+	// against the backlog as it is there now, and it is a refusal of the whole list — which is
+	// what makes the one list visible, because a road that confirmed the names one by one would
+	// have taken the event out of the backlog before it ever met the name that is not there.
+	names := []string{"0f0f0f0f0f0f", event.ID}
+
+	told, err := confirmMaterialized(nil, statePath, names, ConfirmationRounds)
+
+	if err != nil {
+		t.Fatalf("the confirmation of what was materialized returned an error: %v", err)
+	}
+	if len(told) != 1 || told[0] != event.ID {
+		t.Errorf("the confirmation took %v out of the backlog, want the name that was in it: %q", told, event.ID)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 0 {
+		t.Errorf("the backlog of the task holds %v, want the event that was told gone out of it", idsOf(kept))
+	}
+}
+
+// TestAConfirmationThatDoesNotComeToAnEndIsRefusedAsADivergence: the backlog of the task is the
+// only record of what has not been told yet, and an event written into the outbox and left in the
+// backlog is told twice or never. So a materialization that is still holding on to something after
+// the bound of the retries is refused by name — the names that are left, and not the content of
+// anything — and what it wrote is not thrown away, because the file is appended to and never
+// written over (docs/DESIGN.md §7h, #247).
+func TestAConfirmationThatDoesNotComeToAnEndIsRefusedAsADivergence(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+	// The event written into the outbox and not confirmed, as a materializer that was killed
+	// between the two leaves it, and a name in the list that the backlog does not hold: the one
+	// list is refused as a whole, and the only round that is left after the re-reading of the
+	// backlog is spent on nothing, so the materialization is refused.
+	if _, err := materializeInto(statePath, outboxPath); err != nil {
+		t.Fatalf("the part of the road that appends and does not confirm: %v", err)
+	}
+
+	_, err := confirmMaterialized(nil, statePath, []string{"0f0f0f0f0f0f", event.ID}, 1)
+
+	if !errors.Is(err, ErrPendingConfirmDivergence) {
+		t.Fatalf("the confirmation that did not come to an end = %v, want %v", err, ErrPendingConfirmDivergence)
+	}
+	if !strings.Contains(err.Error(), event.ID) {
+		t.Errorf("the refusal %q does not name the event that is left in the backlog, want %q in it",
+			err, event.ID)
+	}
+	// One list, one call: the event is still in the backlog, because the whole list was refused
+	// and nothing of it was taken out under a name nobody checked.
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 {
+		t.Errorf("the backlog of the task holds %v after the refusal, want the event still in it: "+
+			"the confirmation was made with one list", idsOf(kept))
+	}
+	if lines := linesOfOutbox(t, outboxPath); len(lines) != 1 {
+		t.Errorf("the outbox holds %q, want the line that was written before the refusal: nothing is taken out "+
+			"of a file that is only appended to", lines)
+	}
+}
+
+// TestTheMaterializerWritesTheRecordOfTheTaskThroughTheRoadOfTheConfirmation: the state of a task
+// is written by the road of §7h under its own lock, and the materializer of the events of the task
+// writes no field of it with its own hands. Everything but the backlog comes out of the call the
+// same as it went in, and the revision stands where it stood: a confirmation of what was told is
+// not a change of the task (docs/DESIGN.md §7h, #243, #247).
+func TestTheMaterializerWritesTheRecordOfTheTaskThroughTheRoadOfTheConfirmation(t *testing.T) {
+	statePath, outboxPath := pathsOfATask(t)
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+	before := stateOfTheTask(t, statePath)
+
+	if _, err := MaterializePendingEvents(nil, statePath, outboxPath); err != nil {
+		t.Fatalf("MaterializePendingEvents returned an error: %v", err)
+	}
+
+	after := stateOfTheTask(t, statePath)
+	if len(after.PendingEvents) != 0 {
+		t.Errorf("the backlog of the task holds %v, want nothing that was told", idsOf(after))
+	}
+	before.PendingEvents, after.PendingEvents = nil, nil
+	if !reflect.DeepEqual(before, after) {
+		t.Errorf("the record of the task after the materialization is\n%+v\nwant everything but the backlog "+
+			"byte for byte as it was\n%+v", after, before)
+	}
+}
+
+// TestTheOutboxIsNotMadeWithoutTheRecordOfTheTaskItIsAbout: the backlog of a task that was never
+// run is nothing to tell anybody about, and the road that makes a state out of a file that is not
+// there is the road of a state and not this one. So a record of the task that is not there is a
+// refusal, the file of the outbox is not made on the way to it, and a task with nothing to tell
+// anybody about gets no file either — an outbox made for nothing is a folder of empty files a
+// person has to look at (docs.DESIGN.md §7h, #247).
+func TestTheOutboxIsNotMadeWithoutTheRecordOfTheTaskItIsAbout(t *testing.T) {
+	t.Run("a task that was never run", func(t *testing.T) {
+		statePath, outboxPath := pathsOfATask(t)
+
+		_, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the materialization of a task whose record is not there = %v, want %v", err, os.ErrNotExist)
+		}
+		if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the record of the task is there after the refusal: %v, want none made", err)
+		}
+		if _, err := os.Stat(outboxPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the outbox of the task is there after the refusal: %v, want none made", err)
+		}
+	})
+	t.Run("a task with nothing to tell about", func(t *testing.T) {
+		statePath, outboxPath := pathsOfATask(t)
+		keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+		written := read(t, statePath)
+
+		done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+		if err != nil {
+			t.Fatalf("MaterializePendingEvents of an empty backlog returned an error: %v", err)
+		}
+		if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+			t.Errorf("the call reported %+v, want nothing: the backlog of the task holds nothing", done)
+		}
+		if kept := read(t, statePath); kept != written {
+			t.Errorf("the record of the task is\n%s\nwant it\n%s", kept, written)
+		}
+		if _, err := os.Stat(outboxPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the outbox of the task is there: %v, want no file made for nothing", err)
+		}
+	})
+}
+
+// TestTheSchemaOfTheOutboxIsTheSchemaOfTheBacklogAndTheFormat: five of the six fields of a record
+// of the outbox are the fields of a record of the backlog of a task, under the same names the
+// policy of the document of that state gives them, and the sixth is the place of the record in the
+// file. The outbox spells none of the forms out: the names and the kinds are asked of the policy
+// of the document, because two lists of them are two statements about the format and a copy of the
+// list that went from the code is a schema nobody maintains (D-044, docs/DESIGN.md §7e, §7h).
+func TestTheSchemaOfTheOutboxIsTheSchemaOfTheBacklogAndTheFormat(t *testing.T) {
+	record, err := json.Marshal(PendingEvent{
+		ID: "0123456789ab", At: monday, From: AttentionStands, To: AttentionAwaitsReview, Basis: headOfTheFirst,
+	})
+	if err != nil {
+		t.Fatalf("the record of the backlog as a document: %v", err)
+	}
+	var held map[string]json.RawMessage
+	if err := json.Unmarshal(record, &held); err != nil {
+		t.Fatalf("the record of the backlog as a tree: %v", err)
+	}
+	ofTheBacklog := make([]string, 0, len(held))
+	for name := range held {
+		ofTheBacklog = append(ofTheBacklog, name)
+	}
+	slices.Sort(ofTheBacklog)
+	// Every field of the outbox but the place of the record answers to a field of the backlog,
+	// and the field it answers to is named by the path in the schema itself.
+	answered := make([]string, 0, len(outboxSchema)-1)
+	for name, path := range outboxSchema {
+		if name == "seq" {
+			continue
+		}
+		answered = append(answered, name)
+		field, ofTheBacklogRow := strings.CutPrefix(path, "pending_events[].")
+		if !ofTheBacklogRow {
+			t.Errorf("the field %q of the outbox answers to %q, want a field of a record of the backlog", name, path)
+			continue
+		}
+		answered[len(answered)-1] = field
+	}
+	slices.Sort(answered)
+	if !slices.Equal(answered, ofTheBacklog) {
+		t.Errorf("the record of the outbox answers to %v, want the fields of a record of the backlog %v and "+
+			"the place of the record in the file", answered, ofTheBacklog)
+	}
+
+	for name, path := range outboxSchema {
+		what, list, named := secret.ClassOf(secret.DocumentState, path)
+		if !named {
+			t.Errorf("the policy of the document of a task does not name %q for the field %q of the outbox",
+				path, name)
+			continue
+		}
+		switch name {
+		case "seq":
+			if what != "number" {
+				t.Errorf("the place of a record of the outbox is %q, want a number", what)
+			}
+		case "from", "to":
+			if what != "enum" || !sameWords(list, statesOfTheQueue()) {
+				t.Errorf("the states of §6a of the field %q are %q, want the closed list of them %q",
+					name, list, statesOfTheQueue())
+			}
+		default:
+			form, ofThatForm := secret.FormOf(secret.DocumentState, path)
+			if what != "identifier" || !ofThatForm || form == nil {
+				t.Errorf("the field %q of the outbox is %q, want a name the policy holds a form of", name, what)
+			}
+		}
+	}
+}
+
+// TestTwoNamesOfOneLockAreRefusedBeforeEitherLockIsTaken: the lock of a file of crewflow is a
+// file of its own next to it, and two names the machine resolves to one file are one lock whatever
+// they are called. The lock of the outbox is held while the lock of the record of the task is
+// taken, so a pair of them that is one lock is a road that waits for itself for ever — and a test
+// that waited for it would wait for ever too. So the pair is refused before either lock is taken:
+// the refusal comes back at once, and the record of the task and the file beside it are what they
+// were — the backlog is whole and nothing was appended (R1, F251-1, docs/DESIGN.md §7h).
+func TestTwoNamesOfOneLockAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	for _, what := range []struct {
+		name   string
+		outbox func(t *testing.T, statePath string) string
+	}{
+		{name: "the same name twice", outbox: theSameName},
+		{name: "one folder under two names", outbox: throughASecondNameOfTheFolder},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, _ := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			outboxPath := what.outbox(t, statePath)
+			before := read(t, statePath)
+
+			done, err := withinTheRun(t, func() (Materialized, error) {
+				return MaterializePendingEvents(nil, statePath, outboxPath)
+			})
+
+			if !errors.Is(err, ErrOutboxLockAlias) {
+				t.Fatalf("the materialization of the record of the task under %s = %v, want %v",
+					what.name, err, ErrOutboxLockAlias)
+			}
+			if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+				t.Errorf("the call reported %+v, want nothing: the pair of names is refused before "+
+					"either lock is taken", done)
+			}
+			for _, path := range []string{statePath, outboxPath} {
+				if kept := read(t, path); kept != before {
+					t.Errorf("the file under %s is\n%s\nwant it byte for byte as it was\n%s",
+						filepath.Base(path), kept, before)
+				}
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it: a refused pair "+
+					"of names wrote nothing", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
+// TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIsTaken: the alias of a
+// folder is not only a folder that is there — the outbox of a task is a file of a folder that has
+// not been made yet, and two names that share a symlinked prefix and an absent suffix folder are
+// one lock as surely as two names of a folder that is there. Resolving the folder of a name that
+// is not there says nothing and says it quietly: the resolution fails, the failure is dropped, and
+// the two names look different, while the first thing the road does afterwards is make that folder
+// — through the symlink, under both names, once — and then take one lock twice (F251-1, F251-2).
+//
+// So the pair is refused before either lock is taken and before the folder is made: the refusal
+// comes back at once, and nothing is there afterwards — no folder of the task under either name,
+// no record of the task, no outbox, no lock file of either of them, and no backlog written out of
+// a record that was not there (docs/DESIGN.md §7h).
+func TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	real, second := filepath.Join(home, "real"), filepath.Join(home, "the-same-folder-under-another-name")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("make the folder the record of the task stands in: %v", err)
+	}
+	if err := os.Symlink(real, second); err != nil {
+		t.Fatalf("make the second name of that folder: %v", err)
+	}
+	statePath := filepath.Join(real, "not-created", "state.json")
+	outboxPath := filepath.Join(second, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockAlias) {
+		t.Fatalf("the materialization of a record under a folder that is not there, named twice = %v, "+
+			"want %v", err, ErrOutboxLockAlias)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: the pair of names is refused before either lock "+
+			"and before the folder of either of them is made", done)
+	}
+	for _, folder := range []string{filepath.Join(real, "not-created"), filepath.Join(second, "not-created")} {
+		if _, err := os.Stat(folder); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the folder %q is there after the refusal: %v, want the folder of the task made by "+
+				"neither lock to be the one thing this road did not do", folder, err)
+		}
+	}
+	// The folder the record of the task stands in holds nothing, and the folder of the test holds
+	// nothing but the two names it was given: no record of the task, no outbox and no lock file of
+	// either of them was made.
+	for folder, want := range map[string][]string{
+		real: {},
+		home: {"real", "the-same-folder-under-another-name"},
+	} {
+		if names := namesIn(t, folder); !slices.Equal(names, want) {
+			t.Errorf("the folder %q holds %q, want %q", folder, names, want)
+		}
+	}
+}
+
+// TestANameThatPointsAtNothingIsRefusedBeforeEitherLockIsTaken: a name of a folder that is there
+// and that the machine will not resolve is not a folder that has not been made yet, and telling
+// the two apart is the whole of it. A symlink that points at a target nobody made is there — it is
+// there and says nothing — and a walk that reads the refused resolution of it as "not there yet"
+// keeps that name as it was written, and the pair then looks like two different names.
+//
+// On the code before this step the road went on from there, and what it met depended on which of
+// the two names was the one that pointed at nothing: with the outbox named through it, `MkdirAll`
+// of its folder failed on the spot, before a lock was opened; with the record of the task named
+// through it and the outbox named by the target itself, `MkdirAll` made the folder of the target and
+// opened and took the lock of the outbox there, and the lock of the record of the task, taken
+// through the name that points at that target, was that same lock — and the road waited for itself
+// (the pair of that shape is pinned by the next test). Either way the refusal belonged here, before
+// the lock, and was not typed (F251-3).
+//
+// So the name is refused before either lock: it is the refusal of names nobody could compare and
+// not the refusal of a pair that is one lock, and afterwards the folder the record of the task
+// stands in holds what it held — the record with its event in it and no outbox, no lock file and no
+// folder — and the name that points at nothing is still a name and not a folder (F251-3,
+// docs/DESIGN.md §7h).
+func TestANameThatPointsAtNothingIsRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	real := filepath.Join(home, "real")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("make the folder the record of the task stands in: %v", err)
+	}
+	statePath := filepath.Join(real, "state.json")
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+	// A name of a folder that points at a folder nobody made: it is there, and it says nothing.
+	outboxPath := filepath.Join(home, "a-name-that-points-at-nothing", "outbox.jsonl")
+	if err := os.Symlink(filepath.Join(home, "not-there"), filepath.Dir(outboxPath)); err != nil {
+		t.Fatalf("make the name that points at nothing: %v", err)
+	}
+	written, inTheFolder, inTheTest := read(t, statePath), namesIn(t, real), namesIn(t, home)
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization into a name that points at nothing = %v, want %v",
+			err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be resolved", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: one of the two names was never resolved", done)
+	}
+	if kept := read(t, statePath); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant it byte for byte as it was\n%s",
+			kept, written)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+		kept.PendingEvents[0].ID != event.ID {
+		t.Errorf("the backlog of the task holds %v, want the event %q whole in it: a name that points at "+
+			"nothing took nothing out of it", idsOf(kept), event.ID)
+	}
+	if names := namesIn(t, real); !slices.Equal(names, inTheFolder) {
+		t.Errorf("the folder %q holds %q, want %q: a refused name takes no lock and makes nothing",
+			real, names, inTheFolder)
+	}
+	if names := namesIn(t, home); !slices.Equal(names, inTheTest) {
+		t.Errorf("the folder %q holds %q, want %q: a refused name makes no folder of the name that "+
+			"points at nothing", home, names, inTheTest)
+	}
+	// The name is still the name it was: nothing made a folder of it and nothing took it for one.
+	resolved, err := os.Lstat(filepath.Dir(outboxPath))
+	if err != nil {
+		t.Fatalf("the name that points at nothing after the refusal: %v", err)
+	}
+	if resolved.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("the name that pointed at nothing is now %v, want the symlink it was", resolved.Mode())
+	}
+}
+
+// TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken: the two names of one lock
+// are told apart by resolving what the machine can resolve, and there are names it cannot resolve
+// at all — a folder that points at itself resolves to nothing at any depth, and a folder the run
+// may not go into resolves to nothing either. A refusal to compare two such names is not a pair of
+// different names: it is two names nobody may say anything about, and a road that went on would
+// make one of them and take its lock on the strength of a comparison that was never made. So it is
+// refused, and named apart from the refusal of a pair that is one lock, because a caller has a
+// different thing to do about each of them (F251-2, docs/DESIGN.md §7h).
+func TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	first, second := filepath.Join(home, "a-folder-that-points-at-the-other-one"),
+		filepath.Join(home, "the-folder-it-points-at")
+	if err := os.Symlink(second, first); err != nil {
+		t.Fatalf("make the first of two folders that point at each other: %v", err)
+	}
+	if err := os.Symlink(first, second); err != nil {
+		t.Fatalf("make the second of two folders that point at each other: %v", err)
+	}
+	statePath := filepath.Join(first, "not-created", "state.json")
+	outboxPath := filepath.Join(second, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization into names the machine cannot resolve = %v, want %v",
+			err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be told apart", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: nothing was resolved and nothing was taken", done)
+	}
+	if names := namesIn(t, home); len(names) != 2 {
+		t.Errorf("the folder of the test holds %q, want the two folders and nothing else", names)
+	}
+}
+
+// TestTheRecordNamedThroughANameThatPointsAtNothingAndTheOutboxNamedByItsTargetIsRefusedBefore
+// EitherLockIsTaken: the pair that does not only fail late but waits for itself. The record of the
+// task is named through a name that points at a target nobody made, and the outbox of the task is
+// named by that target itself with a folder under it that is not there either — two names that are
+// the same words and two files, until the road goes on and makes the one folder: `MkdirAll` of the
+// lock of the outbox creates `future-target/not-created`, opens the lock of the outbox there and
+// takes it, and then the lock of the record of the task, whose name leads through the symlink to
+// the same folder and the same file, is that lock. The road holds the first and asks for the second,
+// and never comes back.
+//
+// So the refusal is here, before the first lock and before the folder is made: prompt, typed
+// `outbox-lock-unresolved` and not the refusal of a pair that is one lock, and afterwards the target
+// of the name is not there at all — no folder under it, no record of the task, no outbox, no lock
+// file of either of them (F251-3, docs/DESIGN.md §7h).
+func TestTheRecordNamedThroughANameThatPointsAtNothingAndTheOutboxNamedByItsTargetIsRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	target, link := filepath.Join(home, "future-target"), filepath.Join(home, "a-name-that-points-at-the-target")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("make the name that points at a folder nobody made: %v", err)
+	}
+	statePath := filepath.Join(link, "not-created", "state.json")
+	outboxPath := filepath.Join(target, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization of a record named through a name that points at nothing = %v, "+
+			"want %v", err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be resolved", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: nothing was resolved and nothing was taken", done)
+	}
+	for _, folder := range []string{target, filepath.Join(target, "not-created")} {
+		if _, err := os.Stat(folder); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%q is there after the refusal: %v, want the road to have taken no lock and made "+
+				"no folder of the target of a name that points at nothing", folder, err)
+		}
+	}
+	// The folder of the test holds the one name and nothing else: no record, no outbox and no lock
+	// file of either of them was made anywhere under it.
+	if names := namesIn(t, home); !slices.Equal(names, []string{"a-name-that-points-at-the-target"}) {
+		t.Errorf("the folder of the test holds %q, want the one name of the target and nothing else", names)
+	}
+}
+
+// namesIn are the names of what a folder holds, in the order a person reads them in, so that a
+// refusal of a test says what is in it and not only how much of it.
+func namesIn(t *testing.T, folder string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		t.Fatalf("read %q: %v", folder, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
+// withinTheRun is the answer of a road that has to come back, and a failure of the test where it
+// does not: a call that waits for a lock it holds itself never answers, and a test that waited
+// for it would wait for ever as well (F251-1).
+func withinTheRun(t *testing.T, road func() (Materialized, error)) (Materialized, error) {
+	t.Helper()
+	answers := make(chan struct {
+		done Materialized
+		err  error
+	}, 1)
+	go func() {
+		done, err := road()
+		answers <- struct {
+			done Materialized
+			err  error
+		}{done, err}
+	}()
+	select {
+	case answered := <-answers:
+		return answered.done, answered.err
+	case <-time.After(10 * time.Second):
+		t.Fatal("the road did not come back in ten seconds: it waits for a lock it holds itself")
+		return Materialized{}, nil
+	}
+}
+
+// theSameName is the path of the record of a task as the outbox of that task: one file under one
+// name, and one lock of it (F251-1).
+func theSameName(_ *testing.T, path string) string { return path }
+
+// throughASecondNameOfTheFolder is the path of the record of a task named through a folder that is
+// another name of the folder it stands in: `/var` and `/private/var` on a machine of macOS are one
+// folder under two names, and so is a symlink a person made — a lock is one file however many names
+// point at it (F251-1).
+func throughASecondNameOfTheFolder(t *testing.T, path string) string {
+	t.Helper()
+	folder := filepath.Join(filepath.Dir(path), "the-same-folder-under-another-name")
+	if err := os.Symlink(filepath.Dir(path), folder); err != nil {
+		t.Fatalf("make the second name of the folder of the record of the task: %v", err)
+	}
+	return filepath.Join(folder, filepath.Base(path))
+}
+
+// TestAFileOfTheOutboxThatStandsOneNameOfAnEventOnTwoLinesIsRefusedWhole: the file is one line per
+// event, and a name of an event in it once — so a file that stands that name on two of its lines
+// is not a file of this format, whichever of the two lines is the event. The road reads the file
+// before it looks at the backlog, and it must refuse it there: a lookup that takes the first line
+// under a name would take the pending event for told on the strength of that line and empty the
+// backlog of it, while the second line says another thing about the same name — and the backlog is
+// the only record of what has not been told yet (F251-4).
+//
+// The two shapes are pinned here: the same news twice, and another news under the same name. Both
+// leave the file byte for byte as it was and the event whole in the backlog of the task, and
+// nothing is confirmed (docs/DESIGN.md §7h).
+func TestAFileOfTheOutboxThatStandsOneNameOfAnEventOnTwoLinesIsRefusedWhole(t *testing.T) {
+	for _, what := range []struct {
+		name   string
+		second func(event PendingEvent) []byte
+	}{
+		{name: "the same news twice",
+			second: func(event PendingEvent) []byte { return lineOfAnEvent(t, 2, event, nil) }},
+		{name: "another news under the same name",
+			second: func(event PendingEvent) []byte {
+				return lineOfAnEvent(t, 2, event, map[string]any{"basis": headOfTheSecond})
+			}},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			// The first line under the name is the news of the event of the backlog, so the
+			// line below it is the one that hides behind it.
+			written := string(append(lineOfAnEvent(t, 1, event, nil), what.second(event)...))
+			if err := writeFile(outboxPath, []byte(written)); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+			state := read(t, statePath)
+
+			done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, ErrOutboxRecordTwice) {
+				t.Fatalf("the materialization into a file with %s = %v, want %v",
+					what.name, err, ErrOutboxRecordTwice)
+			}
+			if !strings.Contains(err.Error(), event.ID) {
+				t.Errorf("the refusal %q does not name the event whose name stands on two lines, want %q",
+					err, event.ID)
+			}
+			if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+				t.Errorf("the call reported %+v, want nothing: the file was refused before the backlog was "+
+					"looked at", done)
+			}
+			if kept := read(t, outboxPath); kept != written {
+				t.Errorf("the outbox after the refusal is\n%q\nwant it byte for byte as it was\n%q", kept, written)
+			}
+			if kept := read(t, statePath); kept != state {
+				t.Errorf("the record of the task after the refusal is\n%s\nwant it\n%s", kept, state)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it: the backlog is "+
+					"not emptied on a name that stands on two lines", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
+// TestThePlacesOfTheRecordsOfAnOutboxGoUpAndMayLeaveAHole: the road takes one more than the highest
+// place the file holds, so a place that repeats or that goes back is not a place of this file —
+// and nothing in the format says the places of a file stand without a gap, so a hole is not a
+// refusal either. Both are read at the file, before the backlog is looked at, and the next place of
+// a file with a hole in it is counted from the highest of its places (F251-4, docs/DESIGN.md §7h).
+func TestThePlacesOfTheRecordsOfAnOutboxGoUpAndMayLeaveAHole(t *testing.T) {
+	t.Run("a hole in the places of a file is not a refusal", func(t *testing.T) {
+		statePath, outboxPath := pathsOfATask(t)
+		keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+		event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+			monday.Add(9*time.Hour), headOfTheFirst))
+		held := lineAtPlace(t, 1, map[string]any{"event_id": "0123456789ac"})
+		if err := writeFile(outboxPath, append(held, lineAtPlace(t, 7, map[string]any{"event_id": "0123456789ad"})...)); err != nil {
+			t.Fatalf("write the outbox of the task: %v", err)
+		}
+
+		done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+		if err != nil {
+			t.Fatalf("the materialization into a file with a hole in its places returned an error: %v", err)
+		}
+		if len(done.Written) != 1 || done.Written[0].Seq != 8 {
+			t.Fatalf("the call wrote %v, want one record at the place after the highest one the file holds",
+				done.Written)
+		}
+		if len(done.Told) != 1 || done.Told[0] != event.ID {
+			t.Errorf("the call confirmed %v, want the name of the event it wrote: %q", done.Told, event.ID)
+		}
+	})
+	for _, what := range []struct {
+		name    string
+		places  []int64
+		code    string
+		refusal error
+	}{
+		{name: "a place that repeats", places: []int64{3, 3}, code: "outbox-place-not-above-the-one-before",
+			refusal: ErrOutboxCorrupt},
+		{name: "a place that goes back", places: []int64{3, 2}, code: "outbox-place-not-above-the-one-before",
+			refusal: ErrOutboxCorrupt},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			file := append(lineAtPlace(t, what.places[0], map[string]any{"event_id": "0123456789ac"}),
+				lineAtPlace(t, what.places[1], map[string]any{"event_id": "0123456789ad"})...)
+			if err := writeFile(outboxPath, file); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+			state := read(t, statePath)
+
+			_, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, what.refusal) {
+				t.Fatalf("the materialization into a file with %s = %v, want %v", what.name, err, what.refusal)
+			}
+			if !strings.Contains(err.Error(), what.code) {
+				t.Errorf("the refusal %q does not hold %q, want the code of what is wrong with the place",
+					err, what.code)
+			}
+			if kept := read(t, outboxPath); kept != string(file) {
+				t.Errorf("the outbox after the refusal is\n%q\nwant it byte for byte as it was\n%q",
+					kept, file)
+			}
+			if kept := read(t, statePath); kept != state {
+				t.Errorf("the record of the task after the refusal is\n%s\nwant it\n%s", kept, state)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
+// pathsOfATask is the record of a task and the outbox of that task, both in the folder of the test
+// and nowhere else. Which folder of the machine holds the outbox of a task of a project is a
+// decision this step does not make, and a test that took the folder of a live project would be a
+// test writing into what a person keeps (docs/DESIGN.md §7h, #247).
+func pathsOfATask(t *testing.T) (statePath, outboxPath string) {
+	t.Helper()
+	home := t.TempDir()
+	return newJournals(home, "naghuale-crewflow").StatePath(43), filepath.Join(home, "outbox", "43.jsonl")
+}
+
+// linesOfOutbox is the lines the file of the outbox of a task holds, in the order it holds them,
+// and the test fails where the file does not end in the line break that commits the last of them:
+// a line per event, and nothing else in the file.
+func linesOfOutbox(t *testing.T, path string) []string {
+	t.Helper()
+	data := []byte(read(t, path))
+	if len(data) == 0 {
+		return nil
+	}
+	if !bytes.HasSuffix(data, []byte("\n")) {
+		t.Fatalf("the outbox of the task does not end in a line break: %q", data)
+	}
+	return strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+}
+
+// lineWithFields is one line of the file of the outbox of a task with the fields named changed or
+// taken out of it. A line of the file is written by the marshaller of the record, and a test of the
+// schema of the file writes it the same way and then says what is wrong with it.
+func lineWithFields(t *testing.T, changes map[string]any, taken ...string) []byte {
+	t.Helper()
+	return lineAtPlace(t, 1, changes, taken...)
+}
+
+// lineOfAnEvent is one line of the file of the outbox of a task about the event named, at the place
+// named, with the fields changed over it. It is written the way the road writes the record of the
+// event, so that a test of what the file says about an event compares it with what the road would
+// have put there.
+func lineOfAnEvent(t *testing.T, place int64, event PendingEvent, changes map[string]any) []byte {
+	t.Helper()
+	ofTheEvent := map[string]any{
+		"event_id": event.ID,
+		"from":     event.From,
+		"to":       event.To,
+		"at":       event.At,
+		"basis":    event.Basis,
+	}
+	for name, value := range changes {
+		ofTheEvent[name] = value
+	}
+	return lineAtPlace(t, place, ofTheEvent)
+}
+
+// lineAtPlace is one line of the file of the outbox of a task at the place named, with the fields
+// named changed or taken out of it. The place is a field of the record like any other, and a test of
+// what the file says about the places of its records writes it the same way.
+func lineAtPlace(t *testing.T, place int64, changes map[string]any, taken ...string) []byte {
+	t.Helper()
+	record, err := json.Marshal(OutboxRecord{
+		Seq:     place,
+		EventID: "0123456789ab",
+		From:    AttentionStands,
+		To:      AttentionAwaitsReview,
+		At:      monday,
+		Basis:   headOfTheFirst,
+	})
+	if err != nil {
+		t.Fatalf("the record of the outbox as a line: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(record, &fields); err != nil {
+		t.Fatalf("the record of the outbox as a tree: %v", err)
+	}
+	for name, value := range changes {
+		fields[name] = value
+	}
+	for _, name := range taken {
+		delete(fields, name)
+	}
+	line, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("the line of the outbox with %v and without %v: %v", changes, taken, err)
+	}
+	return append(line, '\n')
+}
