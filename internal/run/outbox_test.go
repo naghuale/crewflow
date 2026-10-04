@@ -742,6 +742,118 @@ func TestTwoNamesOfOneLockAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
 	}
 }
 
+// TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIsTaken: the alias of a
+// folder is not only a folder that is there — the outbox of a task is a file of a folder that has
+// not been made yet, and two names that share a symlinked prefix and an absent suffix folder are
+// one lock as surely as two names of a folder that is there. Resolving the folder of a name that
+// is not there says nothing and says it quietly: the resolution fails, the failure is dropped, and
+// the two names look different, while the first thing the road does afterwards is make that folder
+// — through the symlink, under both names, once — and then take one lock twice (F251-1, F251-2).
+//
+// So the pair is refused before either lock is taken and before the folder is made: the refusal
+// comes back at once, and nothing is there afterwards — no folder of the task under either name,
+// no record of the task, no outbox, no lock file of either of them, and no backlog written out of
+// a record that was not there (docs/DESIGN.md §7h).
+func TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	real, second := filepath.Join(home, "real"), filepath.Join(home, "the-same-folder-under-another-name")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("make the folder the record of the task stands in: %v", err)
+	}
+	if err := os.Symlink(real, second); err != nil {
+		t.Fatalf("make the second name of that folder: %v", err)
+	}
+	statePath := filepath.Join(real, "not-created", "state.json")
+	outboxPath := filepath.Join(second, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockAlias) {
+		t.Fatalf("the materialization of a record under a folder that is not there, named twice = %v, "+
+			"want %v", err, ErrOutboxLockAlias)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: the pair of names is refused before either lock "+
+			"and before the folder of either of them is made", done)
+	}
+	for _, folder := range []string{filepath.Join(real, "not-created"), filepath.Join(second, "not-created")} {
+		if _, err := os.Stat(folder); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("the folder %q is there after the refusal: %v, want the folder of the task made by "+
+				"neither lock to be the one thing this road did not do", folder, err)
+		}
+	}
+	// The folder the record of the task stands in holds nothing, and the folder of the test holds
+	// nothing but the two names it was given: no record of the task, no outbox and no lock file of
+	// either of them was made.
+	for folder, want := range map[string][]string{
+		real: {},
+		home: {"real", "the-same-folder-under-another-name"},
+	} {
+		entries, err := os.ReadDir(folder)
+		if err != nil {
+			t.Fatalf("read %q: %v", folder, err)
+		}
+		if names := namesOf(entries); !slices.Equal(names, want) {
+			t.Errorf("the folder %q holds %q, want %q", folder, names, want)
+		}
+	}
+}
+
+// TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken: the two names of one lock
+// are told apart by resolving what the machine can resolve, and there are names it cannot resolve
+// at all — a folder that points at itself resolves to nothing at any depth, and a folder the run
+// may not go into resolves to nothing either. A refusal to compare two such names is not a pair of
+// different names: it is two names nobody may say anything about, and a road that went on would
+// make one of them and take its lock on the strength of a comparison that was never made. So it is
+// refused, and named apart from the refusal of a pair that is one lock, because a caller has a
+// different thing to do about each of them (F251-2, docs/DESIGN.md §7h).
+func TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	first, second := filepath.Join(home, "a-folder-that-points-at-the-other-one"),
+		filepath.Join(home, "the-folder-it-points-at")
+	if err := os.Symlink(second, first); err != nil {
+		t.Fatalf("make the first of two folders that point at each other: %v", err)
+	}
+	if err := os.Symlink(first, second); err != nil {
+		t.Fatalf("make the second of two folders that point at each other: %v", err)
+	}
+	statePath := filepath.Join(first, "not-created", "state.json")
+	outboxPath := filepath.Join(second, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization into names the machine cannot resolve = %v, want %v",
+			err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be told apart", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: nothing was resolved and nothing was taken", done)
+	}
+	if entries, err := os.ReadDir(home); err != nil {
+		t.Fatalf("read the folder of the test: %v", err)
+	} else if len(entries) != 2 {
+		t.Errorf("the folder of the test holds %v, want the two folders and nothing else", namesOf(entries))
+	}
+}
+
+// namesOf are the names of what a folder holds, so that a refusal of a test says what is in it.
+func namesOf(entries []os.DirEntry) []string {
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	return names
+}
+
 // withinTheRun is the answer of a road that has to come back, and a failure of the test where it
 // does not: a call that waits for a lock it holds itself never answers, and a test that waited
 // for it would wait for ever as well (F251-1).

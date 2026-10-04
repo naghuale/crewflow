@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -105,6 +106,13 @@ var (
 	// either file is read — nothing is created, nothing is appended and nothing is confirmed
 	// (R1, F251-1, docs/DESIGN.md §7h).
 	ErrOutboxLockAlias = errors.New("outbox-lock-alias")
+	// ErrOutboxLockUnresolved is the refusal of a pair of names the machine cannot resolve, as
+	// distinct from a pair that is one lock: the nearest folder above them that is there says what
+	// they are, and where there is no such folder to say — a folder that points at itself, a folder
+	// this run may not go into — nothing says that the two names are different, and a road that
+	// went on would make one of them and take its lock on a comparison nobody made. It is named
+	// apart because a caller has a different thing to do about it (F251-2, docs/DESIGN.md §7h).
+	ErrOutboxLockUnresolved = errors.New("outbox-lock-unresolved")
 	// ErrOutboxCorrupt is the refusal of a file of an outbox that the format of it does not
 	// admit: a line that is not a record of it, a field the schema does not name, a value of a
 	// kind or of a form its own field does not hold, a tail of an append that was never
@@ -214,6 +222,10 @@ func MaterializePendingEvents(out *secret.Out, statePath, outboxPath string) (Ma
 // the machine resolves to one file are one lock whatever the two of them are called — and the two
 // locks are taken one after another by this road, the second one while the first one is held, so a
 // pair of them that is one lock is a road that waits for itself (R1, F251-1, docs/DESIGN.md §7h).
+//
+// A pair whose names cannot be resolved is not a pair of different names and is refused apart from
+// one that is one lock (F251-2): two names nobody could compare are not a pair a lock may be taken
+// for.
 func oneLockFor(statePath, outboxPath string) (bool, error) {
 	state, err := asTheMachineNames(statePath)
 	if err != nil {
@@ -226,23 +238,47 @@ func oneLockFor(statePath, outboxPath string) (bool, error) {
 	return state == outbox, nil
 }
 
-// asTheMachineNames is the name of a file as the machine resolves it: the whole path made absolute
-// and cleaned, and the folder of it resolved where the machine can resolve it. `/var` and
-// `/private/var` are one folder under two names on a machine of macOS, and so is a symlink of a
-// person — a lock is one file however many names point at it.
+// asTheMachineNames is the name of a file as the machine resolves it: the nearest folder above it
+// that is there is resolved, and the names below that folder are kept as they are written.
 //
-// What is not resolved is a hard link of a file under two names of it: nothing in the name of a
-// path says it, and opening both files to see whether they are one is not what this check is. The
-// two names of such a file are a mistake of a caller this road cannot see through (F251-1).
+// The nearest folder that is there and not the folder of the file alone, because the file may well
+// not be there yet: the outbox of a task is a file of a folder crewflow has not made, and resolving
+// only the folder of a name that is not there says nothing — the resolution fails, and a failure
+// dropped quietly makes `real/absent/state.json` and `link/absent/state.json` two different names
+// while making the folder under either of them, through the symlink, once, is what puts the two
+// locks on one file (F251-2).
+//
+// What is not resolved is a hard link of a file under two names of it, and a symlink of the file
+// itself rather than of the folder above it: nothing in the name of a path says either, and opening
+// the files to see whether they are one is not what this check is (F251-1).
 func asTheMachineNames(path string) (string, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
 		return "", fmt.Errorf("the name of a file of crewflow made absolute: %w", err)
 	}
-	if resolved, err := filepath.EvalSymlinks(filepath.Dir(absolute)); err == nil {
-		absolute = filepath.Join(resolved, filepath.Base(absolute))
+	folder, below := filepath.Dir(absolute), []string{filepath.Base(absolute)}
+	for {
+		resolved, err := filepath.EvalSymlinks(folder)
+		switch {
+		case err == nil:
+			slices.Reverse(below)
+			return filepath.Join(append([]string{resolved}, below...)...), nil
+		case !errors.Is(err, fs.ErrNotExist):
+			// The nearest folder that is there is there and the machine cannot say what it is
+			// — a folder that points at itself, a folder this run may not go into. Nothing
+			// says that the two names are different either, and the road is not the one that
+			// goes on a name nobody resolved (F251-2).
+			return "", fmt.Errorf("the nearest folder above a file of crewflow that is there is one the "+
+				"machine will not resolve, and two such names cannot be told apart: %q: %w",
+				filepath.Base(folder), ErrOutboxLockUnresolved)
+		}
+		parent := filepath.Dir(folder)
+		if parent == folder {
+			return "", fmt.Errorf("the folder of a file of crewflow is not there and the machine has no "+
+				"folder above it: %w", ErrOutboxLockUnresolved)
+		}
+		below, folder = append(below, filepath.Base(folder)), parent
 	}
-	return absolute, nil
 }
 
 // materializeInto is everything a materializer does under the lock of the outbox: the backlog of
