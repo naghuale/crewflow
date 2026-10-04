@@ -692,6 +692,98 @@ func TestTheSchemaOfTheOutboxIsTheSchemaOfTheBacklogAndTheFormat(t *testing.T) {
 	}
 }
 
+// TestTwoNamesOfOneLockAreRefusedBeforeEitherLockIsTaken: the lock of a file of crewflow is a
+// file of its own next to it, and two names the machine resolves to one file are one lock whatever
+// they are called. The lock of the outbox is held while the lock of the record of the task is
+// taken, so a pair of them that is one lock is a road that waits for itself for ever — and a test
+// that waited for it would wait for ever too. So the pair is refused before either lock is taken:
+// the refusal comes back at once, and the record of the task and the file beside it are what they
+// were — the backlog is whole and nothing was appended (R1, F251-1, docs/DESIGN.md §7h).
+func TestTwoNamesOfOneLockAreRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	for _, what := range []struct {
+		name   string
+		outbox func(t *testing.T, statePath string) string
+	}{
+		{name: "the same name twice", outbox: theSameName},
+		{name: "one folder under two names", outbox: throughASecondNameOfTheFolder},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, _ := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			outboxPath := what.outbox(t, statePath)
+			before := read(t, statePath)
+
+			done, err := withinTheRun(t, func() (Materialized, error) {
+				return MaterializePendingEvents(nil, statePath, outboxPath)
+			})
+
+			if !errors.Is(err, ErrOutboxLockAlias) {
+				t.Fatalf("the materialization of the record of the task under %s = %v, want %v",
+					what.name, err, ErrOutboxLockAlias)
+			}
+			if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+				t.Errorf("the call reported %+v, want nothing: the pair of names is refused before "+
+					"either lock is taken", done)
+			}
+			for _, path := range []string{statePath, outboxPath} {
+				if kept := read(t, path); kept != before {
+					t.Errorf("the file under %s is\n%s\nwant it byte for byte as it was\n%s",
+						filepath.Base(path), kept, before)
+				}
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it: a refused pair "+
+					"of names wrote nothing", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
+// withinTheRun is the answer of a road that has to come back, and a failure of the test where it
+// does not: a call that waits for a lock it holds itself never answers, and a test that waited
+// for it would wait for ever as well (F251-1).
+func withinTheRun(t *testing.T, road func() (Materialized, error)) (Materialized, error) {
+	t.Helper()
+	answers := make(chan struct {
+		done Materialized
+		err  error
+	}, 1)
+	go func() {
+		done, err := road()
+		answers <- struct {
+			done Materialized
+			err  error
+		}{done, err}
+	}()
+	select {
+	case answered := <-answers:
+		return answered.done, answered.err
+	case <-time.After(10 * time.Second):
+		t.Fatal("the road did not come back in ten seconds: it waits for a lock it holds itself")
+		return Materialized{}, nil
+	}
+}
+
+// theSameName is the path of the record of a task as the outbox of that task: one file under one
+// name, and one lock of it (F251-1).
+func theSameName(_ *testing.T, path string) string { return path }
+
+// throughASecondNameOfTheFolder is the path of the record of a task named through a folder that is
+// another name of the folder it stands in: `/var` and `/private/var` on a machine of macOS are one
+// folder under two names, and so is a symlink a person made — a lock is one file however many names
+// point at it (F251-1).
+func throughASecondNameOfTheFolder(t *testing.T, path string) string {
+	t.Helper()
+	folder := filepath.Join(filepath.Dir(path), "the-same-folder-under-another-name")
+	if err := os.Symlink(filepath.Dir(path), folder); err != nil {
+		t.Fatalf("make the second name of the folder of the record of the task: %v", err)
+	}
+	return filepath.Join(folder, filepath.Base(path))
+}
+
 // pathsOfATask is the record of a task and the outbox of that task, both in the folder of the test
 // and nowhere else. Which folder of the machine holds the outbox of a task of a project is a
 // decision this step does not make, and a test that took the folder of a live project would be a

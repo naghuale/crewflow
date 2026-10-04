@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -96,6 +97,14 @@ const (
 // them is worked around: an event refused here is an event nobody may act on as if it had been
 // told.
 var (
+	// ErrOutboxLockAlias is the refusal of a pair of paths whose locks are one lock. The lock of
+	// a file of crewflow is a file of its own next to it, and two names the machine resolves to
+	// one file are one lock whatever they are called: the lock of the outbox is held while the
+	// lock of the record of the task is taken, and a pair that is one lock is a road that waits
+	// for itself for ever. So it is refused before either lock is taken and before a byte of
+	// either file is read — nothing is created, nothing is appended and nothing is confirmed
+	// (R1, F251-1, docs/DESIGN.md §7h).
+	ErrOutboxLockAlias = errors.New("outbox-lock-alias")
 	// ErrOutboxCorrupt is the refusal of a file of an outbox that the format of it does not
 	// admit: a line that is not a record of it, a field the schema does not name, a value of a
 	// kind or of a form its own field does not hold, a tail of an append that was never
@@ -164,12 +173,24 @@ type Materialized struct {
 // never run is nothing to tell anybody about, and a materializer that made one would write a
 // record of a task that does not exist (docs/DESIGN.md §7h, #247).
 //
-// What it refuses is named and is not worked around: an outbox that does not say what the format
-// of it says, a record that does not fit, a name another news is written under, a write that did
-// not come back as it was written, and a backlog that did not let go of what was written. There
-// is no producer here and no adapter of a live project: what a subscriber is told is a later step
-// (docs/DESIGN.md §7h, #247).
+// What it refuses is named and is not worked around: two names whose locks are one lock, an outbox
+// that does not say what the format of it says, a record that does not fit, a name another news is
+// written under, a write that did not come back as it was written, and a backlog that did not let
+// go of what was written. There is no producer here and no adapter of a live project: what a
+// subscriber is told is a later step (docs/DESIGN.md §7h, #247).
 func MaterializePendingEvents(out *secret.Out, statePath, outboxPath string) (Materialized, error) {
+	// Before either lock and before a byte of either file: two names the machine resolves to one
+	// file are one lock whatever they are called, and a road that takes one lock twice waits for
+	// itself for ever (R1, F251-1).
+	one, err := oneLockFor(statePath, outboxPath)
+	if err != nil {
+		return Materialized{}, err
+	}
+	if one {
+		return Materialized{}, fmt.Errorf("the outbox of the task and the record of the task are one file under "+
+			"two names, and the lock of a file is one file whatever the two of them are called, so taking it "+
+			"for both of them is a road that waits for itself for ever: %w", ErrOutboxLockAlias)
+	}
 	done, err := materializeInto(statePath, outboxPath)
 	if err != nil {
 		return done, err
@@ -186,6 +207,42 @@ func MaterializePendingEvents(out *secret.Out, statePath, outboxPath string) (Ma
 			strings.Join(done.Conflicted, ", "), ErrOutboxConflict)
 	}
 	return done, errors.Join(refused, err)
+}
+
+// oneLockFor is whether the lock of the record of a task and the lock of the outbox of that task
+// are one lock. The lock of a file in this project is a file of its own next to it, so two names
+// the machine resolves to one file are one lock whatever the two of them are called — and the two
+// locks are taken one after another by this road, the second one while the first one is held, so a
+// pair of them that is one lock is a road that waits for itself (R1, F251-1, docs/DESIGN.md §7h).
+func oneLockFor(statePath, outboxPath string) (bool, error) {
+	state, err := asTheMachineNames(statePath)
+	if err != nil {
+		return false, err
+	}
+	outbox, err := asTheMachineNames(outboxPath)
+	if err != nil {
+		return false, err
+	}
+	return state == outbox, nil
+}
+
+// asTheMachineNames is the name of a file as the machine resolves it: the whole path made absolute
+// and cleaned, and the folder of it resolved where the machine can resolve it. `/var` and
+// `/private/var` are one folder under two names on a machine of macOS, and so is a symlink of a
+// person — a lock is one file however many names point at it.
+//
+// What is not resolved is a hard link of a file under two names of it: nothing in the name of a
+// path says it, and opening both files to see whether they are one is not what this check is. The
+// two names of such a file are a mistake of a caller this road cannot see through (F251-1).
+func asTheMachineNames(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("the name of a file of crewflow made absolute: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(filepath.Dir(absolute)); err == nil {
+		absolute = filepath.Join(resolved, filepath.Base(absolute))
+	}
+	return absolute, nil
 }
 
 // materializeInto is everything a materializer does under the lock of the outbox: the backlog of
