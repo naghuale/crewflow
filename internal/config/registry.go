@@ -17,6 +17,15 @@ const (
 	// Specified is the status of a key with a value crewflow describes and does
 	// not do: that value is refused, and the registry says which task writes it.
 	Specified Status = "specified"
+	// Configured is the status of a key a project writes down and crewflow reads and
+	// checks, and of which no command outside this package makes use yet: the value is
+	// accepted and it describes a thing that exists, and calling it applied would be a
+	// promise the code does not keep. It is the status of [Environment] and of the file
+	// spaces it describes (docs/ENVIRONMENT-CONFIG.md).
+	//
+	// A key of this status is not an admission to what it names either: a file that says
+	// it works on prod has said a word, and no run happened in prod because of it.
+	Configured Status = "configured"
 )
 
 // Setting is one key of crewflow.toml: the values crewflow applies, the ones it
@@ -32,9 +41,12 @@ type Setting struct {
 	Key string `json:"key"`
 	// Status is what crewflow does with the key.
 	Status Status `json:"status"`
-	// Supported are the values of the key crewflow applies, in the words of the
-	// key itself. A key of no choice — a repository, a command line, a path — has
-	// none: there is nothing to apply, and crewflow reads whatever it says.
+	// Supported are the values of the key crewflow knows, in the words of the key
+	// itself. A key of no choice — a repository, a command line, a path — has
+	// none: there is nothing to apply, and crewflow reads whatever it says. A key of
+	// the status Configured has them too: the file may name these values and crewflow
+	// checks them, and nothing outside this package applies one of them yet, which is
+	// what the status says.
 	Supported []string `json:"supported,omitempty"`
 	// Unwritten are the values of the key that turn on a behaviour of the design
 	// the code does not have.
@@ -213,6 +225,23 @@ var settings = []Setting{
 	// [worktrees] — where the worktree of a task is made, outside the folder of
 	// the person (§8).
 	{Key: "worktrees.root", Status: Supported, Applies: "cfg.Worktrees.Root"},
+
+	// [environment] — the contour of the machine this project is worked on and the two
+	// file spaces crewflow proposes for it (docs/ENVIRONMENT-CONFIG.md).
+	//
+	// The status is Configured and not Supported: the words are read and the folders
+	// around them are checked, and no command outside this package applies one of them
+	// yet — `worktrees.root` and every path a run routes by stay where they were, and
+	// Applies is empty because there is no expression of the runtime to name. It is not
+	// Specified either: nothing here is refused, because a project that says it works on
+	// a contour has said a true thing about its machine, and a promise crewflow cannot
+	// keep is not what [Environment] is.
+	{
+		Key: "environment.contour", Status: Configured,
+		Supported: []string{ContourDev, ContourTest, ContourProd},
+	},
+	{Key: "environment.state_root", Status: Configured},
+	{Key: "environment.worktrees_root", Status: Configured},
 
 	// [network] — how the programs of crewflow reach the network (§7d). The route
 	// is declared here and nothing of it is kept: whether a profile answers today is

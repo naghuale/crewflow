@@ -22,6 +22,7 @@ type Config struct {
 	Executor     Executor     `toml:"executor"`
 	Access       Access       `toml:"access"`
 	Worktrees    Worktrees    `toml:"worktrees"`
+	Environment  Environment  `toml:"environment"`
 	Network      Network      `toml:"network"`
 	Gates        []Gate       `toml:"gates"`
 	CI           CI           `toml:"ci"`
@@ -228,6 +229,40 @@ type Worktrees struct {
 	// Root is the directory that holds one worktree per task. It may start with
 	// "~/" and contain "{repo}".
 	Root string `toml:"root"`
+}
+
+// Environment is the contour of the machine this project is worked on and the file spaces
+// crewflow proposes for it: which of the three contours — dev, test, prod — the runs of
+// this project belong to, and where the state and the worktrees of that contour would
+// live (docs/ENVIRONMENT-CONFIG.md).
+//
+// The whole table is optional, and its absence is not a contour of the design: a project
+// that says nothing is legacy-unclassified, which is not dev, and nothing reclassifies the
+// runs that were there before the key was there.
+//
+// It describes a file space and it grants nothing. No command of the runtime applies a
+// word of it today — the registry says so by the status `configured`
+// (`internal/config/registry.go`, docs/ENVIRONMENT-CONFIG.md) — [Worktrees.Root] and every
+// path a run routes by stay where the file left them, and the ability to compute a root of
+// prod is not an admission to prod and not a run in it.
+type Environment struct {
+	// Contour is "dev", "test" or "prod": the closed list of the words a project says
+	// its contour by. A word of the list nobody defined is refused where the file is read,
+	// and so is a word with a space around it — a contour is one word.
+	Contour string `toml:"contour"`
+	// StateRoot is where the state of this project in this contour would live, such as
+	// "~/spaces/tele-state". It may start with "~/" and contain "{repo}", and it wins
+	// over the root crewflow proposes; empty is not a mistake and means "the one crewflow
+	// proposes". A root of a project is not forbidden for being absolute, and a root that
+	// climbs out of the folder it starts in or is relative to the working directory of a
+	// command is refused (docs/ENVIRONMENT-CONFIG.md).
+	StateRoot string `toml:"state_root"`
+	// WorktreesRoot is where the worktrees of the tasks of this contour would be made,
+	// under the same rules as [Environment.StateRoot].
+	//
+	// It is a proposal and not the routing of a run: where a worktree is made today is
+	// `[worktrees] root`, and this key moves nothing (docs/ENVIRONMENT-CONFIG.md).
+	WorktreesRoot string `toml:"worktrees_root"`
 }
 
 // Network is how the programs of crewflow reach the network: whether directly or
