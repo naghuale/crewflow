@@ -711,6 +711,55 @@ func TestTheCodeOfTheReasonOfAnAttemptSurvivesTheStateOfTheTask(t *testing.T) {
 	}
 }
 
+// TestTheCanaryOfAReasonOfItsOwnIsNotWrittenIntoTheStateOfATask: the
+// reason of an attempt is a word of the canonical list of the codes and
+// then the words of what happened, and a word that is not in the list is
+// a sentence of a run however it is written: one word without a space is
+// not a code of the format by its shape, and a canary in front of a
+// colon is not a code behind it. The state of a task is a file kept for
+// ever that programs read a reason out of, and a canary that stood in
+// the reason of it as a code — a word, no space, no colon — would stand
+// there for ever, and a canary in front of a colon would keep its head
+// (R5-NEW-10, docs/DESIGN.md §6a, §7e, §7h).
+func TestTheCanaryOfAReasonOfItsOwnIsNotWrittenIntoTheStateOfATask(t *testing.T) {
+	const canary = "canaryR5X9"
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	for _, reason := range []string{
+		canary,
+		canary + ": diagnostic",
+	} {
+		withReason := func(current State) (State, error) {
+			started := current
+			started.Number, started.Title, started.Branch = 43, "the run of a task", "crewflow/43-task"
+			return started.NextAttempt(started.NextNumber(), StartOf{
+				Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+				Journal: journals.JournalPath(43, 1),
+			}).Reason(1, reason), nil
+		}
+
+		if _, err := UpdateStateThrough(secret.NewOut(secret.Chosen(canary)...),
+			journals.StatePath(43), withReason); err != nil {
+			t.Fatalf("write the state of the task: %v", err)
+		}
+		written, err := LoadState(journals.StatePath(43))
+		if err != nil {
+			t.Fatalf("read the state of the task: %v", err)
+		}
+		got := written.Attempts[0].Reason
+		if strings.Contains(got, canary) {
+			t.Errorf("the reason in the state of the task is %q, want the canary taken out of it", got)
+		}
+		want := secret.Redacted
+		if reason != canary {
+			want = secret.Redacted + ": diagnostic"
+		}
+		if got != want {
+			t.Errorf("the reason in the state of the task is %q, want %q: a word that is not a code of the format is a sentence of a run",
+				got, want)
+		}
+	}
+}
+
 // TestTheWordsOfTheFormatSurviveTheReportOfARun: a program reads the report of a run to decide
 // what it did, and it decides by the words out of the closed lists of the format — the outcome
 // of the run, the profile of the executor, the code of a reason. Cut out of them, they are not

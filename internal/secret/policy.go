@@ -2,6 +2,7 @@ package secret
 
 import (
 	"maps"
+	"slices"
 	"strings"
 )
 
@@ -123,6 +124,18 @@ var reasonsOfTheGate = []string{
 	"push-rejected", "verify-mismatch", "forge-unavailable",
 }
 
+// codesOfAReason is the canonical list of the codes of a reason: the reasons of
+// the queue of §6a and the two names of the waits of a run that the queue does
+// not read — the window of the keychain of the machine and the habit crewflow
+// has already answered (D-044, docs/DESIGN.md §6a, §7i). A reason of a run is a
+// word of this list and then the words of what happened behind a colon, and a
+// word that is not in the list is a sentence of a run, cut whole with
+// everything behind it: a program reads a reason by the word before the colon,
+// and a word nobody registered is a word nobody can act on (R5-NEW-10,
+// docs/DESIGN.md §6a, §7e).
+var codesOfAReason = append(slices.Clone(reasonsOfAttention),
+	"keychain-approval", "known-habit-repeated")
+
 // resultsOfACriterion is the list of §7c: what one criterion of a pair came out as
 // (`task.Results`), and decisionsOfAPair is the decision the eight of them add up to
 // (`task.Decisions`).
@@ -191,7 +204,7 @@ func resultOfARun() map[string]rule {
 			"error_journal":  ofForm(aPath),
 			"exit_code":      aNumber(),
 			"rejections[]":   freeText(),
-			"reason":         ofWords(),
+			"reason":         ofWords(codesOfAReason...),
 			"outside[]":      freeText(),
 			"change_request": aContainer(),
 			// The change request the run opened, as the host holds it. Its fields carry the
@@ -398,8 +411,8 @@ func standingsOfAProject() map[string]rule {
 		"[].outcome":     ofList(outcomesOfARun...),
 		"[].stalled":     aFlag(),
 		"[].stalled_for": aNumber(),
-		"[].last_step":   freeText(),
-		"[].reason":      ofWords(),
+			"[].last_step":   freeText(),
+			"[].reason":      ofWords(codesOfAReason...),
 		"[].problem":     freeText(),
 		"[].said":        aFlag(),
 	}
@@ -755,7 +768,7 @@ func attemptOfATask() map[string]rule {
 		"outcome":            ofList(outcomesOfARun...),
 		"journal":            ofForm(aPath),
 		"error_journal":      ofForm(aPath),
-		"reason":             ofWords(),
+		"reason":             ofWords(codesOfAReason...),
 		"started_at":         ofForm(aMoment),
 		"ended_at":           ofForm(aMoment),
 		"reported_at":        ofForm(aMoment),

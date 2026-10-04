@@ -75,6 +75,43 @@ func TestTheBoundaryHoldsTheModesOfAnIdentityAndTheReasonOfAPair(t *testing.T) {
 	}
 }
 
+// TestTheBoundaryKnowsEveryCodeOfAReason: a reason of a run is a word of the
+// canonical list of the codes and then the words of what happened behind a colon,
+// and the list is closed: a word out of it is a sentence of a run, cut whole,
+// and not a code a program switches on. The list is the reasons of the queue of
+// §6a and the two names of the waits of a run that the queue does not read —
+// the window of the keychain of the machine and the habit crewflow has already
+// answered — and it is held here word by word against the constants that write
+// it, so that a code added to the code and forgotten in the list is a code the
+// boundary cuts out of a reason (D-044, R5-NEW-10, docs/DESIGN.md §6a, §7e, §7i).
+func TestTheBoundaryKnowsEveryCodeOfAReason(t *testing.T) {
+	want := append(Reasons(), reasonApproval, reasonRepeated)
+	for _, tc := range []struct {
+		doc  secret.Document
+		path string
+	}{
+		{doc: secret.DocumentTaskRun, path: "reason"},
+		{doc: secret.DocumentTaskResume, path: "reason"},
+		{doc: secret.DocumentTaskCheckStalled, path: "[].reason"},
+		{doc: secret.DocumentState, path: "attempts[].reason"},
+	} {
+		t.Run(string(tc.doc)+":"+tc.path, func(t *testing.T) {
+			kind, codes, known := secret.ClassOf(tc.doc, tc.path)
+			if !known {
+				t.Fatalf("the policy of %q does not name %q", tc.doc, tc.path)
+			}
+			if kind != "reason" {
+				t.Fatalf("the field %q of %q is %q, want a reason of the format",
+					tc.path, tc.doc, kind)
+			}
+			if !sameWords(codes, want) {
+				t.Errorf("the codes of %q in %q are %q, want the codes of the code: %q",
+					tc.path, tc.doc, codes, want)
+			}
+		})
+	}
+}
+
 // outcomesOfARun is every outcome of a run in the words the list of the package holds them, and
 // statesOfTheQueue is the same for the states of §6a: the words of the constants are the words
 // the boundary is held against.

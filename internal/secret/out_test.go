@@ -558,6 +558,116 @@ func TestAWordOfTheFormatSurvivesTheValueOfTheRunThatStandsInsideIt(t *testing.T
 	}
 }
 
+// TestAReasonOfItsOwnIsNotACodeOfTheFormat: a reason of a run is a word of the
+// canonical list of the codes and then the words of what happened, and a word that
+// is not in the list is a sentence of a run however it is written: one word
+// without a space is not a code of the format by its shape, and a canary in front
+// of a colon is not a code behind it. Without the list a canary of one word would
+// stand in the reason as a code — no space, no colon — and a canary in front of a
+// colon would keep its head: that is the bypass the list closes (R5-NEW-10,
+// docs/DESIGN.md §6a, §7e).
+func TestAReasonOfItsOwnIsNotACodeOfTheFormat(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		reason string
+	}{
+		{name: "a canary of one word", reason: canaryShort},
+		{name: "a canary of one word and the words behind it",
+			reason: canaryShort + ": diagnostic"},
+		{name: "a canary of the token of an hour", reason: canaryLong},
+		{name: "a canary of the token of an hour and the words behind it",
+			reason: canaryLong + ": the provider refused the run"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := boundaryOf(theCanaries()...)
+			answers := map[Document]any{
+				DocumentTaskRun:          map[string]any{"task": 43, "reason": tc.reason},
+				DocumentTaskResume:       map[string]any{"task": 43, "reason": tc.reason},
+				DocumentTaskCheckStalled: []any{map[string]any{"task": 43, "reason": tc.reason}},
+				DocumentState: map[string]any{"schema": 1, "task": 43, "attempts": []any{
+					map[string]any{"number": 1, "reason": tc.reason}}},
+			}
+			for _, doc := range Documents() {
+				answer, known := answers[doc]
+				if !known {
+					continue
+				}
+				document, err := out.Report(doc, answer)
+				if err != nil {
+					t.Fatalf("Report(%s): %v", doc, err)
+				}
+				if strings.Contains(string(document), canaryShort) ||
+					strings.Contains(string(document), canaryLong) {
+					t.Errorf("the report of %s is %s, want the canary out of the reason",
+						doc, document)
+				}
+			}
+			// A state of a task is written the same way: the reason of an attempt
+			// is published through the boundary of the run before it is written
+			// (docs/DESIGN.md §7e, §7h).
+			document, err := out.StateDocument(answers[DocumentState])
+			if err != nil {
+				t.Fatalf("StateDocument: %v", err)
+			}
+			if strings.Contains(string(document), canaryShort) ||
+				strings.Contains(string(document), canaryLong) {
+				t.Errorf("the state of a task is %s, want the canary out of the reason",
+					document)
+			}
+			for _, channel := range []Channel{ChannelTerminal, ChannelReport,
+				ChannelEvent, ChannelState, ChannelJournal} {
+				said, err := out.Reason(channel, tc.reason)
+				if err != nil {
+					t.Fatalf("Reason(%q): %v", channel, err)
+				}
+				if strings.Contains(said, canaryShort) || strings.Contains(said, canaryLong) {
+					t.Errorf("the reason published to %s is %q, want the canary out of it",
+						channel, said)
+				}
+			}
+		})
+	}
+}
+
+// TestTheCodeOfAReasonOfTheFormatSurvivesTheReasonOfItsOwn: the list of the codes
+// is what keeps the words of a run out of a reason, and it is a list and not a
+// shape: a word of the list is a word of the format wherever a password of a
+// person stands inside it, and the words behind the colon are the words of a run
+// and are cut. A test that cut everything would pass the one above and cut the
+// code out of the reason with it — so the code is here, kept whole with the
+// password inside it, and the words behind it cut (the owner's decision of
+// 03.10: a registered code that matches a short password is kept;
+// R5-NEW-8, R5-NEW-10, docs/DESIGN.md §6a, §7e).
+func TestTheCodeOfAReasonOfTheFormatSurvivesTheReasonOfItsOwn(t *testing.T) {
+	const password = "route"
+	out := boundaryOf(Chosen(password)...)
+	reason := "network-route-unavailable: the route of the project is not reachable"
+
+	document, err := out.Report(DocumentTaskRun, map[string]any{"task": 43, "reason": reason})
+	if err != nil {
+		t.Fatalf("Report(%s): %v", DocumentTaskRun, err)
+	}
+	var read struct {
+		Task   int    `json:"task"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(document, &read); err != nil {
+		t.Fatalf("the report of a run is not a document: %v\n%s", err, document)
+	}
+	if want := "network-route-unavailable: the " + Redacted +
+		" of the project is not reachable"; read.Reason != want {
+		t.Errorf("the reason of the report of a run is %q, want %q", read.Reason, want)
+	}
+	said, err := out.Reason(ChannelState, reason)
+	if err != nil {
+		t.Fatalf("Reason(%q): %v", ChannelState, err)
+	}
+	if want := "network-route-unavailable: the " + Redacted +
+		" of the project is not reachable"; said != want {
+		t.Errorf("the reason published to the state is %q, want %q", said, want)
+	}
+}
+
 // TestWhateverTypesAnAnswerIsMadeOfTheDocumentIsTheSame: the fields of a document are what the
 // schema of the format says, and a caller may hold a field of it in whatever Go type it has —
 // a string, a pointer, a type of its own — and the boundary reads the document and not the types

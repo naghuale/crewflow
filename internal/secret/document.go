@@ -205,9 +205,14 @@ func ofForm(format validator) rule { return rule{class: identifier, format: form
 // said is the rule of a field of the words of a run, of a person or of a program.
 func freeText() rule { return rule{class: text} }
 
-// reason is the rule of the one field of the documents that carries a word of the format and
-// then the words of a run behind it (§6a).
-func ofWords() rule { return rule{class: text, code: true} }
+// reason is the rule of the one field of the documents that carries a word of
+// the format and then the words of a run behind it (§6a, §7i). The words are
+// the canonical list of the codes of a reason: a word of the list is kept
+// whole, and a word out of it is a sentence of a run, cut whole with
+// everything behind it — a program reads a reason by the word before the
+// colon, and a word nobody registered is a word nobody can act on (R5-NEW-10,
+// docs/DESIGN.md §6a, §7e).
+func ofWords(codes ...string) rule { return rule{class: text, code: true, words: codes} }
 
 // counted is the rule of a field that is a number.
 func aNumber() rule { return rule{class: numbered} }
@@ -231,7 +236,7 @@ func ClassOf(doc Document, path string) (string, []string, bool) {
 	switch what.class {
 	case text:
 		if what.code {
-			return "reason", nil, true
+			return "reason", slices.Clone(what.words), true
 		}
 		return "text", nil, true
 	case enumerated:
@@ -306,7 +311,7 @@ func fieldOfDocument(doc Document, rows map[string]rule, node any, path string,
 			return nil, wrongKind(doc, path)
 		}
 		if what.code {
-			return cleanReason(said, cut), nil
+			return cleanReason(said, what.words, cut), nil
 		}
 		return cut(said), nil
 	case enumerated, identifier:
