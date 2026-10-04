@@ -247,11 +247,14 @@ func oneLockFor(statePath, outboxPath string) (bool, error) {
 // that reads a name that is not there as a name to be kept is the only walk that may go on.
 //
 // And it is `lstat`, not the resolution, that says whether a name is there. A symlink that points
-// at a target nobody made is there and says nothing: reading its refused resolution as "not there
-// yet" keeps the name as it was written, the pair then looks like two different names, and the
-// folder of the machine finds out in `MkdirAll` of the lock of the outbox — after that lock has
-// been made and taken. So a name that is there and that the machine will not resolve, and a name
-// this run may not look into, both stop the walk and are refused (F251-3).
+// at a target nobody made is there and says nothing, and reading its refused resolution as "not
+// there yet" keeps the name as it was written: the pair then looks like two different names and the
+// road goes on. What it met there depended on which of the two names was the one that pointed at
+// nothing — named through it, the outbox failed in `MkdirAll` before a lock was opened; named
+// through it, the record of the task, with the outbox named by the target itself, that `MkdirAll`
+// made the folder of the target and took the lock of the outbox there, and the lock of the record
+// was that same lock. A name that is there and that the machine will not resolve, and a name this
+// run may not look into, therefore stop the walk and are refused (F251-3).
 //
 // What is not resolved is a hard link of a file under two names of it, and a symlink of the file
 // itself rather than of the folder above it: nothing in the name of a path says either, and opening

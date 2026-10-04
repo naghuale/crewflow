@@ -802,9 +802,16 @@ func TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIs
 // and that the machine will not resolve is not a folder that has not been made yet, and telling
 // the two apart is the whole of it. A symlink that points at a target nobody made is there — it is
 // there and says nothing — and a walk that reads the refused resolution of it as "not there yet"
-// keeps that name as it was written: the pair then looks like two different names, the road goes
-// on, and it is a folder of the machine that finds out first, in `MkdirAll` of the lock of the
-// outbox, after the lock of that side has been made and taken (F251-3).
+// keeps that name as it was written, and the pair then looks like two different names.
+//
+// On the code before this step the road went on from there, and what it met depended on which of
+// the two names was the one that pointed at nothing: with the outbox named through it, `MkdirAll`
+// of its folder failed on the spot, before a lock was opened; with the record of the task named
+// through it and the outbox named by the target itself, `MkdirAll` made the folder of the target and
+// opened and took the lock of the outbox there, and the lock of the record of the task, taken
+// through the name that points at that target, was that same lock — and the road waited for itself
+// (the pair of that shape is pinned by the next test). Either way the refusal belonged here, before
+// the lock, and was not typed (F251-3).
 //
 // So the name is refused before either lock: it is the refusal of names nobody could compare and
 // not the refusal of a pair that is one lock, and afterwards the folder the record of the task
@@ -908,6 +915,57 @@ func TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken(t *te
 	}
 	if names := namesIn(t, home); len(names) != 2 {
 		t.Errorf("the folder of the test holds %q, want the two folders and nothing else", names)
+	}
+}
+
+// TestTheRecordNamedThroughANameThatPointsAtNothingAndTheOutboxNamedByItsTargetIsRefusedBefore
+// EitherLockIsTaken: the pair that does not only fail late but waits for itself. The record of the
+// task is named through a name that points at a target nobody made, and the outbox of the task is
+// named by that target itself with a folder under it that is not there either — two names that are
+// the same words and two files, until the road goes on and makes the one folder: `MkdirAll` of the
+// lock of the outbox creates `future-target/not-created`, opens the lock of the outbox there and
+// takes it, and then the lock of the record of the task, whose name leads through the symlink to
+// the same folder and the same file, is that lock. The road holds the first and asks for the second,
+// and never comes back.
+//
+// So the refusal is here, before the first lock and before the folder is made: prompt, typed
+// `outbox-lock-unresolved` and not the refusal of a pair that is one lock, and afterwards the target
+// of the name is not there at all — no folder under it, no record of the task, no outbox, no lock
+// file of either of them (F251-3, docs/DESIGN.md §7h).
+func TestTheRecordNamedThroughANameThatPointsAtNothingAndTheOutboxNamedByItsTargetIsRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	target, link := filepath.Join(home, "future-target"), filepath.Join(home, "a-name-that-points-at-the-target")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("make the name that points at a folder nobody made: %v", err)
+	}
+	statePath := filepath.Join(link, "not-created", "state.json")
+	outboxPath := filepath.Join(target, "not-created", "state.json")
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization of a record named through a name that points at nothing = %v, "+
+			"want %v", err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be resolved", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: nothing was resolved and nothing was taken", done)
+	}
+	for _, folder := range []string{target, filepath.Join(target, "not-created")} {
+		if _, err := os.Stat(folder); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%q is there after the refusal: %v, want the road to have taken no lock and made "+
+				"no folder of the target of a name that points at nothing", folder, err)
+		}
+	}
+	// The folder of the test holds the one name and nothing else: no record, no outbox and no lock
+	// file of either of them was made anywhere under it.
+	if names := namesIn(t, home); !slices.Equal(names, []string{"a-name-that-points-at-the-target"}) {
+		t.Errorf("the folder of the test holds %q, want the one name of the target and nothing else", names)
 	}
 }
 
