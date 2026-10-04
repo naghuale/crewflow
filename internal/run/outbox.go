@@ -122,6 +122,14 @@ var (
 	// file cut in the middle is not decided here, and a person has to look at it
 	// (docs/DESIGN.md §7h, #247).
 	ErrOutboxCorrupt = errors.New("outbox-corrupt")
+	// ErrOutboxRecordTwice is the refusal of a file of an outbox that holds the name of one event
+	// on two of its lines. The road writes one line per event and appends and never rewrites, so a
+	// second line under a name that is in the file is not a record of this format; and it is
+	// refused as its own name, apart from a line that is not a record at all, because which of the
+	// two lines is the event is the question a caller has to ask a person about — the backlog of
+	// the task is emptied on a name, and one name with two news under it is not a name anybody may
+	// confirm anything by (F251-4, docs/DESIGN.md §7h).
+	ErrOutboxRecordTwice = errors.New("outbox-record-twice")
 	// ErrOutboxRecordRefused is the refusal of a record this call would write and does not: one
 	// that does not fit the bound of a record of an outbox, or one holding a value the format
 	// does not admit. The bound of the state of a task is the tighter of the two — a
@@ -402,6 +410,12 @@ func readOutbox(path string) ([]OutboxRecord, int64, error) {
 // here to say it either (R6). So a file that does not end in a line break is refused whole, and
 // nothing is appended after such a tail: the tail stays byte for byte as it is, and whether it is
 // to be dropped or cut is not decided in this step (docs.DESIGN.md §7h, #247).
+//
+// The file is read as what it is before it is read as what it holds: one line per event, the name
+// of an event in the file once, and the places of the records of the file above one another. A
+// file that says otherwise is refused here, at the reading of it, so that nothing is appended and
+// nothing is confirmed out of a backlog on the strength of the first of two lines that stand under
+// one name (F251-4).
 func recordsOutOf(data []byte) ([]OutboxRecord, error) {
 	if len(data) == 0 {
 		return nil, nil
@@ -411,12 +425,30 @@ func recordsOutOf(data []byte) ([]OutboxRecord, error) {
 			"it says was never committed and nothing is appended after it: %w", ErrOutboxCorrupt)
 	}
 	var records []OutboxRecord
+	names, place := make(map[string]struct{}, 8), int64(0)
 	for at := 1; len(data) > 0; at++ {
 		line, rest, _ := bytes.Cut(data, []byte("\n"))
 		record, err := recordOfLine(line)
 		if err != nil {
 			return nil, corrupt(at, err)
 		}
+		// One line per event and a name once in the file: a line that stands under a name
+		// already in the file is a second line of one event, and which of the two is the
+		// event is a question the file answers with two answers. The backlog of the task is the
+		// only record of what has not been told yet, and it is not emptied on the first of
+		// them (F251-4).
+		if _, held := names[record.EventID]; held {
+			return nil, twiceAt(at, record.EventID)
+		}
+		// The place of a record is above the place of the line before it, because the road
+		// takes one more than the highest place the file holds — so a place that repeats or
+		// that goes back is not a place of this file. A hole between two of them is not a
+		// refusal: nothing in the format says that the places of a file stand without a gap,
+		// and the next place is counted from the highest of them either way (F251-4).
+		if record.Seq <= place {
+			return nil, corrupt(at, notARecord("outbox-place-not-above-the-one-before"))
+		}
+		names[record.EventID], place = struct{}{}, record.Seq
 		records, data = append(records, record), rest
 	}
 	return records, nil
@@ -632,6 +664,14 @@ func heldByFormat(name, value string) error {
 // else that is worth repeating (docs.DESIGN.md §7e, §7h).
 func notARecord(code string) error { return errors.New(code) }
 
+// twiceAt is the refusal of a file of an outbox that stands one name of an event on two of its
+// lines. It names the line and the name and nothing else: the file holds the payload of the events
+// of a task, and a refusal is a text a person reads and a terminal pastes (docs.DESIGN.md §7e, §7h).
+func twiceAt(at int, id string) error {
+	return fmt.Errorf("line %d of the outbox of the task stands under the name of an event that line above "+
+		"it already stands under, and one event of the outbox is one line of it: %q: %w", at, id, ErrOutboxRecordTwice)
+}
+
 // corrupt is the refusal of a line of the file of an outbox that is not a record of it. It names
 // the line and what about it is wrong, and neither the line nor the path of the file: what is to
 // be done with a file that says something else is a decision of a person and not of this step
@@ -656,8 +696,10 @@ func nextPlace(records []OutboxRecord) int64 {
 }
 
 // recordHeldUnder is the record the outbox of a task holds under a name of an event, and whether
-// it holds one. The file may hold the same name twice — nothing in it forbids two lines of one
-// name — and the reader of the file reaches the first of them first.
+// it holds one. The first of the lines under the name is the record and the only one: a file that
+// held a name twice was refused whole when it was read, before a byte of the backlog was touched
+// (F251-4), so what is compared with a transition of the backlog is that one line and never a
+// choice between two.
 func recordHeldUnder(records []OutboxRecord, id string) (OutboxRecord, bool) {
 	at := slices.IndexFunc(records, func(record OutboxRecord) bool { return record.EventID == id })
 	if at < 0 {

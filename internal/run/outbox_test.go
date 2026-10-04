@@ -1027,6 +1027,147 @@ func throughASecondNameOfTheFolder(t *testing.T, path string) string {
 	return filepath.Join(folder, filepath.Base(path))
 }
 
+// TestAFileOfTheOutboxThatStandsOneNameOfAnEventOnTwoLinesIsRefusedWhole: the file is one line per
+// event, and a name of an event in it once — so a file that stands that name on two of its lines
+// is not a file of this format, whichever of the two lines is the event. The road reads the file
+// before it looks at the backlog, and it must refuse it there: a lookup that takes the first line
+// under a name would take the pending event for told on the strength of that line and empty the
+// backlog of it, while the second line says another thing about the same name — and the backlog is
+// the only record of what has not been told yet (F251-4).
+//
+// The two shapes are pinned here: the same news twice, and another news under the same name. Both
+// leave the file byte for byte as it was and the event whole in the backlog of the task, and
+// nothing is confirmed (docs/DESIGN.md §7h).
+func TestAFileOfTheOutboxThatStandsOneNameOfAnEventOnTwoLinesIsRefusedWhole(t *testing.T) {
+	for _, what := range []struct {
+		name   string
+		second func(event PendingEvent) []byte
+	}{
+		{name: "the same news twice",
+			second: func(event PendingEvent) []byte { return lineOfAnEvent(t, 2, event, nil) }},
+		{name: "another news under the same name",
+			second: func(event PendingEvent) []byte {
+				return lineOfAnEvent(t, 2, event, map[string]any{"basis": headOfTheSecond})
+			}},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			// The first line under the name is the news of the event of the backlog, so the
+			// line below it is the one that hides behind it.
+			written := string(append(lineOfAnEvent(t, 1, event, nil), what.second(event)...))
+			if err := writeFile(outboxPath, []byte(written)); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+			state := read(t, statePath)
+
+			done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, ErrOutboxRecordTwice) {
+				t.Fatalf("the materialization into a file with %s = %v, want %v",
+					what.name, err, ErrOutboxRecordTwice)
+			}
+			if !strings.Contains(err.Error(), event.ID) {
+				t.Errorf("the refusal %q does not name the event whose name stands on two lines, want %q",
+					err, event.ID)
+			}
+			if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+				t.Errorf("the call reported %+v, want nothing: the file was refused before the backlog was "+
+					"looked at", done)
+			}
+			if kept := read(t, outboxPath); kept != written {
+				t.Errorf("the outbox after the refusal is\n%q\nwant it byte for byte as it was\n%q", kept, written)
+			}
+			if kept := read(t, statePath); kept != state {
+				t.Errorf("the record of the task after the refusal is\n%s\nwant it\n%s", kept, state)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it: the backlog is "+
+					"not emptied on a name that stands on two lines", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
+// TestThePlacesOfTheRecordsOfAnOutboxGoUpAndMayLeaveAHole: the road takes one more than the highest
+// place the file holds, so a place that repeats or that goes back is not a place of this file —
+// and nothing in the format says the places of a file stand without a gap, so a hole is not a
+// refusal either. Both are read at the file, before the backlog is looked at, and the next place of
+// a file with a hole in it is counted from the highest of its places (F251-4, docs/DESIGN.md §7h).
+func TestThePlacesOfTheRecordsOfAnOutboxGoUpAndMayLeaveAHole(t *testing.T) {
+	t.Run("a hole in the places of a file is not a refusal", func(t *testing.T) {
+		statePath, outboxPath := pathsOfATask(t)
+		keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+		event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+			monday.Add(9*time.Hour), headOfTheFirst))
+		held := lineAtPlace(t, 1, map[string]any{"event_id": "0123456789ac"})
+		if err := writeFile(outboxPath, append(held, lineAtPlace(t, 7, map[string]any{"event_id": "0123456789ad"})...)); err != nil {
+			t.Fatalf("write the outbox of the task: %v", err)
+		}
+
+		done, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+		if err != nil {
+			t.Fatalf("the materialization into a file with a hole in its places returned an error: %v", err)
+		}
+		if len(done.Written) != 1 || done.Written[0].Seq != 8 {
+			t.Fatalf("the call wrote %v, want one record at the place after the highest one the file holds",
+				done.Written)
+		}
+		if len(done.Told) != 1 || done.Told[0] != event.ID {
+			t.Errorf("the call confirmed %v, want the name of the event it wrote: %q", done.Told, event.ID)
+		}
+	})
+	for _, what := range []struct {
+		name    string
+		places  []int64
+		code    string
+		refusal error
+	}{
+		{name: "a place that repeats", places: []int64{3, 3}, code: "outbox-place-not-above-the-one-before",
+			refusal: ErrOutboxCorrupt},
+		{name: "a place that goes back", places: []int64{3, 2}, code: "outbox-place-not-above-the-one-before",
+			refusal: ErrOutboxCorrupt},
+	} {
+		t.Run(what.name, func(t *testing.T) {
+			statePath, outboxPath := pathsOfATask(t)
+			keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+			event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+				monday.Add(9*time.Hour), headOfTheFirst))
+			file := append(lineAtPlace(t, what.places[0], map[string]any{"event_id": "0123456789ac"}),
+				lineAtPlace(t, what.places[1], map[string]any{"event_id": "0123456789ad"})...)
+			if err := writeFile(outboxPath, file); err != nil {
+				t.Fatalf("write the outbox of the task: %v", err)
+			}
+			state := read(t, statePath)
+
+			_, err := MaterializePendingEvents(nil, statePath, outboxPath)
+
+			if !errors.Is(err, what.refusal) {
+				t.Fatalf("the materialization into a file with %s = %v, want %v", what.name, err, what.refusal)
+			}
+			if !strings.Contains(err.Error(), what.code) {
+				t.Errorf("the refusal %q does not hold %q, want the code of what is wrong with the place",
+					err, what.code)
+			}
+			if kept := read(t, outboxPath); kept != string(file) {
+				t.Errorf("the outbox after the refusal is\n%q\nwant it byte for byte as it was\n%q",
+					kept, file)
+			}
+			if kept := read(t, statePath); kept != state {
+				t.Errorf("the record of the task after the refusal is\n%s\nwant it\n%s", kept, state)
+			}
+			if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+				kept.PendingEvents[0].ID != event.ID {
+				t.Errorf("the backlog of the task holds %v, want the event %q whole in it", idsOf(kept), event.ID)
+			}
+		})
+	}
+}
+
 // pathsOfATask is the record of a task and the outbox of that task, both in the folder of the test
 // and nowhere else. Which folder of the machine holds the outbox of a task of a project is a
 // decision this step does not make, and a test that took the folder of a live project would be a
@@ -1057,8 +1198,35 @@ func linesOfOutbox(t *testing.T, path string) []string {
 // schema of the file writes it the same way and then says what is wrong with it.
 func lineWithFields(t *testing.T, changes map[string]any, taken ...string) []byte {
 	t.Helper()
+	return lineAtPlace(t, 1, changes, taken...)
+}
+
+// lineOfAnEvent is one line of the file of the outbox of a task about the event named, at the place
+// named, with the fields changed over it. It is written the way the road writes the record of the
+// event, so that a test of what the file says about an event compares it with what the road would
+// have put there.
+func lineOfAnEvent(t *testing.T, place int64, event PendingEvent, changes map[string]any) []byte {
+	t.Helper()
+	ofTheEvent := map[string]any{
+		"event_id": event.ID,
+		"from":     event.From,
+		"to":       event.To,
+		"at":       event.At,
+		"basis":    event.Basis,
+	}
+	for name, value := range changes {
+		ofTheEvent[name] = value
+	}
+	return lineAtPlace(t, place, ofTheEvent)
+}
+
+// lineAtPlace is one line of the file of the outbox of a task at the place named, with the fields
+// named changed or taken out of it. The place is a field of the record like any other, and a test of
+// what the file says about the places of its records writes it the same way.
+func lineAtPlace(t *testing.T, place int64, changes map[string]any, taken ...string) []byte {
+	t.Helper()
 	record, err := json.Marshal(OutboxRecord{
-		Seq:     1,
+		Seq:     place,
 		EventID: "0123456789ab",
 		From:    AttentionStands,
 		To:      AttentionAwaitsReview,
