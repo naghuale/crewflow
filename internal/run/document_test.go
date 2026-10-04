@@ -238,6 +238,7 @@ func TestTheClosedListOfReasonsHoldsEveryCodeOfTheQueue(t *testing.T) {
 		ReasonChangeMerged, ReasonChangeClosed, ReasonTaskClosed,
 		ReasonConflictWithMain, ReasonNoChecks, ReasonChecksRunning, ReasonWaitedTooLong,
 		ReasonProviderUnavailable, ReasonProviderErrorUnknown, ReasonRouteUnavailable,
+		ReasonWorkUncommitted,
 	}
 	reasons := Reasons()
 	if len(reasons) != len(codes) {

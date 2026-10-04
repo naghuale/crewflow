@@ -377,11 +377,26 @@ func whatWasWritten(t *testing.T, path string) string {
 	lines := strings.SplitAfter(read(t, path), "\n")
 	for i, line := range lines {
 		if !strings.HasPrefix(line, "crewflow: ") {
-			return strings.Join(lines[i:], "")
+			return strings.Join(withoutTheWorkOutsideTheCommits(lines[i:]), "")
 		}
 	}
 	t.Fatalf("the journal %s holds no line of the executor in it, want the lines of crewflow and then what it wrote", path)
 	return ""
+}
+
+// withoutTheWorkOutsideTheCommits is the journal without the one line crewflow writes about
+// the work the run left outside the commits of its branch. It is a line of crewflow and not
+// of the executor wherever it stands, and it stands after what the executor wrote because
+// that is when the work is counted (D-088, docs.DESIGN.md §7a).
+func withoutTheWorkOutsideTheCommits(lines []string) []string {
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.HasPrefix(line, "crewflow: the run left ") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return kept
 }
 
 // TestAStateOfBeforeIsReadAsItIs: a state written before the format was versioned

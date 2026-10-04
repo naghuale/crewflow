@@ -107,6 +107,14 @@ type looking struct {
 // (docs/DESIGN.md §7i).
 const theHead = "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"
 
+// theTree is the tree of the worktree as the snapshot of it writes it, and theSnapshot the
+// commit of that tree: a snapshot is a commit nobody is on, and the machine of a test has
+// to answer with the two of them for a run that took one (D-088, docs/DESIGN.md §7a).
+const (
+	theTree     = "5b2d1e0f9a8c7b6d5e4f3a2b1c0d9e8f7a6b5c4"
+	theSnapshot = "7c3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5"
+)
+
 // answer is what a command of the machine does when it runs.
 type answer struct {
 	stdout string
@@ -164,6 +172,21 @@ func newMachine(t *testing.T) *machine {
 	// the test.
 	m.answers["git rev-parse --git-common-dir"] = answer{stdout: m.git}
 	m.answers["git rev-parse HEAD"] = answer{stdout: theHead}
+	// The two questions a run asks about the work its worktree holds outside the commits
+	// of the branch: the files that were changed and the files that are in the folder and
+	// in no tree at all. Both are empty on the machine of a test, and a run that leaves no
+	// work outside the commits has nothing to record and nothing to snapshot (D-088).
+	m.answers["git diff --name-only -z"] = answer{}
+	m.answers["git ls-files --others --exclude-standard -z"] = answer{}
+	// The snapshot of the work outside the commits is written through an index of its own
+	// and lands in a ref of the repository, and the machine of a test answers those
+	// questions as a real git answers them: a tree, a commit and a ref that is there (D-088).
+	m.answers["git read-tree"] = answer{}
+	m.answers["git add -A --"] = answer{}
+	m.answers["git write-tree"] = answer{stdout: theTree}
+	m.answers["git commit-tree"] = answer{stdout: theSnapshot}
+	m.answers["git update-ref"] = answer{}
+	m.answers["git for-each-ref"] = answer{}
 	m.has(m.repo)
 	return m
 }

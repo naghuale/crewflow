@@ -913,6 +913,10 @@ type try struct {
 	lastAt   time.Time
 	lastStep string
 	reason   string
+	// uncommitted is the work the attempt left in its worktree outside the commits of
+	// its branch, and the snapshot of it that is kept in a ref of the repository
+	// (D-088, §6a).
+	uncommitted *Uncommitted
 }
 
 // machineOfTest fills the home of a test with a machine of two projects: the runs of
@@ -997,6 +1001,9 @@ func put(t *testing.T, home, repo string, number int, title, executor, mode stri
 		}
 		if !attempt.lastAt.IsZero() || attempt.lastStep != "" || attempt.reason != "" {
 			state = state.Alive(state.NextNumber()-1, attempt.lastAt, attempt.lastStep, attempt.reason)
+		}
+		if attempt.uncommitted != nil {
+			state = state.UncommittedWork(state.NextNumber()-1, *attempt.uncommitted)
 		}
 	}
 	keeps(t, journals.StatePath(number), state)
