@@ -411,8 +411,8 @@ func standingsOfAProject() map[string]rule {
 		"[].outcome":     ofList(outcomesOfARun...),
 		"[].stalled":     aFlag(),
 		"[].stalled_for": aNumber(),
-			"[].last_step":   freeText(),
-			"[].reason":      ofWords(codesOfAReason...),
+		"[].last_step":   freeText(),
+		"[].reason":      ofWords(codesOfAReason...),
 		"[].problem":     freeText(),
 		"[].said":        aFlag(),
 	}
