@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -791,13 +792,81 @@ func TestTwoNamesOfOneLockUnderAFolderThatIsNotThereAreRefusedBeforeEitherLockIs
 		real: {},
 		home: {"real", "the-same-folder-under-another-name"},
 	} {
-		entries, err := os.ReadDir(folder)
-		if err != nil {
-			t.Fatalf("read %q: %v", folder, err)
-		}
-		if names := namesOf(entries); !slices.Equal(names, want) {
+		if names := namesIn(t, folder); !slices.Equal(names, want) {
 			t.Errorf("the folder %q holds %q, want %q", folder, names, want)
 		}
+	}
+}
+
+// TestANameThatPointsAtNothingIsRefusedBeforeEitherLockIsTaken: a name of a folder that is there
+// and that the machine will not resolve is not a folder that has not been made yet, and telling
+// the two apart is the whole of it. A symlink that points at a target nobody made is there — it is
+// there and says nothing — and a walk that reads the refused resolution of it as "not there yet"
+// keeps that name as it was written: the pair then looks like two different names, the road goes
+// on, and it is a folder of the machine that finds out first, in `MkdirAll` of the lock of the
+// outbox, after the lock of that side has been made and taken (F251-3).
+//
+// So the name is refused before either lock: it is the refusal of names nobody could compare and
+// not the refusal of a pair that is one lock, and afterwards the folder the record of the task
+// stands in holds what it held — the record with its event in it and no outbox, no lock file and no
+// folder — and the name that points at nothing is still a name and not a folder (F251-3,
+// docs/DESIGN.md §7h).
+func TestANameThatPointsAtNothingIsRefusedBeforeEitherLockIsTaken(t *testing.T) {
+	home := t.TempDir()
+	real := filepath.Join(home, "real")
+	if err := os.MkdirAll(real, 0o700); err != nil {
+		t.Fatalf("make the folder the record of the task stands in: %v", err)
+	}
+	statePath := filepath.Join(real, "state.json")
+	keeps(t, statePath, State{Number: 43, Title: "the run of a task"})
+	event := recorded(t, statePath, went(AttentionStands, AttentionAwaitsReview,
+		monday.Add(9*time.Hour), headOfTheFirst))
+	// A name of a folder that points at a folder nobody made: it is there, and it says nothing.
+	outboxPath := filepath.Join(home, "a-name-that-points-at-nothing", "outbox.jsonl")
+	if err := os.Symlink(filepath.Join(home, "not-there"), filepath.Dir(outboxPath)); err != nil {
+		t.Fatalf("make the name that points at nothing: %v", err)
+	}
+	written, inTheFolder, inTheTest := read(t, statePath), namesIn(t, real), namesIn(t, home)
+
+	done, err := withinTheRun(t, func() (Materialized, error) {
+		return MaterializePendingEvents(nil, statePath, outboxPath)
+	})
+
+	if !errors.Is(err, ErrOutboxLockUnresolved) {
+		t.Fatalf("the materialization into a name that points at nothing = %v, want %v",
+			err, ErrOutboxLockUnresolved)
+	}
+	if errors.Is(err, ErrOutboxLockAlias) {
+		t.Errorf("the refusal %q is the refusal of a pair that is one lock, want the one of names that "+
+			"cannot be resolved", err)
+	}
+	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
+		t.Errorf("the call reported %+v, want nothing: one of the two names was never resolved", done)
+	}
+	if kept := read(t, statePath); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant it byte for byte as it was\n%s",
+			kept, written)
+	}
+	if kept := stateOfTheTask(t, statePath); len(kept.PendingEvents) != 1 ||
+		kept.PendingEvents[0].ID != event.ID {
+		t.Errorf("the backlog of the task holds %v, want the event %q whole in it: a name that points at "+
+			"nothing took nothing out of it", idsOf(kept), event.ID)
+	}
+	if names := namesIn(t, real); !slices.Equal(names, inTheFolder) {
+		t.Errorf("the folder %q holds %q, want %q: a refused name takes no lock and makes nothing",
+			real, names, inTheFolder)
+	}
+	if names := namesIn(t, home); !slices.Equal(names, inTheTest) {
+		t.Errorf("the folder %q holds %q, want %q: a refused name makes no folder of the name that "+
+			"points at nothing", home, names, inTheTest)
+	}
+	// The name is still the name it was: nothing made a folder of it and nothing took it for one.
+	resolved, err := os.Lstat(filepath.Dir(outboxPath))
+	if err != nil {
+		t.Fatalf("the name that points at nothing after the refusal: %v", err)
+	}
+	if resolved.Mode()&fs.ModeSymlink == 0 {
+		t.Errorf("the name that pointed at nothing is now %v, want the symlink it was", resolved.Mode())
 	}
 }
 
@@ -837,15 +906,19 @@ func TestNamesOfALockThatCannotBeResolvedAreRefusedBeforeEitherLockIsTaken(t *te
 	if len(done.Written)+len(done.Told)+len(done.Duplicated)+len(done.Conflicted) != 0 {
 		t.Errorf("the call reported %+v, want nothing: nothing was resolved and nothing was taken", done)
 	}
-	if entries, err := os.ReadDir(home); err != nil {
-		t.Fatalf("read the folder of the test: %v", err)
-	} else if len(entries) != 2 {
-		t.Errorf("the folder of the test holds %v, want the two folders and nothing else", namesOf(entries))
+	if names := namesIn(t, home); len(names) != 2 {
+		t.Errorf("the folder of the test holds %q, want the two folders and nothing else", names)
 	}
 }
 
-// namesOf are the names of what a folder holds, so that a refusal of a test says what is in it.
-func namesOf(entries []os.DirEntry) []string {
+// namesIn are the names of what a folder holds, in the order a person reads them in, so that a
+// refusal of a test says what is in it and not only how much of it.
+func namesIn(t *testing.T, folder string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(folder)
+	if err != nil {
+		t.Fatalf("read %q: %v", folder, err)
+	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		names = append(names, entry.Name())

@@ -108,10 +108,11 @@ var (
 	ErrOutboxLockAlias = errors.New("outbox-lock-alias")
 	// ErrOutboxLockUnresolved is the refusal of a pair of names the machine cannot resolve, as
 	// distinct from a pair that is one lock: the nearest folder above them that is there says what
-	// they are, and where there is no such folder to say — a folder that points at itself, a folder
-	// this run may not go into — nothing says that the two names are different, and a road that
-	// went on would make one of them and take its lock on a comparison nobody made. It is named
-	// apart because a caller has a different thing to do about it (F251-2, docs/DESIGN.md §7h).
+	// they are, and where there is no such folder to say — a name that points at nothing, a folder
+	// that points at itself, a folder this run may not go into — nothing says that the two names
+	// are different, and a road that went on would make one of them and take its lock on a
+	// comparison nobody made. It is named apart because a caller has a different thing to do about
+	// it (F251-2, F251-3, docs/DESIGN.md §7h).
 	ErrOutboxLockUnresolved = errors.New("outbox-lock-unresolved")
 	// ErrOutboxCorrupt is the refusal of a file of an outbox that the format of it does not
 	// admit: a line that is not a record of it, a field the schema does not name, a value of a
@@ -242,11 +243,15 @@ func oneLockFor(statePath, outboxPath string) (bool, error) {
 // that is there is resolved, and the names below that folder are kept as they are written.
 //
 // The nearest folder that is there and not the folder of the file alone, because the file may well
-// not be there yet: the outbox of a task is a file of a folder crewflow has not made, and resolving
-// only the folder of a name that is not there says nothing — the resolution fails, and a failure
-// dropped quietly makes `real/absent/state.json` and `link/absent/state.json` two different names
-// while making the folder under either of them, through the symlink, once, is what puts the two
-// locks on one file (F251-2).
+// not be there yet: the outbox of a task is a file of a folder crewflow has not made, and a walk
+// that reads a name that is not there as a name to be kept is the only walk that may go on.
+//
+// And it is `lstat`, not the resolution, that says whether a name is there. A symlink that points
+// at a target nobody made is there and says nothing: reading its refused resolution as "not there
+// yet" keeps the name as it was written, the pair then looks like two different names, and the
+// folder of the machine finds out in `MkdirAll` of the lock of the outbox — after that lock has
+// been made and taken. So a name that is there and that the machine will not resolve, and a name
+// this run may not look into, both stop the walk and are refused (F251-3).
 //
 // What is not resolved is a hard link of a file under two names of it, and a symlink of the file
 // itself rather than of the folder above it: nothing in the name of a path says either, and opening
@@ -258,26 +263,31 @@ func asTheMachineNames(path string) (string, error) {
 	}
 	folder, below := filepath.Dir(absolute), []string{filepath.Base(absolute)}
 	for {
-		resolved, err := filepath.EvalSymlinks(folder)
+		_, seen := os.Lstat(folder)
 		switch {
-		case err == nil:
-			slices.Reverse(below)
-			return filepath.Join(append([]string{resolved}, below...)...), nil
-		case !errors.Is(err, fs.ErrNotExist):
-			// The nearest folder that is there is there and the machine cannot say what it is
-			// — a folder that points at itself, a folder this run may not go into. Nothing
-			// says that the two names are different either, and the road is not the one that
-			// goes on a name nobody resolved (F251-2).
-			return "", fmt.Errorf("the nearest folder above a file of crewflow that is there is one the "+
-				"machine will not resolve, and two such names cannot be told apart: %q: %w",
+		case errors.Is(seen, fs.ErrNotExist):
+			// The name is not there at all: it is a part of the file that has not been made
+			// yet, and it is kept as it was written.
+			parent := filepath.Dir(folder)
+			if parent == folder {
+				return "", fmt.Errorf("the folder of a file of crewflow is not there and the machine has "+
+					"no folder above it, so the name cannot be resolved: %w", ErrOutboxLockUnresolved)
+			}
+			below, folder = append(below, filepath.Base(folder)), parent
+			continue
+		case seen != nil:
+			return "", fmt.Errorf("the nearest folder above a file of crewflow that is there is one this "+
+				"run may not look into, and two names it cannot compare are not two names it can: %q: %w",
 				filepath.Base(folder), ErrOutboxLockUnresolved)
 		}
-		parent := filepath.Dir(folder)
-		if parent == folder {
-			return "", fmt.Errorf("the folder of a file of crewflow is not there and the machine has no "+
-				"folder above it: %w", ErrOutboxLockUnresolved)
+		resolved, err := filepath.EvalSymlinks(folder)
+		if err != nil {
+			return "", fmt.Errorf("the nearest folder above a file of crewflow is there and the machine "+
+				"will not resolve it — a name that points at nothing, a name that points at itself — and "+
+				"two such names cannot be told apart: %q: %w", filepath.Base(folder), ErrOutboxLockUnresolved)
 		}
-		below, folder = append(below, filepath.Base(folder)), parent
+		slices.Reverse(below)
+		return filepath.Join(append([]string{resolved}, below...)...), nil
 	}
 }
 
