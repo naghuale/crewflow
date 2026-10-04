@@ -165,8 +165,15 @@ func (r *runner) hooksFolder() string {
 // lines git writes to a pre-push hook — the local reference, its two shas and the
 // reference on the host, four words to a line — and refuses every push of anything but
 // the branch of the task, a deletion of it among them: a branch of a run is pushed and
-// fetched, and deleting it is what a rewrite of the history of a task looks like from
-// the host (§7h).
+// fetched, and deleting it is what a rewrite of the history of a task looks like from the
+// host (§7h).
+//
+// The snapshot of the work a run left outside the commits is refused by its own name and
+// before everything else: it is the one ref of this repository that is never to leave it
+// under any push at all, and `git push --mirror` sends every ref of the repository — a
+// person has to be able to tell from the refusal what a mirror was about to do. The work
+// of a run is a protection from a lost folder and not work of the project, and the host
+// has no branch for it, no review of it and no gate over it (D-088, §7a, §7i).
 func prePush(branch string) string {
 	allowed := "refs/heads/" + branch
 	return `#!/bin/sh
@@ -177,6 +184,12 @@ func prePush(branch string) string {
 # this worktree alone, so no other worktree of this repository is touched by it.
 branch='` + allowed + `'
 while read -r local localSHA remote remoteSHA; do
+	case "$remote" in
+	` + checkpoints + `/*)
+		echo "crewflow: the snapshot of the uncommitted work of a run stays on this machine, $remote is not pushed" >&2
+		exit 1
+		;;
+	esac
 	if [ "$local" = '(delete)' ] || [ "$remote" != "$branch" ]; then
 		echo "crewflow: the executor of a task pushes only $branch, not $remote" >&2
 		exit 1

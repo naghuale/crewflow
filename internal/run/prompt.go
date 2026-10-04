@@ -50,6 +50,11 @@ type assignment struct {
 	Deny []string
 	// CommitStyle is how the messages of the commits of this project are written.
 	CommitStyle string
+	// Timeout is how long this attempt may take, as the project writes it: an executor
+	// that is not told the limit of its attempt cannot commit what is finished before it,
+	// and the commit of what is finished is what makes the interruption of a run cost at
+	// most one step of work (D-088, docs/DESIGN.md §7a).
+	Timeout string
 	// Gates is what the project says has to pass before the work is reviewed.
 	Gates string
 }
@@ -106,8 +111,21 @@ func newAssignment(t forge.Task, cfg config.Config, branch, worktree string, pol
 		Read:        policy.Read,
 		Deny:        policy.Deny,
 		CommitStyle: commitStyle(cfg),
+		Timeout:     timeoutOf(cfg),
 		Gates:       gates(cfg.Gates),
 	}
+}
+
+// timeoutOf is how long the attempt may take, as the project writes it. It is said as the
+// project wrote it and not worked out into words: the number in `crewflow.toml` is the
+// number the gates of the project run, and an executor that is told "an hour and a half"
+// where the file says "90m" is an executor that has to trust the sentence more than the
+// file (D-088, docs.DESIGN.md §7a).
+func timeoutOf(cfg config.Config) string {
+	if timeout := strings.TrimSpace(cfg.Executor.Timeout); timeout != "" {
+		return timeout
+	}
+	return "no limit is written in the settings of the project"
 }
 
 // writable is the map of what a run may write in: the worktree of the task and the

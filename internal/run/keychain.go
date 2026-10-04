@@ -200,6 +200,13 @@ func (r *runner) answered(files *AttemptFiles, outcome, event string) {
 //
 // A continuation is not touched: the folder it went on in holds the work of the attempt
 // before it, and that work is the work of the task.
+//
+// A worktree that holds work outside the commits is not taken away at all, and neither is
+// the branch of it: `--force` is here because a run that never started its executor has
+// nothing in the folder to lose, and a folder that does hold work is the one case where
+// that is not what is true. A snapshot of such a work is not what lets the folder go — a
+// snapshot may be incomplete, a path that stays closed is left out of it — and the work of
+// the task is not a folder of a run that never started anyway (D-088, docs/DESIGN.md §7a, §7i).
 func (r *runner) takeRunAway(ctx context.Context) error {
 	if r.req.Continue != "" {
 		return nil
@@ -209,8 +216,19 @@ func (r *runner) takeRunAway(ctx context.Context) error {
 		// The folder of the worktree and the record of it in the repository go together:
 		// `git worktree remove` takes both, and `--force` is here because a run that
 		// does not start its executor has nothing in the folder to lose.
-		if err := r.git(ctx, r.repoDir(), "worktree", "remove", "--force", r.worktree); err != nil {
+		work, _, err := uncommittedOf(ctx, r, r.worktree)
+		switch {
+		case err != nil:
+			// Git could not be asked what the folder holds, and a folder whose contents
+			// are unknown is not a folder to take away.
 			problems = append(problems, err)
+		case work.Any():
+			return fmt.Errorf("the worktree %s holds %d files outside its commits, "+
+				"and the run does not take it away: %w", r.worktree, work.Count(), ErrUncommittedWork)
+		default:
+			if err := r.git(ctx, r.repoDir(), "worktree", "remove", "--force", r.worktree); err != nil {
+				problems = append(problems, err)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		problems = append(problems, fmt.Errorf("the worktree %s: %w", r.worktree, err))

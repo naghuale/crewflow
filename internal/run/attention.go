@@ -138,6 +138,12 @@ const (
 	// ReasonOutOfScope is a run that changed files the task was not to change, which is
 	// found out after the work and not before it (§7c).
 	ReasonOutOfScope = "out-of-scope"
+	// ReasonWorkUncommitted is a run that ended and left work in its worktree outside
+	// the commits of its branch: the work is not in git, it lives in one folder, and a
+	// snapshot of it is a protection from a lost folder and not a commit. It is asked
+	// about before whatever the run ended with, because the work is what is at stake
+	// while the rest of the outcome is what a person reads in a journal (D-088, §7a).
+	ReasonWorkUncommitted = "work-uncommitted"
 	// ReasonNoProgress is a run that stands: the reason of the silence is unknown, and
 	// that is what makes it a thing to look into (AQ-002).
 	ReasonNoProgress = "no-progress"
@@ -1089,8 +1095,12 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 	case Running, Stalled:
 		// A run that is going is in the queue in two cases only, and which of the two it is
 		// does not depend on how long it has been: a run that stands because nobody knows
-		// why, and a run that waits because crewflow does (AQ-001, AQ-008).
+		// why, and a run that waits because crewflow does (AQ-001, AQ-008). An attempt
+		// that has ended with its work outside the commits is in the queue whatever the
+		// silence of the run was (D-088, §6a).
 		switch {
+		case endedRun(last) && last.Uncommitted != nil:
+			one.uncommitted(last)
 		case silence.Reason != "":
 			one.waits(silence)
 		case silence.standing(env.StallAfter):
@@ -1099,7 +1109,14 @@ func AttentionOf(env AttentionEnv, repo string, state State, facts HostFacts) (A
 			return Attention{}, false
 		}
 	case Interrupted:
-		one.stopped(last)
+		// A run a person stopped with the work outside the commits is asked about the work
+		// first: the person who stopped it is looking at the queue, and the work is what
+		// the folder holds (D-088, §6a).
+		if last.Uncommitted != nil {
+			one.uncommitted(last)
+		} else {
+			one.stopped(last)
+		}
 	case Blocked, BlockedPermission, BlockedSecret:
 		one.refused(last, silence, state.Checkpoint)
 	default:
@@ -1180,6 +1197,21 @@ func (a *Attention) stands(silence Stall) {
 	a.Next = "look into what the run is standing at"
 }
 
+// uncommitted is a run that ended with work in its worktree outside the commits of its
+// branch. The work is not in git, it lives in one folder, and it is the orchestrator who
+// decides whether it goes on: crewflow does not go on by itself, and the run that did the
+// work is not the one to ask about the work — the entry says where the work is, what was
+// left out of the snapshot of it and the one command that puts it back (D-088,
+// docs.DESIGN.md §6a, §7a).
+func (a *Attention) uncommitted(last Attempt) {
+	a.State, a.Reason, a.Priority = AttentionFinishedUnseen, ReasonWorkUncommitted, High
+	a.Subject, a.NextActor, a.Actable = SubjectResult, ActorOrchestrator, ActNow
+	a.Since = endedAt(last)
+	a.Hint = last.Uncommitted.said() +
+		"; the work of the task is kept in the worktree of the run, and crewflow does not go on by itself"
+	a.Next = continueCommand(a.Task)
+}
+
 // stopped is a run a person stopped: it is not over, nobody is looking at it, and crewflow
 // neither goes on by itself nor hides the fact (§7a, #45).
 func (a *Attention) stopped(last Attempt) {
@@ -1209,6 +1241,16 @@ func (a *Attention) refused(last Attempt, silence Stall, point *Checkpoint) {
 	// (docs/DESIGN.md §7a.1, §7j).
 	if named(last.Reason) == reasonRepeated {
 		a.Next = "look into the mechanism behind the habit, or into the rule of it"
+	}
+	if last.Uncommitted != nil {
+		// The work of the run is outside the commits of its branch, and a refusal is what
+		// the orchestrator reads first: the entry says both, because the folder is where
+		// the work of the task is whatever the run stopped at, and the snapshot of it is
+		// where it goes on being there (D-088, docs/DESIGN.md §7a.1, §7d).
+		if a.Hint != "" {
+			a.Hint += "; "
+		}
+		a.Hint += last.Uncommitted.said()
 	}
 	window, in := windowOf(last.Reason)
 	switch {
@@ -1370,6 +1412,14 @@ func (a *Attention) finished(env AttentionEnv, repo string, state State, last At
 		// The host says the task is closed and there is no change request to ask about:
 		// the work of the task is over, and nobody waits for anything in it (§7g).
 		return false
+	}
+	// The work the run left outside the commits of its branch is what the queue asks
+	// about before whatever else the run ended with: it is not in git, it lives in one
+	// folder, and a snapshot of it is a protection and not a commit — so the next one
+	// is the orchestrator and the action is a continuation in that same folder (D-088, §6a).
+	if last.Uncommitted != nil {
+		a.uncommitted(last)
+		return true
 	}
 	if !wantsAttention(outcome) && state.Change == nil {
 		// A run that came out of it well and opened no change request asks for nobody,

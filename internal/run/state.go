@@ -210,8 +210,18 @@ type Attempt struct {
 	// the task on the host by `crewflow task check-stalled`. It is a fact of what has
 	// been said and not a verdict about the run: whether the run is standing is worked
 	// out at every read, and this is what keeps one record to an episode of silence
-	// rather than one a minute (docs/DESIGN.md §6, §7h).
+	// rather than one a minute (docs.DESIGN.md §6, §7h).
 	ReportedAt *time.Time `json:"reported_at,omitempty"`
+	// Uncommitted is the work this attempt left in its worktree outside the commits of
+	// its branch, and the snapshot of it that is kept in a ref of the repository. It is
+	// nothing for a run whose work is in the commits and everything for a run that was
+	// cut off: the work lives in one folder until somebody does something about it, and
+	// this is what says that it is there (D-088, docs.DESIGN.md §6a, §7a).
+	//
+	// It is the work of the attempt and not of the task: a continuation goes on in the
+	// same worktree with its own number and its own attempt, and what the attempt before
+	// it left behind is what that attempt is told about (§7h).
+	Uncommitted *Uncommitted `json:"uncommitted_work,omitempty"`
 	// Journal and ErrorJournal are the files of what the executor wrote and of
 	// what it said on the way out.
 	Journal      string `json:"journal"`
@@ -438,6 +448,23 @@ func (s State) Alive(number int, at time.Time, step, reason string) State {
 		return s
 	}
 	s.Attempts[place].LastAt, s.Attempts[place].LastStep, s.Attempts[place].Reason = at, step, reason
+	return s
+}
+
+// UncommittedWork is the state of a task with the work the attempt with that number left
+// in its worktree outside the commits of its branch written into that attempt: how many
+// files there are, the commit the branch stood at, the snapshot of the work and the one
+// command of git that puts the work back (D-088, docs/DESIGN.md §6a, §7h).
+//
+// It is written into the attempt and not into the task because the work belongs to the
+// attempt that did it: a continuation goes on in the same worktree under a number of its
+// own, and the attempt before it is where its work is named.
+func (s State) UncommittedWork(number int, work Uncommitted) State {
+	at, found := s.placeOf(number)
+	if !found {
+		return s
+	}
+	s.Attempts[at].Uncommitted = &work
 	return s
 }
 

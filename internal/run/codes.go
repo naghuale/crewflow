@@ -66,6 +66,7 @@ var reasons = []string{
 	ReasonTaskClosed,
 	ReasonTaskMissing,
 	ReasonWaitedTooLong,
+	ReasonWorkUncommitted,
 }
 
 // Reasons is the closed list of the reasons of the queue of attention — of a task in the

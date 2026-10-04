@@ -422,6 +422,12 @@ type runner struct {
 	// unless the run goes on by itself: it is worked out while the journal of the
 	// attempt is still open, so that the journal holds the line about it.
 	resume resume
+	// kept is the work this run left in its worktree outside the commits of its branch
+	// and the snapshot of it, and it is what the state of the task is told with the end
+	// of the attempt. It is nothing for a run that committed its work and everything for
+	// a run that was cut off: the work of such a run lives in one folder until somebody
+	// goes on with it (D-088, docs.DESIGN.md §6a, §7a, §7h).
+	kept *Uncommitted
 	// point is where this run stands if it goes on from the point of the task: the
 	// step to go on from, the head of the branch and the request that was made, and
 	// what came of it. It is read and checked before the run does anything, and it is
@@ -1136,6 +1142,23 @@ func (r *runner) start(ctx context.Context) (Result, error) {
 		}
 		r.resume = next
 	}
+	// What the run left outside the commits of its branch is counted, snapshotted and
+	// written into the attempt while the journal of the attempt is still open: it is said
+	// where a watch of the run shows it, and it is said before the files are closed
+	// because a snapshot of a worktree is taken of a worktree nobody writes into any
+	// more (D-088, docs/DESIGN.md §7a).
+	work, kept := r.keeps(ctx, files, result.Outcome)
+	switch {
+	case kept != nil:
+		// The work is still in the folder of the run whatever git said about the
+		// snapshot of it, so a snapshot that could not be taken is said on the way out
+		// and does not change the outcome of the run: a run that was judged is judged,
+		// and a person who reads the way out of it learns that the only copy of the work
+		// is the folder (D-088, docs.DESIGN.md §7i).
+		r.note(files.ErrorJournal, fmt.Errorf("the work outside the commits: %w", kept))
+	case work.Any():
+		r.kept = &work
+	}
 	if closeErr := errors.Join(files.Close(), flushed); closeErr != nil {
 		return result, closeErr
 	}
@@ -1274,6 +1297,13 @@ func (r *runner) keep(ending ended, result Result, judgeErr error) error {
 		}
 		if ending.marked != "" {
 			state = state.Provider(r.attempt, ending.marked)
+		}
+		if r.kept != nil {
+			// The work the run left outside the commits of its branch is said with the
+			// end of the attempt and not after it: a state file that names an attempt as
+			// running while its work is already counted in it is a state a person reads
+			// as a run that is still going (D-088, docs.DESIGN.md §7h).
+			state = state.UncommittedWork(r.attempt, *r.kept)
 		}
 		if r.point != nil {
 			// The point of the task is kept on the run itself, and the state holds what

@@ -39,6 +39,18 @@ The rules of this run:
   That is a fact and not a question, and what is already done and what is left is
   said after it.
 - Write the messages of the commits in the style of this project: {{.CommitStyle}}.
+- Commit what is finished and passes. After every finished case, or group of like cases,
+  whose checks pass, make an intermediate commit before you begin the next piece of work.
+  It is bound to a verifiable result and not to the clock: a fragment is committed when
+  its checks pass, not when the time is about to run out. It applies to a task of size L,
+  to a task of several independently verifiable cases, to a task that may not fit in one
+  attempt, and wherever the task says so (D-088).
+- This attempt has {{.Timeout}} of time. crewflow stops the run when it is out and does
+  not continue it by itself after that. What is finished and passing is committed before
+  it is out: work that is not in a commit lives in this folder alone, and a continuation
+  begins by committing what is ready and passing. Uncommitted work is kept as a local
+  snapshot under `refs/crewflow/`, which is a protection from a lost folder and not a
+  commit — do not rely on it (D-088).
 
 ## The map of the access of this run
 

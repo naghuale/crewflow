@@ -110,7 +110,7 @@ var reasonsOfAttention = []string{
 	"no-checks", "no-progress", "out-of-scope", "owner-acceptance-required", "provider-error-unknown",
 	"provider-unavailable", "read-failed", "read-interrupted", "resource-wait", "review-required",
 	"run-completed", "run-ended", "run-failed", "run-timeout", "stopped-by-person", "task-closed",
-	"task-missing", "waited-too-long",
+	"task-missing", "waited-too-long", "work-uncommitted",
 }
 
 // reasonsOfTheGate is the table of §7h: why a change may not be merged (`gate.Reasons`).
@@ -337,6 +337,7 @@ func attentionOfATask() map[string]rule {
 func runOfATask() map[string]rule {
 	return merge(
 		under("attention", attentionOfATask()),
+		under("uncommitted_work", uncommittedOfATask()),
 		map[string]rule{
 			"":                 aContainer(),
 			"repo":             ofForm(aRepository),
@@ -749,27 +750,54 @@ func stateOfATask() map[string]rule {
 // attemptOfATask is one attempt of the executor in the state of a task: when it was started and
 // stopped, what it did last, the identity it went under and the reason it ended by.
 func attemptOfATask() map[string]rule {
+	return merge(
+		under("uncommitted_work", uncommittedOfATask()),
+		map[string]rule{
+			"":                   aContainer(),
+			"number":             aNumber(),
+			"outcome":            ofList(outcomesOfARun...),
+			"journal":            ofForm(aPath),
+			"error_journal":      ofForm(aPath),
+			"reason":             ofWords(),
+			"started_at":         ofForm(aMoment),
+			"ended_at":           ofForm(aMoment),
+			"reported_at":        ofForm(aMoment),
+			"last_at":            ofForm(aMoment),
+			"process_started_at": ofForm(aMoment),
+			"pid":                aNumber(),
+			"last_step":          freeText(),
+			"executor":           ofForm(aName),
+			"provider":           ofForm(aName),
+			"identity":           ofList(modesOfAnIdentity...),
+			"session":            ofForm(aName),
+			"continued":          aFlag(),
+			"resumed":            aFlag(),
+			"auto_resumed":       freeText(),
+		})
+}
+
+// uncommittedOfATask is the work an attempt left in its worktree outside the commits of
+// its branch, and the snapshot of it that is kept in a ref of the repository: the counts
+// of it and the commit the branch stood at are what a queue names, the ref of the
+// snapshot and the command that puts the work back are what a person reads, and the
+// paths left out of the snapshot are names of paths and never what is in them (D-088,
+// docs/DESIGN.md §6a, §7a). It is one table for the state of a task and for the list of
+// the runs of a project, because the record is the same record in both (D-044).
+func uncommittedOfATask() map[string]rule {
 	return map[string]rule{
-		"":                   aContainer(),
-		"number":             aNumber(),
-		"outcome":            ofList(outcomesOfARun...),
-		"journal":            ofForm(aPath),
-		"error_journal":      ofForm(aPath),
-		"reason":             ofWords(),
-		"started_at":         ofForm(aMoment),
-		"ended_at":           ofForm(aMoment),
-		"reported_at":        ofForm(aMoment),
-		"last_at":            ofForm(aMoment),
-		"process_started_at": ofForm(aMoment),
-		"pid":                aNumber(),
-		"last_step":          freeText(),
-		"executor":           ofForm(aName),
-		"provider":           ofForm(aName),
-		"identity":           ofList(modesOfAnIdentity...),
-		"session":            ofForm(aName),
-		"continued":          aFlag(),
-		"resumed":            aFlag(),
-		"auto_resumed":       freeText(),
+		"":        aContainer(),
+		"at":      ofForm(aMoment),
+		"changed": aNumber(),
+		"new":     aNumber(),
+		"head":    ofForm(aCommit),
+		"ref":     ofForm(aName),
+		"restore": freeText(),
+		// A list inside a record is a field of its own and its elements are named under
+		// it, and a list under a list is named the way `valid_while.boundaries.*` above
+		// is: both rows are written, because the row of the root of a nested list is not
+		// one the walk can work out (D-082).
+		"left":   aContainer(),
+		"left[]": freeText(),
 	}
 }
 

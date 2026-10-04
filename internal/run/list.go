@@ -136,6 +136,12 @@ type Entry struct {
 	// other run: a run that is working, a run that is over and a run of a project
 	// that names no silence (docs/DESIGN.md §6).
 	Stalled *Stall `json:"stalled,omitempty"`
+	// Uncommitted is the work the last attempt left in its worktree outside the commits
+	// of its branch, and the snapshot of it. It is nothing for every other run, and a
+	// list that holds it says where the work of a task is and how much of it there is —
+	// the one answer a person needs before deciding whether to go on with the task
+	// (D-088, docs/DESIGN.md §6a, §7a).
+	Uncommitted *Uncommitted `json:"uncommitted_work,omitempty"`
 	// Attention is what the queue of attention of the project says about the task of
 	// this run: the state of its process, the reason of it, who acts next and how long
 	// it has been that way (docs/DESIGN.md §6a). It is nothing for a task that wants
@@ -260,23 +266,24 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		}
 	}
 	answer := struct {
-		Repo            string     `json:"repo"`
-		Task            int        `json:"task"`
-		Title           string     `json:"title"`
-		Attempts        int        `json:"attempts"`
-		Run             string     `json:"run"`
-		Outcome         Kind       `json:"outcome"`
-		StartedAt       time.Time  `json:"started_at"`
-		EndedAt         *time.Time `json:"ended_at,omitempty"`
-		DurationSeconds *float64   `json:"duration_seconds"`
-		StalledFor      *float64   `json:"stalled_for,omitempty"`
-		LastStep        string     `json:"last_step,omitempty"`
-		Reason          string     `json:"reason,omitempty"`
-		Executor        string     `json:"executor"`
-		Change          *Change    `json:"change,omitempty"`
-		Identity        Identity   `json:"identity"`
-		TaskFacts       *TaskFacts `json:"task_facts,omitempty"`
-		Attention       *Attention `json:"attention,omitempty"`
+		Repo            string       `json:"repo"`
+		Task            int          `json:"task"`
+		Title           string       `json:"title"`
+		Attempts        int          `json:"attempts"`
+		Run             string       `json:"run"`
+		Outcome         Kind         `json:"outcome"`
+		StartedAt       time.Time    `json:"started_at"`
+		EndedAt         *time.Time   `json:"ended_at,omitempty"`
+		DurationSeconds *float64     `json:"duration_seconds"`
+		StalledFor      *float64     `json:"stalled_for,omitempty"`
+		LastStep        string       `json:"last_step,omitempty"`
+		Reason          string       `json:"reason,omitempty"`
+		Executor        string       `json:"executor"`
+		Change          *Change      `json:"change,omitempty"`
+		Identity        Identity     `json:"identity"`
+		TaskFacts       *TaskFacts   `json:"task_facts,omitempty"`
+		Attention       *Attention   `json:"attention,omitempty"`
+		UncommittedWork *Uncommitted `json:"uncommitted_work,omitempty"`
 	}{
 		Repo:            ownerAndRepo(e.Repo),
 		Task:            e.Task,
@@ -294,6 +301,7 @@ func (e Entry) MarshalJSON() ([]byte, error) {
 		Change:          e.Change,
 		Identity:        e.Identity,
 		TaskFacts:       e.TaskFacts,
+		UncommittedWork: e.Uncommitted,
 	}
 	if one := e.Attention; one != nil {
 		// The attention of a run is written under the name of its own field and not
@@ -512,10 +520,11 @@ func (e ListEnv) entryOf(state State, repo string) (Entry, bool) {
 		// attempt of a state of before crewflow kept it names no agent at all. A
 		// list shows a dash where there is nothing rather than a name that was
 		// never written down.
-		Executor:  state.Profile,
-		StartedAt: last.StartedAt,
-		Identity:  last.Identity,
-		Change:    state.Change,
+		Executor:    state.Profile,
+		StartedAt:   last.StartedAt,
+		Identity:    last.Identity,
+		Change:      state.Change,
+		Uncommitted: last.Uncommitted,
 	}
 	if !last.EndedAt.IsZero() {
 		ended := last.EndedAt

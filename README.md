@@ -353,6 +353,49 @@ in front of the keychain window is in `~/.crewflow/state` while it stands there;
 for another reason puts the state back as it was and leaves no attempt behind. See §7a of the
 design.
 
+## Work a run left outside the commits
+
+A run that is cut off — a timeout, a Ctrl+C, a hang, a machine that went down — can leave hours
+of work in the worktree that is **not in git**. On 03.10 that is exactly what happened to #224
+attempt 5: two hours of active work, 144 actions, thirteen changed and six new files, the last
+commit before the attempt — and nothing in the state, nothing in the queue, nothing but one
+folder (F-193, #37). The owner's decision D-088: commit what is finished as you go, and describe
+and protect what is not.
+
+**What crewflow does.** An attempt that ended other than `pr-opened` and left work outside the
+commits writes it into the state of the task (`uncommitted_work`: files changed, files new, the
+commit the branch stood at, when), and the queue names the reason **`work-uncommitted`** — next
+participant the orchestrator, action `crewflow task run <N> -continue`. `task list -json` carries
+the same record under each run.
+
+```
+ATTENTION REQUIRED
+  #224 · finished-unseen · work-uncommitted · the result of the run
+    waiting 4h · next: orchestrator · crewflow task run 224 -continue "what is left to do"
+    the run left 19 files outside the commits of its branch (13 changed, 6 new), and the branch
+    stood at 1a2b3c4; a snapshot of it is kept in refs/crewflow/checkpoints/224/5 and is not on
+    the host; the work is put back with `git -C … cherry-pick --no-commit refs/crewflow/checkpoints/224/5`
+```
+
+**A snapshot, not a commit.** The work is also kept in a **local** ref,
+`refs/crewflow/checkpoints/<task>/<attempt>`, written through a `GIT_INDEX_FILE` of its own: the
+head, the branch, the index and every file of the worktree are byte for byte what they were. One
+command puts the work back — `git cherry-pick --no-commit <ref>` — and it is that command, not a
+restore of your own, that the record names. Two things it is not: it is **never pushed**, under any
+push (`refs/crewflow/*` is refused by the pre-push hook of the worktree, `--mirror` included), and
+it is **incomplete by construction** — a path that stays closed to the run (`.env`, a key) is left
+out of it, and the record says which. So the snapshot does not let a worktree be removed: every
+road that takes one away refuses with `worktree-has-uncommitted-work` where there is work outside
+the commits, and a person decides what happens to the folder. Snapshots of a task older than 30
+days are taken away with their ref.
+
+**And the rule for the run itself.** The assignment now tells the executor the limit of the
+attempt and what to do with it: commit after every finished case, or group of like cases, whose
+checks pass — bound to a verifiable result, not to the clock — and a continuation after an
+interruption begins by committing what is ready and passing. It applies to size `L`, to tasks of
+several independently verifiable cases, to tasks that may not fit in one attempt, and wherever the
+task says so (§10 of the project rules).
+
 ## A provider that is not there
 
 A model provider that does not answer is a **resource of the machine a run waits for**, not a

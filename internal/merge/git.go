@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/naghuale/crewflow/internal/gate"
+	taskrun "github.com/naghuale/crewflow/internal/run"
 )
 
 // Runner starts a program in a folder and returns what it wrote and the code it
@@ -118,6 +119,28 @@ func (g Git) Push(ctx context.Context, commit string) error {
 // the bookkeeping of git. A worktree that is not there is taken away as well: the
 // state of the task may name a checkout a person has already deleted, and crewflow
 // prunes the record of it either way (docs/DESIGN.md §7h).
+//
+// A worktree that holds work outside the commits of its branch is not taken away, and the
+// refusal is the one refusal of every road that takes a worktree away: a merge that went
+// through is a merge that went through, and a checkout with the work of a task in it is
+// left to the person who reads the warning. The snapshot of the work is not what lets the
+// folder go — a snapshot may be incomplete, a path that stays closed is left out of it
+// (D-088, docs/DESIGN.md §7a, §7h).
+// Output is one question about the checkout answered by git in a folder, and it is how the
+// question whether a worktree holds work outside the commits of its branch is asked here as
+// it is asked by a run: one question and one answer, whatever the worktree is about to go
+// away for (docs/DESIGN.md §7a, §7h).
+func (g Git) Output(ctx context.Context, dir string, args ...string) (string, error) {
+	stdout, stderr, code, err := g.Run(ctx, "git", args, dir)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	case code != 0:
+		return "", fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, firstLine(stderr))
+	}
+	return string(stdout), nil
+}
+
 func (g Git) RemoveWorktree(ctx context.Context, path string) error {
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -125,6 +148,14 @@ func (g Git) RemoveWorktree(ctx context.Context, path string) error {
 		}
 		g.prune(ctx)
 		return nil
+	}
+	work, err := taskrun.UncommittedIn(ctx, g, path)
+	if err != nil {
+		return err
+	}
+	if work.Any() {
+		return fmt.Errorf("the worktree %s holds %d files outside its commits, "+
+			"and crewflow does not take it away: %w", path, work.Count(), taskrun.ErrUncommittedWork)
 	}
 	_, stderr, code, err := g.Run(ctx, "git", []string{"worktree", "remove", path}, g.Dir)
 	if err != nil {
@@ -168,14 +199,8 @@ func (g Git) remote() string {
 // git runs one command of git and returns a refusal with the command in it when git
 // said no.
 func (g Git) git(ctx context.Context, args ...string) error {
-	_, stderr, code, err := g.Run(ctx, "git", args, g.Dir)
-	switch {
-	case err != nil:
-		return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
-	case code != 0:
-		return fmt.Errorf("git %s: exited with %d: %s", strings.Join(args, " "), code, firstLine(stderr))
-	}
-	return nil
+	_, err := g.Output(ctx, g.Dir, args...)
+	return err
 }
 
 // firstLine is the first line that says something of what a program wrote: a refusal
