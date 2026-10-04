@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -209,11 +210,21 @@ func TestStateRoundTrip(t *testing.T) {
 func TestTheStateLeavesOneFile(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
+	first := State{Number: 43}
 
-	if err := saveState(nil, path, State{Number: 43}); err != nil {
+	neverRun, err := readPersisted(nil, State{})
+	if err != nil {
+		t.Fatalf("the record of a task that was never run: %v", err)
+	}
+	if _, err := saveState(nil, path, neverRun, first); err != nil {
 		t.Fatalf("saveState returned an error: %v", err)
 	}
-	if err := saveState(nil, path, State{Number: 43, Branch: "crewflow/43-task"}); err != nil {
+	written, err := readPersisted(nil, first)
+	if err != nil {
+		t.Fatalf("read the record that was written: %v", err)
+	}
+	second := State{Number: 43, Branch: "crewflow/43-task"}
+	if _, err := saveState(nil, path, written, second); err != nil {
 		t.Fatalf("saveState of a second run returned an error: %v", err)
 	}
 
@@ -726,6 +737,55 @@ func TestTheCodeOfTheReasonOfAnAttemptSurvivesTheStateOfTheTask(t *testing.T) {
 	}
 }
 
+// TestTheCanaryOfAReasonOfItsOwnIsNotWrittenIntoTheStateOfATask: the
+// reason of an attempt is a word of the canonical list of the codes and
+// then the words of what happened, and a word that is not in the list is
+// a sentence of a run however it is written: one word without a space is
+// not a code of the format by its shape, and a canary in front of a
+// colon is not a code behind it. The state of a task is a file kept for
+// ever that programs read a reason out of, and a canary that stood in
+// the reason of it as a code — a word, no space, no colon — would stand
+// there for ever, and a canary in front of a colon would keep its head
+// (R5-NEW-10, docs/DESIGN.md §6a, §7e, §7h).
+func TestTheCanaryOfAReasonOfItsOwnIsNotWrittenIntoTheStateOfATask(t *testing.T) {
+	const canary = "canaryR5X9"
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	for _, reason := range []string{
+		canary,
+		canary + ": diagnostic",
+	} {
+		withReason := func(current State) (State, error) {
+			started := current
+			started.Number, started.Title, started.Branch = 43, "the run of a task", "crewflow/43-task"
+			return started.NextAttempt(started.NextNumber(), StartOf{
+				Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
+				Journal: journals.JournalPath(43, 1),
+			}).Reason(1, reason), nil
+		}
+
+		if _, err := UpdateStateThrough(secret.NewOut(secret.Chosen(canary)...),
+			journals.StatePath(43), withReason); err != nil {
+			t.Fatalf("write the state of the task: %v", err)
+		}
+		written, err := LoadState(journals.StatePath(43))
+		if err != nil {
+			t.Fatalf("read the state of the task: %v", err)
+		}
+		got := written.Attempts[0].Reason
+		if strings.Contains(got, canary) {
+			t.Errorf("the reason in the state of the task is %q, want the canary taken out of it", got)
+		}
+		want := secret.Redacted
+		if reason != canary {
+			want = secret.Redacted + ": diagnostic"
+		}
+		if got != want {
+			t.Errorf("the reason in the state of the task is %q, want %q: a word that is not a code of the format is a sentence of a run",
+				got, want)
+		}
+	}
+}
+
 // TestTheWordsOfTheFormatSurviveTheReportOfARun: a program reads the report of a run to decide
 // what it did, and it decides by the words out of the closed lists of the format — the outcome
 // of the run, the profile of the executor, the code of a reason. Cut out of them, they are not
@@ -854,7 +914,11 @@ func TestAFieldNobodyClassifiedKeepsTheStateThatWasWritten(t *testing.T) {
 		Started: time.Date(2026, time.October, 3, 9, 0, 0, 0, time.UTC), Step: "the executor of the run",
 		Journal: journals.JournalPath(43, 1),
 	})
-	if err := saveState(secret.NewOut(), journals.StatePath(43), state); err != nil {
+	neverWritten, err := readPersisted(secret.NewOut(), State{})
+	if err != nil {
+		t.Fatalf("the record of a task that was never run: %v", err)
+	}
+	if _, err := saveState(secret.NewOut(), journals.StatePath(43), neverWritten, state); err != nil {
 		t.Fatalf("write the state of the task: %v", err)
 	}
 	published, err := os.ReadFile(journals.StatePath(43))
@@ -887,5 +951,338 @@ func TestAFieldNobodyClassifiedKeepsTheStateThatWasWritten(t *testing.T) {
 	if string(kept) != string(published) {
 		t.Errorf("the state of the task is\n%s\nwant the record that was published before it\n%s",
 			kept, published)
+	}
+}
+
+// TestTheRevisionOfAStateOfATaskIsTheWordOfTheRoad: the revision of the record of a task is
+// what the road that writes it says, taken from the record that is on the disk under the lock
+// of the task. A caller names a change and not a version of the record: whatever revision the
+// change came with, the record on the disk takes the one that was there plus one — so a change
+// cannot move the record back and cannot skip a version of it — and a change that claims a
+// revision above the record is refused, because a subscriber reads the revision as a change of
+// the task (docs/DESIGN.md §7h, #243).
+func TestTheRevisionOfAStateOfATaskIsTheWordOfTheRoad(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+
+	first, err := UpdateState(path, func(State) (State, error) {
+		return State{Number: 43, Title: "the run of a task"}, nil
+	})
+	if err != nil {
+		t.Fatalf("write the state of a task that was not there: %v", err)
+	}
+	if first.Revision != 1 {
+		t.Errorf("the record of the task that was written first stands at the revision %d, want 1: the first "+
+			"change of a record that was not there is the first version of it", first.Revision)
+	}
+
+	// A change that names a revision above the record claims progress that never happened.
+	written := read(t, path)
+	_, err = UpdateState(path, func(current State) (State, error) {
+		changed := current.Noticed(monday, "43:stands:no-progress")
+		changed.Revision = current.Revision + 1
+		return changed, nil
+	})
+	if !errors.Is(err, ErrRevisionForged) {
+		t.Fatalf("the change that named the revision %d = %v, want %v", first.Revision+1, err, ErrRevisionForged)
+	}
+	for _, want := range []string{"2", "1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal is %q, want it to name the revision of the change and the one on the disk", err)
+		}
+	}
+	if kept := read(t, path); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, written)
+	}
+
+	// A change that names a revision of its own below the record cannot lower it: the road
+	// answers with the version of the record that follows the one on the disk.
+	second, err := UpdateState(path, func(current State) (State, error) {
+		changed := current.Noticed(monday.Add(time.Hour), "43:stands:no-progress")
+		changed.Revision = 0
+		return changed, nil
+	})
+	if err != nil {
+		t.Fatalf("the change that named no revision: %v", err)
+	}
+	if second.Revision != first.Revision+1 {
+		t.Errorf("the record of the task stands at the revision %d, want %d: the revision is the road's word "+
+			"and not the caller's", second.Revision, first.Revision+1)
+	}
+	kept := stateOfTheTask(t, path)
+	if kept.Revision != second.Revision {
+		t.Errorf("the record on the disk stands at the revision %d, want %d", kept.Revision, second.Revision)
+	}
+}
+
+// TestAWriteThatChangesNothingKeepsTheRevisionOfAStateOfATask: the revision counts changes and
+// not writes. The queue of attention of a schedule writes the state of a task again and again
+// while a run of it goes on, and a revision that grew on every write would count the writes of a
+// schedule and not the changes of a task — a subscriber would wake on a record that says the
+// same thing it read the minute before (docs/DESIGN.md §7h, #243).
+func TestAWriteThatChangesNothingKeepsTheRevisionOfAStateOfATask(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	started := monday.Add(8 * time.Hour)
+	first, err := UpdateState(path, func(State) (State, error) {
+		return State{Number: 43, Title: "the run of a task"}.NextAttempt(1, StartOf{
+			Started: started, Step: stepExecutor, Journal: journals.JournalPath(43, 1),
+		}), nil
+	})
+	if err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	kept := read(t, path)
+
+	for _, same := range []struct {
+		name   string
+		change func(State) (State, error)
+	}{
+		{name: "the whole state again", change: func(current State) (State, error) { return current, nil }},
+		{name: "the same sign of life", change: func(current State) (State, error) {
+			return current.Alive(1, started, stepExecutor, ""), nil
+		}},
+		{name: "the same attempt taken out of a state without it", change: func(current State) (State, error) {
+			return current.withoutAttempt(1, started.Add(time.Hour)), nil
+		}},
+	} {
+		t.Run(same.name, func(t *testing.T) {
+			written, err := UpdateState(path, same.change)
+			if err != nil {
+				t.Fatalf("write the state of the task again: %v", err)
+			}
+			if written.Revision != first.Revision {
+				t.Errorf("the record of the task stands at the revision %d after %q, want %d: a write that "+
+					"changed nothing is not a change", written.Revision, same.name, first.Revision)
+			}
+		})
+	}
+	if read(t, path) != kept {
+		t.Errorf("the record of the task after the writes that changed nothing is\n%s\nwant\n%s",
+			read(t, path), kept)
+	}
+}
+
+// TestEveryChangeOfARecordOfATaskTakesTheNextRevision: one number for everything the record
+// says about the task — the attempts of it, the sign of life of a run, the point a run goes on
+// from, and the memory the queue of attention keeps about what the host said. They are all
+// changes of what the record says, and a subscriber that watches the revision sees every one of
+// them; the one thing that does not move it is the backlog of the events that are not told yet,
+// which is not a change of the task but the queue of what has not been said about it
+// (docs/DESIGN.md §7h, #243).
+func TestEveryChangeOfARecordOfATaskTakesTheNextRevision(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	started := monday.Add(8 * time.Hour)
+	at := started.Add(time.Minute)
+	keeps(t, path, State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-the-run-of-a-task"})
+	keeps(t, path, stateOfTheTask(t, path).NextAttempt(1, StartOf{
+		Started: started, Step: stepExecutor, Journal: journals.JournalPath(43, 1),
+	}))
+
+	for _, change := range []struct {
+		name   string
+		change func(State) (State, error)
+	}{
+		{name: "the sign of life of a run", change: func(state State) (State, error) {
+			return state.Alive(1, at, stepExecutor, ""), nil
+		}},
+		{name: "what the host said about the change of the run", change: func(state State) (State, error) {
+			return state.SettledBy(at, ReasonChangeMerged), nil
+		}},
+		{name: "the record the queue left under the task", change: func(state State) (State, error) {
+			return state.Noticed(at, "43:stands:no-progress"), nil
+		}},
+	} {
+		t.Run(change.name, func(t *testing.T) {
+			before := stateOfTheTask(t, path).Revision
+			written, err := UpdateState(path, change.change)
+			if err != nil {
+				t.Fatalf("write the state of the task: %v", err)
+			}
+			if written.Revision != before+1 {
+				t.Errorf("the record of the task stands at the revision %d, want %d: %q is what the record "+
+					"says about the task", written.Revision, before+1, change.name)
+			}
+		})
+	}
+}
+
+// TestAStateOfBeforeTheRevisionWasKeptIsTheRevisionZero: a record written before crewflow kept
+// a revision is read as the revision zero, and the first change of it takes revision one — not
+// the revision of having been written in the format of today. A subscriber that has never seen
+// the task reads it as the first version of it, and a task whose record never changes stays at
+// the revision zero (docs/DESIGN.md §7h, #243).
+func TestAStateOfBeforeTheRevisionWasKeptIsTheRevisionZero(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "43.json")
+	before := strings.Replace(read(t, filepath.Join("testdata", "state-of-before.json")),
+		`"schema": 1,`, `"revision": 0,`+"\n"+`  "schema": 1,`, 1)
+	if err := os.WriteFile(path, []byte(before), 0o600); err != nil {
+		t.Fatalf("write the state of before: %v", err)
+	}
+
+	state, err := LoadState(path)
+	if err != nil {
+		t.Fatalf("LoadState of a state of before returned an error: %v", err)
+	}
+	if state.Revision != 0 {
+		t.Errorf("a record written before the revision was kept stands at %d, want the revision zero", state.Revision)
+	}
+
+	written, err := UpdateState(path, func(current State) (State, error) {
+		return current.Noticed(monday, "43:stands:no-progress"), nil
+	})
+	if err != nil {
+		t.Fatalf("the first change of a record of before: %v", err)
+	}
+	if written.Revision != 1 {
+		t.Errorf("the first change of a record of before stands at the revision %d, want 1", written.Revision)
+	}
+	if got := strings.Contains(read(t, path), `"revision": 1`); !got {
+		t.Errorf("the record on the disk does not hold its revision:\n%s", read(t, path))
+	}
+}
+
+// TestTheRevisionOfAStateOfATaskDoesNotPassTheHighestOne: the revision only ever grows, and a
+// record that stands at the highest revision the format has cannot be written over — a number
+// that went over the top of it is a revision nobody can read as the version of a record that
+// follows another one. The refusal comes before the write, so the record on the disk is the one
+// that was there (docs/DESIGN.md §7h, #243).
+func TestTheRevisionOfAStateOfATaskDoesNotPassTheHighestOne(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	// The record stands at the highest revision on a machine of its own: no writer may write
+	// such a record, because the road refuses a revision above the one that is there — so the
+	// record is the one thing a test has to make with its own hands.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("make the folder of the state: %v", err)
+	}
+	full := fmt.Sprintf("{\n  %q: 1,\n  %q: %d,\n  %q: 43,\n  %q: \"the run of a task\",\n  %q: []\n}\n",
+		"schema", "revision", int64(math.MaxInt64), "task", "title", "attempts")
+	if err := os.WriteFile(path, []byte(full), 0o600); err != nil {
+		t.Fatalf("write the record at the highest revision: %v", err)
+	}
+	written := read(t, path)
+	if state := stateOfTheTask(t, path); state.Revision != math.MaxInt64 {
+		t.Fatalf("the record of the task stands at the revision %d, want the highest one", state.Revision)
+	}
+
+	_, err := UpdateState(path, func(state State) (State, error) {
+		return state.Noticed(monday, "43:stands:no-progress"), nil
+	})
+
+	if !errors.Is(err, ErrRevisionOverflow) {
+		t.Fatalf("the change of a record at the highest revision = %v, want %v", err, ErrRevisionOverflow)
+	}
+	if kept := read(t, path); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, written)
+	}
+}
+
+// TestAWriteOfAStateOfATaskThatFailedLeavesTheRevisionOnTheDisk: a revision that a write could
+// not write is not the revision of the record. A change that refuses itself, a record the policy
+// of the kind refuses to publish, and a file the machine will not let crewflow write over are
+// three ways of not writing, and the record on the disk stands where it stood in all of them:
+// what a subscriber reads is the revision of what is really there (docs/DESIGN.md §7h, #243).
+func TestAWriteOfAStateOfATaskThatFailedLeavesTheRevisionOnTheDisk(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	keeps(t, path, State{Number: 43, Title: "the run of a task"})
+	written := read(t, path)
+	refused := errors.New("the host did not answer")
+
+	for _, failure := range []struct {
+		name   string
+		change func(State) (State, error)
+		want   error
+	}{
+		{name: "a change that refused itself", change: func(State) (State, error) {
+			return State{}, refused
+		}, want: refused},
+		{name: "a record the policy of the kind does not admit", change: func(state State) (State, error) {
+			return state.NextAttempt(state.NextNumber(), StartOf{
+				Started: monday, Step: stepExecutor, Journal: journals.JournalPath(43, 1),
+				Identity: Identity{Mode: "root"},
+			}), nil
+		}, want: secret.ErrProtectedFieldInvalid},
+	} {
+		t.Run(failure.name, func(t *testing.T) {
+			_, err := UpdateState(path, failure.change)
+			if !errors.Is(err, failure.want) {
+				t.Fatalf("the write of the state of the task = %v, want %v", err, failure.want)
+			}
+			if kept := read(t, path); kept != written {
+				t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s",
+					kept, written)
+			}
+		})
+	}
+	if state := stateOfTheTask(t, path); state.Revision != 1 {
+		t.Errorf("the record of the task stands at the revision %d after the refusals, want 1", state.Revision)
+	}
+}
+
+// TestARenameThatFailedLeavesTheRecordThatWasThere: the bytes of a record of a task are
+// written through a file of its own and moved over the old one, so a reader sees the last whole
+// record or the one before it. A rename that the machine refused leaves the record that was
+// there whole and takes the file of its own with it — a temporary file left behind in the folder
+// of the states is a thing a person trips over and a reader counts as a task (D-068 FINDING-4,
+// docs/DESIGN.md §7h).
+func TestARenameThatFailedLeavesTheRecordThatWasThere(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	keeps(t, path, State{Number: 43, Title: "the run of a task"})
+	written := read(t, path)
+	// The state of the task of another task is a folder: a rename cannot put a file in place
+	// of it, which is what a refused move over the record of a task looks like.
+	taken := filepath.Join(journals.stateFolder(), "44.json")
+	if err := os.Mkdir(taken, 0o700); err != nil {
+		t.Fatalf("make the folder in place of a state: %v", err)
+	}
+
+	err := writeFileAtomic(taken, []byte("{\n  \"task\": 44\n}\n"))
+
+	if err == nil {
+		t.Fatal("writeFileAtomic moved a file over a folder, want the machine to refuse the move")
+	}
+	if kept := read(t, path); kept != written {
+		t.Errorf("the record of the task of 43 after the refused move is\n%s\nwant\n%s", kept, written)
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read the folder of the state: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "44.json.") {
+			t.Errorf("the folder of the states holds %q, want no file of a write that was refused", entry.Name())
+		}
+	}
+}
+
+// TestTheRecordOfATaskCarriesItsRevisionInIt: the revision is a word of the record itself, and
+// not a thing a program of crewflow has to be asked for: a person reading the file of a task and
+// a program that has only the file both see which version of the record they hold, and a record
+// of a task that was written before the revision was kept reads as the version zero (docs/DESIGN.md §7h, #243).
+func TestTheRecordOfATaskCarriesItsRevisionInIt(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+
+	if _, err := UpdateState(path, func(State) (State, error) {
+		return State{Number: 43, Title: "the run of a task"}, nil
+	}); err != nil {
+		t.Fatalf("write the state of the task: %v", err)
+	}
+	first := read(t, path)
+	if !strings.Contains(first, `"revision": 1`) {
+		t.Errorf("the record of the task does not hold its revision:\n%s", first)
+	}
+
+	if _, err := UpdateState(path, func(state State) (State, error) {
+		return state.Noticed(monday, "43:stands:no-progress"), nil
+	}); err != nil {
+		t.Fatalf("change the state of the task: %v", err)
+	}
+	if second := read(t, path); !strings.Contains(second, `"revision": 2`) {
+		t.Errorf("the record of the task after a change does not hold the next revision:\n%s", second)
 	}
 }

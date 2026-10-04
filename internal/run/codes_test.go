@@ -36,6 +36,8 @@ func TestTheBoundaryKnowsEveryWordOfTheListsOfTheQueue(t *testing.T) {
 		{doc: secret.DocumentTaskRun, path: "outcome", want: outcomesOfARun()},
 		{doc: secret.DocumentTaskList, path: "runs[].outcome", want: outcomesOfARun()},
 		{doc: secret.DocumentState, path: "attempts[].outcome", want: outcomesOfARun()},
+		{doc: secret.DocumentState, path: "pending_events[].from", want: statesOfTheQueue()},
+		{doc: secret.DocumentState, path: "pending_events[].to", want: statesOfTheQueue()},
 	} {
 		t.Run(string(tc.doc)+":"+tc.path, func(t *testing.T) {
 			words, known := wordsOfTheBoundary(t, tc.doc, tc.path)
@@ -72,6 +74,86 @@ func TestTheBoundaryHoldsTheModesOfAnIdentityAndTheReasonOfAPair(t *testing.T) {
 			t.Errorf("the form of the assignment of a point refuses the digest the code writes: %q",
 				fingerprint(task))
 		}
+	}
+}
+
+// TestTheBoundaryHoldsTheFormOfTheNameAndTheRecordOfAPendingEvent: the backlog of a task keeps
+// a transition of it under a name of its own and rests it on a record of the host, and both are
+// names a program reads by their shape: the name is a digest the code computes, and the record is
+// the commit at the head of the branch of the task. The boundary refuses a record of a task
+// whose names are not of those forms, so both forms are held here against the code that writes
+// them — a name a program cannot read is a name nobody can confirm an event by (D-044, D-082,
+// docs/DESIGN.md §7e, §7h, #243).
+func TestTheBoundaryHoldsTheFormOfTheNameAndTheRecordOfAPendingEvent(t *testing.T) {
+	name, known := secret.FormOf(secret.DocumentState, "pending_events[].id")
+	if !known {
+		t.Fatal("the policy of the state does not name the name of an event")
+	}
+	record, known := secret.FormOf(secret.DocumentState, "pending_events[].basis")
+	if !known {
+		t.Fatal("the policy of the state does not name the record a transition rests on")
+	}
+	for _, at := range []struct {
+		transition Transition
+		revision   int64
+	}{
+		{transition: Transition{From: AttentionStands, To: AttentionAwaitsReview, At: monday, Basis: theHead},
+			revision: 1},
+		{transition: Transition{From: AttentionBlocked, To: AttentionStopped, At: monday, Basis: "9f1c0de"},
+			revision: 7},
+	} {
+		event, err := eventOf(at.transition, at.revision)
+		if err != nil {
+			t.Fatalf("the record of the transition %s→%s: %v", at.transition.From, at.transition.To, err)
+		}
+		if !name(event.ID) {
+			t.Errorf("the form of the name of an event refuses the name the code writes: %q", event.ID)
+		}
+		if !record(event.Basis) {
+			t.Errorf("the form of the record a transition rests on refuses the commit the code writes: %q",
+				event.Basis)
+		}
+		if want := idOf(at.transition, at.revision); event.ID != want {
+			t.Errorf("the name of the event at the revision %d is %q, want the digest of it: %q",
+				at.revision, event.ID, want)
+		}
+	}
+}
+
+// TestTheBoundaryKnowsEveryCodeOfAReason: a reason of a run is a word of the
+// canonical list of the codes and then the words of what happened behind a colon,
+// and the list is closed: a word out of it is a sentence of a run, cut whole,
+// and not a code a program switches on. The list is the reasons of the queue of
+// §6a and the two names of the waits of a run that the queue does not read —
+// the window of the keychain of the machine and the habit crewflow has already
+// answered — and it is held here word by word against the constants that write
+// it, so that a code added to the code and forgotten in the list is a code the
+// boundary cuts out of a reason (D-044, R5-NEW-10, docs/DESIGN.md §6a, §7e, §7i).
+func TestTheBoundaryKnowsEveryCodeOfAReason(t *testing.T) {
+	want := append(Reasons(), reasonApproval, reasonRepeated)
+	for _, tc := range []struct {
+		doc  secret.Document
+		path string
+	}{
+		{doc: secret.DocumentTaskRun, path: "reason"},
+		{doc: secret.DocumentTaskResume, path: "reason"},
+		{doc: secret.DocumentTaskCheckStalled, path: "[].reason"},
+		{doc: secret.DocumentState, path: "attempts[].reason"},
+	} {
+		t.Run(string(tc.doc)+":"+tc.path, func(t *testing.T) {
+			kind, codes, known := secret.ClassOf(tc.doc, tc.path)
+			if !known {
+				t.Fatalf("the policy of %q does not name %q", tc.doc, tc.path)
+			}
+			if kind != "reason" {
+				t.Fatalf("the field %q of %q is %q, want a reason of the format",
+					tc.path, tc.doc, kind)
+			}
+			if !sameWords(codes, want) {
+				t.Errorf("the codes of %q in %q are %q, want the codes of the code: %q",
+					tc.path, tc.doc, codes, want)
+			}
+		})
 	}
 }
 

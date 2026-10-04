@@ -419,6 +419,83 @@ required = false
 	}
 }
 
+// TestTheContourOfTheFileIsWhatTheFileWrote: [environment] is optional, and the two cases
+// are told apart in the config and not only in the answer of the resolver. A file that
+// names a contour gives that word; a file that says nothing gives no word at all, and the
+// contour of a legacy file is not dev — the runs of a project that never wrote it down are
+// the runs it had before the key was there, and nothing reclassifies them.
+func TestTheContourOfTheFileIsWhatTheFileWrote(t *testing.T) {
+	t.Run("a project that names a contour", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "crewflow.toml")
+		writeFile(t, path, `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+
+[environment]
+contour = "test"
+state_root = "~/spaces/test-state"
+worktrees_root = "~/spaces/test-worktrees"
+`)
+
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatalf("Load returned an error: %v", err)
+		}
+
+		want := Environment{
+			Contour:       "test",
+			StateRoot:     "~/spaces/test-state",
+			WorktreesRoot: "~/spaces/test-worktrees",
+		}
+		if cfg.Environment != want {
+			t.Errorf("environment = %#v, want %#v", cfg.Environment, want)
+		}
+		if cfg.Worktrees.Root != DefaultWorktreesRoot {
+			t.Errorf("worktrees.root = %q, want %q: the contour keys do not move where the worktrees of a run are made",
+				cfg.Worktrees.Root, DefaultWorktreesRoot)
+		}
+	})
+	t.Run("a project that names no contour", func(t *testing.T) {
+		cfg, err := loadFile(t, "minimal.toml")
+		if err != nil {
+			t.Fatalf("Load(minimal.toml) returned an error: %v", err)
+		}
+
+		if got := cfg.Environment.Contour; got != "" {
+			t.Errorf("environment.contour = %q, want no word: the file named none and %q is not its contour",
+				got, "dev")
+		}
+		if got := cfg.Environment; got != (Environment{}) {
+			t.Errorf("environment = %#v, want the zero table of a file that says nothing", got)
+		}
+	})
+}
+
+// TestTheDefaultsDoNotInventAContour: defaults.go fills in what a file leaves out, and a
+// contour is not what a file leaves out — it is a decision of a person about the machine
+// the project is worked on. A default of dev would name the contour of every project of
+// the world, and the classification of a legacy file would be a constant of the program.
+func TestTheDefaultsDoNotInventAContour(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "minimal.toml"))
+	if err != nil {
+		t.Fatalf("read testdata/minimal.toml: %v", err)
+	}
+	var cfg Config
+	meta, err := toml.Decode(string(data), &cfg)
+	if err != nil {
+		t.Fatalf("decode testdata/minimal.toml: %v", err)
+	}
+
+	cfg.applyDefaults(&meta)
+
+	if got := cfg.Environment; got != (Environment{}) {
+		t.Errorf("environment after the defaults = %#v, want the zero table: a contour is written, not filled in", got)
+	}
+}
+
 // TestApplyDefaultsGivesAFallbackTheLimitsOfTheExecutor holds both rules of
 // defaults.go about a fallback executor, which the load no longer reaches: a
 // non-empty fallback is a promise of §7b that crewflow does not keep yet, so the

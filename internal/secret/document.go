@@ -205,9 +205,14 @@ func ofForm(format validator) rule { return rule{class: identifier, format: form
 // said is the rule of a field of the words of a run, of a person or of a program.
 func freeText() rule { return rule{class: text} }
 
-// reason is the rule of the one field of the documents that carries a word of the format and
-// then the words of a run behind it (§6a).
-func ofWords() rule { return rule{class: text, code: true} }
+// reason is the rule of the one field of the documents that carries a word of
+// the format and then the words of a run behind it (§6a, §7i). The words are
+// the canonical list of the codes of a reason: a word of the list is kept
+// whole, and a word out of it is a sentence of a run, cut whole with
+// everything behind it — a program reads a reason by the word before the
+// colon, and a word nobody registered is a word nobody can act on (R5-NEW-10,
+// docs/DESIGN.md §6a, §7e).
+func ofWords(codes ...string) rule { return rule{class: text, code: true, words: codes} }
 
 // counted is the rule of a field that is a number.
 func aNumber() rule { return rule{class: numbered} }
@@ -231,7 +236,7 @@ func ClassOf(doc Document, path string) (string, []string, bool) {
 	switch what.class {
 	case text:
 		if what.code {
-			return "reason", nil, true
+			return "reason", slices.Clone(what.words), true
 		}
 		return "text", nil, true
 	case enumerated:
@@ -277,13 +282,13 @@ func cleanDocumentOf(doc Document, node any, path string, cut func(string) strin
 }
 
 // fieldOfDocument is one field of a document, at the path it stands at, held to what the
-// policy of the document says of it.
+// policy of the document says of it. The field is named before it is read: a field the
+// policy does not name is a field nobody looked at whatever is in it, and a value that
+// is not there is a value that cannot be cut but is still a field nobody looked at —
+// `null` in a field of tomorrow is the same bypass as the words of a run in it, only
+// quieter (R5-NEW-9, D-082, D-089, docs/DESIGN.md §7e, §7h).
 func fieldOfDocument(doc Document, rows map[string]rule, node any, path string,
 	cut func(string) string) (any, error) {
-	if node == nil {
-		// Nothing is in the field, and what is not in it cannot be cut and cannot be wrong.
-		return nil, nil
-	}
 	what, classified := rows[path]
 	if !classified {
 		// Nobody looked at this field, and a field nobody looked at is a field nobody can
@@ -292,6 +297,10 @@ func fieldOfDocument(doc Document, rows map[string]rule, node any, path string,
 		// published, byte for byte, and the command says which field it did not know
 		// (D-089, D-082, docs/DESIGN.md §7e, §7h).
 		return nil, unknownPath(doc, path)
+	}
+	if node == nil {
+		// Nothing is in the field, and what is not in it cannot be cut and cannot be wrong.
+		return nil, nil
 	}
 	switch what.class {
 	case container:
@@ -302,7 +311,7 @@ func fieldOfDocument(doc Document, rows map[string]rule, node any, path string,
 			return nil, wrongKind(doc, path)
 		}
 		if what.code {
-			return cleanReason(said, cut), nil
+			return cleanReason(said, what.words, cut), nil
 		}
 		return cut(said), nil
 	case enumerated, identifier:

@@ -2,6 +2,7 @@ package secret
 
 import (
 	"maps"
+	"slices"
 	"strings"
 )
 
@@ -123,6 +124,18 @@ var reasonsOfTheGate = []string{
 	"push-rejected", "verify-mismatch", "forge-unavailable",
 }
 
+// codesOfAReason is the canonical list of the codes of a reason: the reasons of
+// the queue of §6a and the two names of the waits of a run that the queue does
+// not read — the window of the keychain of the machine and the habit crewflow
+// has already answered (D-044, docs/DESIGN.md §6a, §7i). A reason of a run is a
+// word of this list and then the words of what happened behind a colon, and a
+// word that is not in the list is a sentence of a run, cut whole with
+// everything behind it: a program reads a reason by the word before the colon,
+// and a word nobody registered is a word nobody can act on (R5-NEW-10,
+// docs/DESIGN.md §6a, §7e).
+var codesOfAReason = append(slices.Clone(reasonsOfAttention),
+	"keychain-approval", "known-habit-repeated")
+
 // resultsOfACriterion is the list of §7c: what one criterion of a pair came out as
 // (`task.Results`), and decisionsOfAPair is the decision the eight of them add up to
 // (`task.Decisions`).
@@ -191,7 +204,7 @@ func resultOfARun() map[string]rule {
 			"error_journal":  ofForm(aPath),
 			"exit_code":      aNumber(),
 			"rejections[]":   freeText(),
-			"reason":         ofWords(),
+			"reason":         ofWords(codesOfAReason...),
 			"outside[]":      freeText(),
 			"change_request": aContainer(),
 			// The change request the run opened, as the host holds it. Its fields carry the
@@ -400,7 +413,7 @@ func standingsOfAProject() map[string]rule {
 		"[].stalled":     aFlag(),
 		"[].stalled_for": aNumber(),
 		"[].last_step":   freeText(),
-		"[].reason":      ofWords(),
+		"[].reason":      ofWords(codesOfAReason...),
 		"[].problem":     freeText(),
 		"[].said":        aFlag(),
 	}
@@ -708,12 +721,14 @@ func checkOfTheKeyOfAnApp() map[string]rule {
 func stateOfATask() map[string]rule {
 	return merge(
 		under("attempts[]", attemptOfATask()),
+		under("pending_events[]", pendingEventOfATask()),
 		under("checkpoint", checkpointOfATask()),
 		under("change", map[string]rule{"": aContainer()}),
 		under("notice", map[string]rule{"": aContainer()}),
 		under("settled", map[string]rule{"": aContainer()}),
 		map[string]rule{
 			"schema":                aNumber(),
+			"revision":              aNumber(),
 			"task":                  aNumber(),
 			"title":                 freeText(),
 			"branch":                ofForm(aName),
@@ -744,7 +759,30 @@ func stateOfATask() map[string]rule {
 			"checkpoint.task":       aNumber(),
 			"attempts":              aContainer(),
 			"attempts[]":            aContainer(),
+			"pending_events":        aContainer(),
+			"pending_events[]":      aContainer(),
 		})
+}
+
+// pendingEventOfATask is one transition of the state of a task that nobody has been told about
+// yet (§7h): the two states of §6a it went from and to, the moment, and the immutable record it
+// rests on — the commit at the head of the branch of the task at that moment.
+//
+// Not one field of it is text: a transition is told by the record it rests on, and the words
+// behind it are the words of a run nobody looked at when the event was told. So the name of the
+// record is a digest in the form of a digest, the two states are words of the closed list of
+// §6a, and the basis is a commit of the host — a value that is not of its form stops the write
+// whole, and a value that is not of its form is also not a record anybody may go and read
+// (docs/DESIGN.md §7e, §7h, #243).
+func pendingEventOfATask() map[string]rule {
+	return map[string]rule{
+		"":      aContainer(),
+		"id":    ofForm(aFingerprint),
+		"at":    ofForm(aMoment),
+		"from":  ofList(statesOfAttention...),
+		"to":    ofList(statesOfAttention...),
+		"basis": ofForm(aCommit),
+	}
 }
 
 // attemptOfATask is one attempt of the executor in the state of a task: when it was started and
@@ -758,7 +796,7 @@ func attemptOfATask() map[string]rule {
 			"outcome":            ofList(outcomesOfARun...),
 			"journal":            ofForm(aPath),
 			"error_journal":      ofForm(aPath),
-			"reason":             ofWords(),
+			"reason":             ofWords(codesOfAReason...),
 			"started_at":         ofForm(aMoment),
 			"ended_at":           ofForm(aMoment),
 			"reported_at":        ofForm(aMoment),

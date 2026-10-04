@@ -1,6 +1,7 @@
 package config
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -107,5 +108,200 @@ func TestLoadAccepts(t *testing.T) {
 				t.Errorf("Load(%s) returned an error: %v", name, err)
 			}
 		})
+	}
+}
+
+// headOfAProject is the part of a file every case below is a file of a project with: the
+// two keys that have no default at all. The cases of [environment] are written here and
+// not as files of testdata, because testdata is not among the files this task may touch
+// and a refusal is about the words a person wrote, not about a name of a fixture.
+const headOfAProject = `
+[project]
+repo = "naghuale/crewflow"
+
+[executor]
+command = ["agent", "run", "{prompt}"]
+`
+
+// TestLoadRefusesTheEnvironmentOfAProject walks the rules of the contour keys: the closed
+// list of the words, and the rules of a root a project names for itself. A file with a
+// mistake in any of them is refused here, where the person who wrote it reads what to
+// write instead, and not in the middle of a task.
+func TestLoadRefusesTheEnvironmentOfAProject(t *testing.T) {
+	cases := []struct {
+		name   string
+		table  string
+		want   []string
+		absent []string
+	}{
+		{
+			name:  "a word of another vocabulary",
+			table: "[environment]\ncontour = \"staging\"\n",
+			want:  []string{"environment.contour", `"staging"`, "dev, test, prod"},
+		},
+		{
+			name:  "a word with a space around it",
+			table: "[environment]\ncontour = \" dev \"\n",
+			want:  []string{"environment.contour", `"dev"`, "dev, test, prod"},
+			// The refusal carries the cleaned word and nothing else: the words of a file
+			// are not a place for a value as it was typed.
+			absent: []string{`" dev "`},
+		},
+		{
+			// A key somebody wrote with spaces in it and no word is a mistake a person
+			// made, not a choice to name no contour: answering "nobody named a contour"
+			// about it would make a file with `contour = " "` a legacy file, and the key
+			// was written to earn another word.
+			name:   "a key of spaces and no word",
+			table:  "[environment]\ncontour = \" \"\n",
+			want:   []string{"environment.contour", "spaces and no word", "dev, test, prod"},
+			absent: []string{`contour = "`},
+		},
+		{
+			name:   "a key of a tab and no word",
+			table:  "[environment]\ncontour = \"\\t\"\n",
+			want:   []string{"environment.contour", "spaces and no word"},
+			absent: []string{"\t"},
+		},
+		{
+			name:  "a state root that climbs out",
+			table: "[environment]\ncontour = \"dev\"\nstate_root = \"~/spaces/../etc\"\n",
+			want:  []string{"environment.state_root", "climbs out"},
+		},
+		{
+			name:  "a worktrees root that climbs out",
+			table: "[environment]\ncontour = \"test\"\nworktrees_root = \"~/../etc\"\n",
+			want:  []string{"environment.worktrees_root", "climbs out"},
+		},
+		{
+			name:  "a state root of the working directory of a command",
+			table: "[environment]\ncontour = \"dev\"\nstate_root = \"spaces/state\"\n",
+			want:  []string{"environment.state_root", "absolute", `"~/"`},
+		},
+		{
+			name:  "a worktrees root of the working directory of a command",
+			table: "[environment]\ncontour = \"prod\"\nworktrees_root = \"worktrees\"\n",
+			want:  []string{"environment.worktrees_root", "absolute", `"~/"`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "crewflow.toml")
+			writeFile(t, path, headOfAProject+"\n"+tc.table)
+
+			_, err := Load(path)
+
+			if err == nil {
+				t.Fatalf("Load of a file with %s returned no error, want the refusal of the key", tc.name)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(err.Error(), absent) {
+					t.Errorf("error %q carries %q, want it out", err, absent)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadAcceptsTheContourOfAProject: every word of the closed list is a file crewflow can
+// work with, with the roots of the project and without them. Naming prod is a word a file
+// may hold and not an admission to it: what the machine and the program do with that word
+// is a task of its own, and this one only reads it and checks the folders around it.
+func TestLoadAcceptsTheContourOfAProject(t *testing.T) {
+	for _, contour := range []string{"dev", "test", "prod"} {
+		t.Run(contour, func(t *testing.T) {
+			t.Run("with the roots of the project", func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "crewflow.toml")
+				writeFile(t, path, headOfAProject+"\n[environment]\ncontour = \""+contour+
+					"\"\nstate_root = \"~/spaces/state\"\nworktrees_root = \"/var/crewflow/worktrees\"\n")
+
+				cfg, err := Load(path)
+				if err != nil {
+					t.Fatalf("Load returned an error: %v", err)
+				}
+
+				if cfg.Environment.Contour != contour {
+					t.Errorf("environment.contour = %q, want %q", cfg.Environment.Contour, contour)
+				}
+				if cfg.Worktrees.Root != DefaultWorktreesRoot {
+					t.Errorf("worktrees.root = %q, want %q: [environment] does not route a run",
+						cfg.Worktrees.Root, DefaultWorktreesRoot)
+				}
+			})
+			t.Run("without a word of roots", func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "crewflow.toml")
+				writeFile(t, path, headOfAProject+"\n[environment]\ncontour = \""+contour+"\"\n")
+
+				cfg, err := Load(path)
+				if err != nil {
+					t.Fatalf("Load returned an error: %v", err)
+				}
+
+				if cfg.Environment.StateRoot != "" || cfg.Environment.WorktreesRoot != "" {
+					t.Errorf("the roots = %#v, want none: crewflow proposes them and writes no word into the file",
+						cfg.Environment)
+				}
+			})
+			t.Run("with empty roots", func(t *testing.T) {
+				// A key of a string that a file leaves out and a key a file writes empty
+				// are the same word in a Config, and every key of a string in this file
+				// reads that word as "the project names none". An empty root is
+				// therefore the root crewflow proposes, and the resolver says of it that
+				// the file named it not.
+				path := filepath.Join(t.TempDir(), "crewflow.toml")
+				writeFile(t, path, headOfAProject+"\n[environment]\ncontour = \""+contour+
+					"\"\nstate_root = \"\"\nworktrees_root = \"  \"\n")
+
+				cfg, err := Load(path)
+				if err != nil {
+					t.Fatalf("Load returned an error: %v", err)
+				}
+
+				if cfg.Environment.StateRoot != "" || cfg.Environment.WorktreesRoot != "  " {
+					t.Errorf("the roots = %#v, want the words of the file as they were written", cfg.Environment)
+				}
+				layout, err := cfg.ResolveContour(t.TempDir())
+				if err != nil {
+					t.Fatalf("ResolveContour returned an error: %v", err)
+				}
+				if layout.StateNamed || layout.WorktreesNamed {
+					t.Errorf("a root is named, want none: %#v", layout)
+				}
+				if want := filepath.Join(layout.Home, ".crewflow", contour, "state", "naghuale-crewflow"); layout.State != want {
+					t.Errorf("the state root = %q, want the one crewflow proposes (%q)", layout.State, want)
+				}
+			})
+		})
+	}
+}
+
+// TestLoadAcceptsAnEmptyContourKey: the key written empty is one of the two ways of naming
+// no contour, so a file that says so loads and its resolver answers `legacy-unclassified`.
+// The key written with spaces in it is refused instead — the same rule one word apart, and
+// both halves are here so that neither is taken for the other.
+func TestLoadAcceptsAnEmptyContourKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crewflow.toml")
+	writeFile(t, path, headOfAProject+"\n[environment]\ncontour = \"\"\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of a file with an empty contour returned an error: %v", err)
+	}
+
+	if got := cfg.Environment.Contour; got != "" {
+		t.Errorf("environment.contour = %q, want the empty word of the file", got)
+	}
+	layout, err := cfg.ResolveContour(t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveContour returned an error: %v", err)
+	}
+	if layout.Contour != ContourLegacy || layout.Declared {
+		t.Errorf("contour = %q, declared = %t, want %q and false",
+			layout.Contour, layout.Declared, ContourLegacy)
 	}
 }

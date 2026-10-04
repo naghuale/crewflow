@@ -196,37 +196,38 @@ func (o *Out) Report(doc Document, value any) ([]byte, error) {
 	return asDocument(cleaned)
 }
 
-// cleanReason is a reason as it may be published: a word out of the closed list of the codes
-// and then, behind a colon, the words of what happened. The code is kept whole — a program
-// reads a reason by the word before the colon, and a reason with a cut in it is not a reason
-// of the format — and the words behind it are the words of a run and are cut as any other
-// text (R5-NEW-8, docs.DESIGN.md §6a, §7e).
-func cleanReason(reason string, text func(string) string) string {
+// cleanReason is a reason as it may be published: a word out of the
+// canonical list of the codes and then, behind a colon, the words of
+// what happened. The word before the colon is kept whole only when it
+// is a word of the list — a program reads a reason by it, and a word
+// of the format with a cut in it is not a word of the format — and a
+// word that is not in the list is a sentence of a run, so the whole of
+// the reason is the words of a run and is cut as one: a single word
+// that is not a code of the format is not a code of the format,
+// whatever its shape (R5-NEW-10, docs.DESIGN.md §6a, §7e).
+func cleanReason(reason string, codes []string, text func(string) string) string {
 	code, words, spoken := strings.Cut(reason, ":")
 	switch {
-	case !spoken && oneWordOfAList(reason):
-		// The whole of it is one word: a code of the format and not a sentence of a run.
+	case !spoken && slices.Contains(codes, reason):
+		// The whole of it is one word of the canonical list: a code of
+		// the format and not a sentence of a run.
 		return reason
-	case spoken && oneWordOfAList(code):
+	case spoken && slices.Contains(codes, code):
 		return code + ":" + text(words)
 	default:
-		// There is no code in it: the whole of it is a sentence of a run, and a sentence
-		// of a run is cut whole.
+		// There is no code of the format in it: the whole of it is a
+		// sentence of a run, and a sentence of a run is cut whole.
 		return text(reason)
 	}
 }
 
-// oneWordOfAList is whether a value is one word, written as the codes of the closed lists of
-// the format are written: no space and no colon in it. The words of what happened are a
-// sentence — behind the colon of a reason, or in a field of their own where a person reads
-// them (§6a).
-func oneWordOfAList(said string) bool {
-	return said != "" && !strings.ContainsAny(said, " \t\r\n:")
-}
-
-// Reason is a reason of §6a as it may be published to a channel: the word out of the closed
-// list of the codes and then the words of what happened behind it, with the values of this
-// boundary taken out of the words and not out of the code (docs/DESIGN.md §6a, §7e).
+// Reason is a reason of §6a as it may be published to a channel: the word out of
+// the canonical list of the codes and then the words of what happened behind it,
+// with the values of this boundary taken out of the words and not out of the code
+// (docs/DESIGN.md §6a, §7e). The code is the one word of the list before the
+// colon, and a word that is not in the list is a sentence of a run, cut whole
+// with everything behind it: a word nobody registered is a word nobody can act on
+// (R5-NEW-10).
 //
 // It is a method of its own and not [Out.Text] because a reason is the one place of a
 // document where a value of a run may stand inside a word of the format: the state of a task
@@ -236,7 +237,7 @@ func (o *Out) Reason(channel Channel, reason string) (string, error) {
 	if !published(channel) {
 		return "", fmt.Errorf("the %q of what was written: %w", channel, ErrNoSuchChannel)
 	}
-	return cleanReason(reason, o.Text), nil
+	return cleanReason(reason, codesOfAReason, o.Text), nil
 }
 
 // Publish is the text of one channel with the values of this boundary taken out of it.

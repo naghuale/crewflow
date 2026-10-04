@@ -31,6 +31,7 @@ var choices = map[string][]string{
 	"merge.via":            mergeVias,
 	"tasks.owner_approval": ownerApprovals,
 	"network.mode":         networkModes,
+	"environment.contour":  contours,
 }
 
 // TestLoadRefusesEveryValueTheRegistryNames walks the values of §"Доказательство
@@ -220,6 +221,47 @@ func TestEveryChoiceOfAKeyIsInTheRegistry(t *testing.T) {
 			t.Errorf("the value %q of %s is allowed by the file and in no registry", value, key)
 		}
 	}
+}
+
+// TestTheContourKeysAreConfiguredAndNotApplied is what the registry says about
+// [environment] and it is said the way the code is: the words are read and the
+// folders around them are checked, and no command outside this package applies one
+// of them, so the status is `configured` and not `supported` — and nothing is refused,
+// so it is not `specified` either. Applies is empty because there is no expression of
+// the runtime to name, and a name put there would be a promise the code does not keep
+// (docs/ENVIRONMENT-CONFIG.md).
+func TestTheContourKeysAreConfiguredAndNotApplied(t *testing.T) {
+	for _, key := range []string{
+		"environment.contour", "environment.state_root", "environment.worktrees_root",
+	} {
+		t.Run(key, func(t *testing.T) {
+			setting, found := settingOf(key)
+			if !found {
+				t.Fatalf("the key %q is in no registry", key)
+			}
+			if setting.Status != Configured {
+				t.Errorf("the status of %q = %q, want %q", key, setting.Status, Configured)
+			}
+			if setting.Applies != "" {
+				t.Errorf("Applies of %q = %q, want none: nothing outside this package applies the key",
+					key, setting.Applies)
+			}
+			if len(setting.Unwritten) != 0 {
+				t.Errorf("%q refuses %d values, want none: a project that names its contour has said a true thing",
+					key, len(setting.Unwritten))
+			}
+		})
+	}
+}
+
+// settingOf is one key of the registry of §5 as it stands.
+func settingOf(key string) (Setting, bool) {
+	for _, setting := range settings {
+		if setting.Key == key {
+			return setting, true
+		}
+	}
+	return Setting{}, false
 }
 
 // keysOfTheFile is every key of crewflow.toml, walked out of the type of a

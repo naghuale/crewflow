@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -40,6 +41,10 @@ var (
 	networkModes      = []string{"direct", "proxy", "fallback"}
 	proxyTypes        = []string{"http", "https", "socks5"}
 	credentialPlaces  = []string{"none", "secret-store"}
+	// The contours of a machine a project may name, and nothing else: the resolver reads
+	// the same list, and a file that names no contour is [ContourLegacy] rather than the
+	// first word of this one (docs/ENVIRONMENT-CONFIG.md).
+	contours = []string{ContourDev, ContourTest, ContourProd}
 )
 
 // Validate reports the first thing that is wrong with the config, naming the key
@@ -97,6 +102,9 @@ func (c Config) Validate() error {
 		return err
 	}
 	if err := validateAccess(c.Access); err != nil {
+		return err
+	}
+	if err := validateEnvironment(c.Environment); err != nil {
 		return err
 	}
 	if err := validateDuration("ci.timeout", c.CI.Timeout); err != nil {
@@ -453,6 +461,65 @@ func validateAccess(access Access) error {
 		}
 	}
 	return nil
+}
+
+// validateEnvironment checks the contour of the machine a project says it is worked on and
+// the roots it names for itself.
+//
+// The contour is read by the same [contourOf] the resolver reads, so a word a file is
+// refused for and a word the resolver is refused for are one rule and one refusal. A root is
+// checked as a path and not as a word of a key (docs/ENVIRONMENT-CONFIG.md).
+func validateEnvironment(environment Environment) error {
+	if _, _, err := contourOf(environment.Contour); err != nil {
+		return err
+	}
+	for _, root := range []struct{ key, value string }{
+		{"environment.state_root", environment.StateRoot},
+		{"environment.worktrees_root", environment.WorktreesRoot},
+	} {
+		if err := validRoot(root.key, root.value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validRoot checks a root a project names for itself. It may be absolute or start with
+// "~/", it may hold "{repo}" and it may stand inside another folder — a project that keeps
+// everything it works in under one folder of its own is an ordinary choice — and it may not
+// climb out of the folder it starts in or be relative. Both separators are read for a "..",
+// so that a file written on one machine is refused on the other; the price of that choice is
+// a name of a POSIX machine that holds a backslash in it, and it is paid knowingly
+// (docs/ENVIRONMENT-CONFIG.md).
+//
+// An empty root is not a mistake and is not checked: a Config keeps a key a file leaves out
+// and a key a file writes empty as the same word, and every key of a string in this file
+// reads that word as "the project names none" — as `[worktrees] root` reads it
+// (internal/config/defaults.go). What a project gets for naming none is the root crewflow
+// proposes, and the resolver says that the root is not of the file.
+func validRoot(key, value string) error {
+	trimmed := strings.TrimSpace(value)
+	switch {
+	case trimmed == "":
+		return nil
+	case climbsOut(trimmed):
+		return fmt.Errorf("%s: %q climbs out of the folder it starts in, and a root names the folder itself",
+			key, trimmed)
+	case !strings.HasPrefix(trimmed, "~/") && !filepath.IsAbs(trimmed):
+		return fmt.Errorf("%s: must be an absolute path or start with %q, got %q: a relative path is a path of "+
+			"the folder a command happens to run in", key, "~/", trimmed)
+	}
+	return nil
+}
+
+// climbsOut is whether a value holds a `..` element under either separator.
+func climbsOut(value string) bool {
+	for _, element := range strings.FieldsFunc(value, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if element == ".." {
+			return true
+		}
+	}
+	return false
 }
 
 // validateNetwork checks the route of a project against the profiles it names: a
