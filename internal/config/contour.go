@@ -89,16 +89,27 @@ func (c Config) ResolveContour(home string) (ContourLayout, error) {
 	return layout, nil
 }
 
-// contourOf is the classification of the file: the word it writes, cleaned, or the word
-// legacy means. A word with spaces around it is refused with the cleaned word and not with
-// the line as it was typed — the refusal is the same one every time and carries no more
+// contourOf is the classification of the file: the word it writes, or the word legacy means
+// when it writes none.
+//
+// Only the key as it stands decides whether the file named a contour: an absent key and an
+// empty one are legacy, and a key that was written with spaces in it and no word is a
+// mistake a person made, not a choice to name no contour — cleaning a value before asking
+// whether there is one would answer "nobody wrote a contour" about a key somebody wrote. A
+// word with spaces around it and a word of nobody are refused with the cleaned word and not
+// with the line as it was typed, so a refusal is the same one every time and carries no more
 // than the key, the word that was meant and the three words that are there.
 func contourOf(written string) (string, bool, error) {
-	contour := strings.TrimSpace(written)
-	if contour == "" {
+	if written == "" {
 		return ContourLegacy, false, nil
 	}
-	if contour != written {
+	contour := strings.TrimSpace(written)
+	switch {
+	case contour == "":
+		return "", false, fmt.Errorf("environment.contour: the key holds spaces and no word, and the name of a "+
+			"contour is one word; a contour is %s, or the key out for a project that names none",
+			strings.Join(contours, ", "))
+	case contour != written:
 		return "", false, fmt.Errorf("environment.contour: the name of a contour is one word, %q has a space around it; "+
 			"a contour is %s, or the key out for a project that names none", contour, strings.Join(contours, ", "))
 	}

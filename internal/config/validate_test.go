@@ -148,6 +148,22 @@ func TestLoadRefusesTheEnvironmentOfAProject(t *testing.T) {
 			absent: []string{`" dev "`},
 		},
 		{
+			// A key somebody wrote with spaces in it and no word is a mistake a person
+			// made, not a choice to name no contour: answering "nobody named a contour"
+			// about it would make a file with `contour = " "` a legacy file, and the key
+			// was written to earn another word.
+			name:   "a key of spaces and no word",
+			table:  "[environment]\ncontour = \" \"\n",
+			want:   []string{"environment.contour", "spaces and no word", "dev, test, prod"},
+			absent: []string{`contour = "`},
+		},
+		{
+			name:   "a key of a tab and no word",
+			table:  "[environment]\ncontour = \"\\t\"\n",
+			want:   []string{"environment.contour", "spaces and no word"},
+			absent: []string{"\t"},
+		},
+		{
 			name:  "a state root that climbs out",
 			table: "[environment]\ncontour = \"dev\"\nstate_root = \"~/spaces/../etc\"\n",
 			want:  []string{"environment.state_root", "climbs out"},
@@ -261,5 +277,31 @@ func TestLoadAcceptsTheContourOfAProject(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// TestLoadAcceptsAnEmptyContourKey: the key written empty is one of the two ways of naming
+// no contour, so a file that says so loads and its resolver answers `legacy-unclassified`.
+// The key written with spaces in it is refused instead — the same rule one word apart, and
+// both halves are here so that neither is taken for the other.
+func TestLoadAcceptsAnEmptyContourKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "crewflow.toml")
+	writeFile(t, path, headOfAProject+"\n[environment]\ncontour = \"\"\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load of a file with an empty contour returned an error: %v", err)
+	}
+
+	if got := cfg.Environment.Contour; got != "" {
+		t.Errorf("environment.contour = %q, want the empty word of the file", got)
+	}
+	layout, err := cfg.ResolveContour(t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveContour returned an error: %v", err)
+	}
+	if layout.Contour != ContourLegacy || layout.Declared {
+		t.Errorf("contour = %q, declared = %t, want %q and false",
+			layout.Contour, layout.Declared, ContourLegacy)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -138,6 +139,56 @@ func TestResolveContourRefusesAWordNobodyDefined(t *testing.T) {
 				t.Errorf("error %q carries the raw word, want the cleaned one only", err)
 			}
 		})
+	}
+}
+
+// TestResolveContourRefusesAKeyOfSpacesAndNoWord is the other half of the rule that a legacy
+// file is one that named nothing: a key somebody wrote with spaces in it and no word is a
+// mistake, and answering "nobody named a contour" about it would let a file with
+// `contour = " "` be called legacy — the very classification the key was written to earn.
+// Cleaning a value before asking whether there is one would do that, so the emptiness is
+// asked of the key as it stands.
+func TestResolveContourRefusesAKeyOfSpacesAndNoWord(t *testing.T) {
+	home := t.TempDir()
+	for _, written := range []string{" ", "  ", "\t", "\n", "\r\n", " \t\n "} {
+		t.Run(strconv.Quote(written), func(t *testing.T) {
+			cfg := projectWithAnEnvironment(written, "", "")
+
+			_, err := cfg.ResolveContour(home)
+
+			if err == nil {
+				t.Fatalf("ResolveContour of the contour %q returned no error, want the refusal of a key that holds no word",
+					written)
+			}
+			for _, want := range []string{"environment.contour", "spaces and no word", "dev, test, prod"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err, want)
+				}
+			}
+			// The refusal carries the words of the rule and not the spaces as they were
+			// typed: a value of a file is not a place for a value as it was written.
+			if strings.ContainsAny(err.Error(), "\t\n\r") {
+				t.Errorf("error %q carries the whitespace of the value, want the cleaned refusal", err)
+			}
+		})
+	}
+}
+
+// TestResolveContourOfAnEmptyKeyIsLegacy holds the other side of the same rule: the key
+// written empty is one of the two ways of naming no contour — the other is the key out of
+// the file — and it is not a mistake, whatever surrounds it in the file: the value that
+// reaches the resolver is the empty word.
+func TestResolveContourOfAnEmptyKeyIsLegacy(t *testing.T) {
+	cfg := projectWithAnEnvironment("", "", "")
+
+	layout, err := cfg.ResolveContour(t.TempDir())
+	if err != nil {
+		t.Fatalf("ResolveContour of an empty contour returned an error: %v", err)
+	}
+
+	if layout.Contour != ContourLegacy || layout.Declared {
+		t.Errorf("contour = %q, declared = %t, want %q and false",
+			layout.Contour, layout.Declared, ContourLegacy)
 	}
 }
 
