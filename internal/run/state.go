@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,6 +31,18 @@ type State struct {
 	// of it read as it is, and it is written again in the current format the next
 	// time a run of the task touches it.
 	Schema int `json:"schema,omitempty"`
+	// Revision is how many times what this record says about the task has changed, and it is
+	// the road that writes the state under the lock of the task that assigns it: a caller
+	// names a change and never the revision, and the record takes the one of the record that
+	// is on the disk plus one. A state written before crewflow kept one is read as zero.
+	//
+	// It counts changes and not writes: a write that changed nothing keeps the revision it
+	// was read with. It is one number and not two — the life of a task and the bookkeeping of
+	// the queue around it are both what the record says about the task, and the backlog of the
+	// events that are not told yet is not counted at all: what a subscriber has not been told
+	// is the backlog itself, and a task that went from A to B went once however many times the
+	// news about it was confirmed (docs/DESIGN.md §7h, #243).
+	Revision int64 `json:"revision"`
 	// Number is the task the state is of.
 	Number int `json:"task"`
 	// Title is the one line a person wrote, so that a state file says what it is
@@ -83,6 +96,12 @@ type State struct {
 	Settled *Settled `json:"settled,omitempty"`
 	// Attempts are the starts of the executor, oldest first.
 	Attempts []Attempt `json:"attempts"`
+	// PendingEvents are the transitions of the state of the task that nobody has been told
+	// about yet, oldest first, and what a subscriber of the task is to be told from while they
+	// are here: each of them is a transition of the task with the immutable record it rests
+	// on, and it is kept until the confirmation of that record says it was told
+	// (docs/DESIGN.md §7h, #243).
+	PendingEvents []PendingEvent `json:"pending_events,omitempty"`
 }
 
 // Settled is what the host said about a run whose work is over, and when it said it: the
@@ -740,17 +759,135 @@ func LoadState(path string) (State, error) {
 // task is changed and never written whole, so that no command can take a record of another one
 // away (D-068 FINDING-4, D-044: одна дорога).
 //
+// The record it writes is the change the caller has over what was on the disk, and the two are
+// what says whether the change is a change: the revision of the record is the road's word, taken
+// from the one that was read under the lock, and a change that names a revision above the record
+// is refused before a byte of it is written. The road a run takes its own attempt back out of
+// the state with is this one and not another, so that removal is a change of the record like any
+// other and not a road around the revision (docs.DESIGN.md §7h, #243).
+//
+// It answers the record as it was written, revision and all: a caller that asks what the state
+// of the task is after its change is told what is on the disk and not what it held in its hands
+// before the road had its word.
+//
 // The reason of an attempt is what a program of the run said, and it is published through the
 // boundary of the run before it is written: the state of a task is a file kept for ever and read
 // by programs that decide by the words of crewflow, and a reason of a run with the password of
-// a proxy in it is a password of a person in a file of a task (docs/DESIGN.md §7e).
+// a proxy in it is a password of a person in a file of a task (docs.DESIGN.md §7e).
 //
 // It is published as a reason and not as a text: a reason is a code of §6a and then the words
 // of what happened, the queue reads it by the code before the colon, and a code with a cut in
 // it is not a code (R5-NEW-8, §6a, §7e).
-func saveState(out *secret.Out, path string, state State) error {
-	state.Schema = Schema
-	return publishState(out, path, state)
+func saveState(out *secret.Out, path string, was persisted, next State) (State, error) {
+	revision, err := nextRevision(out, was, next)
+	if err != nil {
+		return State{}, err
+	}
+	next.Revision, next.Schema = revision, Schema
+	if err := publishState(out, path, next); err != nil {
+		return State{}, err
+	}
+	return next, nil
+}
+
+// persisted is the record of a task as it is on the disk: the words a reader of the file sees and
+// the revision they stand at.
+//
+// It is taken while the record is whole and before any change of it, and that is the whole reason
+// it is words and not a [State]: a change is made on the arrays behind the record it was given —
+// the attempt of a run is written into the list of the attempts in place — so a record compared
+// with itself afterwards says that nothing changed, and a revision that never grows is a revision
+// a subscriber cannot watch (docs/DESIGN.md §7h).
+type persisted struct {
+	// document is what the record says about the task as the boundary publishes it, without
+	// the revision and without the backlog of the events that are not told yet.
+	document []byte
+	// revision is the version of the record the change is written over.
+	revision int64
+}
+
+// readPersisted is what the record of a task on the disk is, read whole: the words of it as a
+// reader of the file sees them, and the revision it stands at.
+//
+// The words are the document without the revision and without the backlog, and the schema is the
+// one the road writes: the revision is the name of the change and not a part of what is said, the
+// backlog is the queue of what has not been told about the task and not what the record says about
+// it, and the format of the file is the road's word as well — a record of before takes the
+// revision of its first real change and not the one of having been written in the format of today
+// (docs/DESIGN.md §7h, #243).
+func readPersisted(out *secret.Out, state State) (persisted, error) {
+	words := state
+	words.Revision, words.PendingEvents, words.Schema = 0, nil, Schema
+	document, err := out.StateDocument(words)
+	if err != nil {
+		return persisted{}, fmt.Errorf("the state of the task that is on the disk: %w", err)
+	}
+	return persisted{document: document, revision: state.Revision}, nil
+}
+
+// ErrRevisionForged is the refusal of a change that came with a revision above the one the
+// record on the disk stands at. The revision is the road's word, taken from the record that was
+// read under the lock of the task: a change that claims the record is further along than it is
+// is a claim of progress that never happened, and a subscriber reads the revision as a change of
+// the task — a record that says it is the fortieth version of a task when it is the fourth is a
+// record nobody may act on (docs/DESIGN.md §7h, #243).
+var ErrRevisionForged = errors.New("state-revision-forged")
+
+// ErrRevisionOverflow is the refusal of a change to a record that stands at the highest revision
+// the format has. The revision only ever grows, and a number that went over the top of it is a
+// revision nobody can read as the version of a record that follows another one.
+var ErrRevisionOverflow = errors.New("state-revision-overflow")
+
+// saysTheSame is whether the change left the record of the task saying what it was saying: the
+// two are compared as a reader of the file reads them, so two records published as the same words
+// are the same record whatever the time of the machine inside them was — which is what makes a
+// write that changed nothing a write that changed nothing and not a change nobody can tell from a
+// real one. The record is published twice on the way to the disk — once to be compared and once
+// with the revision the comparison gave it — because the revision is the road's word and has to be
+// known before the record carries it (docs/DESIGN.md §7h, #243).
+func saysTheSame(out *secret.Out, was persisted, next State) (bool, error) {
+	words := next
+	words.Revision, words.PendingEvents, words.Schema = 0, nil, Schema
+	after, err := out.StateDocument(words)
+	if err != nil {
+		return false, fmt.Errorf("the state of the task: %w", err)
+	}
+	return bytes.Equal(was.document, after), nil
+}
+
+// nextRevision is the revision of the record a change writes, and it is the road's word whatever
+// the change came with: the record takes the revision that is on the disk plus one, so a caller
+// cannot lower the record and cannot skip a version of it, and a change that names a revision
+// above the record is refused instead of answered — the record of a task never goes back and never
+// jumps forward over what nobody wrote.
+//
+// The revision grows only when the change left the record saying something else: a write that
+// changed nothing keeps the revision it was read with, because a revision that grew on every
+// write of a state would count the writes of a schedule and not the changes of a task.
+//
+// The two are compared as a reader of the file reads them, without the revision and without the
+// backlog: that is the whole of the semantics, and it is one number for both the life of a task
+// and the bookkeeping of the queue around it — both are what the record says about the task — with
+// the one exclusion the news about the task leaves behind (docs/DESIGN.md §7h, #243).
+func nextRevision(out *secret.Out, was persisted, next State) (int64, error) {
+	if next.Revision > was.revision {
+		return 0, fmt.Errorf("the change of the state of the task named the revision %d of it while the record on "+
+			"the disk stands at %d, and a revision above it is a change that never happened: %w",
+			next.Revision, was.revision, ErrRevisionForged)
+	}
+	same, err := saysTheSame(out, was, next)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case same:
+		return was.revision, nil
+	case was.revision == math.MaxInt64:
+		return 0, fmt.Errorf("the state of the task stands at the revision %d, which is the highest one the format "+
+			"has, and a change cannot be written over it: %w", was.revision, ErrRevisionOverflow)
+	default:
+		return was.revision + 1, nil
+	}
 }
 
 // publishState is the record of a task as the boundary publishes it and the file of the task keeps
@@ -781,10 +918,11 @@ func publishState(out *secret.Out, path string, record any) error {
 //
 // Therefore the write is a change and not a state: the lock of the task is taken, the
 // state is read again as it is there now, the change is made on that and the whole is
-// written — whole or not at all, as `saveState` writes it under that lock. It is the only
+// written — whole or not at all, as `saveState` writes it under that lock, which is also
+// where the revision of the record is taken from the one that was read. It is the only
 // road into a state of a task that is already there, and a writer that cannot take the lock
 // is refused and says so: a record lost without a word about it is worse than a record that
-// was not written (D-044: одна дорога).
+// was not written (D-044: одна дорога, docs/DESIGN.md §7h).
 func UpdateState(path string, change func(State) (State, error)) (State, error) {
 	return UpdateStateThrough(nil, path, change)
 }
@@ -813,14 +951,18 @@ func UpdateStateThrough(out *secret.Out, path string, change func(State) (State,
 		// write over it would take it away.
 		return State{}, err
 	}
+	// What the record on the disk says is taken before the change: a change is made on the
+	// arrays behind the record it was given, and a road that compared the record with itself
+	// afterwards would call every change of a run a write that changed nothing (§7h).
+	was, err := readPersisted(out, state)
+	if err != nil {
+		return State{}, err
+	}
 	changed, err := change(state)
 	if err != nil {
 		return State{}, err
 	}
-	if err := saveState(out, path, changed); err != nil {
-		return State{}, err
-	}
-	return changed, nil
+	return saveState(out, path, was, changed)
 }
 
 // lockState takes the lock of the state of one task and answers how to give it back. The

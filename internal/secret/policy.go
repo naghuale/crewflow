@@ -720,12 +720,14 @@ func checkOfTheKeyOfAnApp() map[string]rule {
 func stateOfATask() map[string]rule {
 	return merge(
 		under("attempts[]", attemptOfATask()),
+		under("pending_events[]", pendingEventOfATask()),
 		under("checkpoint", checkpointOfATask()),
 		under("change", map[string]rule{"": aContainer()}),
 		under("notice", map[string]rule{"": aContainer()}),
 		under("settled", map[string]rule{"": aContainer()}),
 		map[string]rule{
 			"schema":                aNumber(),
+			"revision":              aNumber(),
 			"task":                  aNumber(),
 			"title":                 freeText(),
 			"branch":                ofForm(aName),
@@ -756,7 +758,30 @@ func stateOfATask() map[string]rule {
 			"checkpoint.task":       aNumber(),
 			"attempts":              aContainer(),
 			"attempts[]":            aContainer(),
+			"pending_events":        aContainer(),
+			"pending_events[]":      aContainer(),
 		})
+}
+
+// pendingEventOfATask is one transition of the state of a task that nobody has been told about
+// yet (§7h): the two states of §6a it went from and to, the moment, and the immutable record it
+// rests on — the commit at the head of the branch of the task at that moment.
+//
+// Not one field of it is text: a transition is told by the record it rests on, and the words
+// behind it are the words of a run nobody looked at when the event was told. So the name of the
+// record is a digest in the form of a digest, the two states are words of the closed list of
+// §6a, and the basis is a commit of the host — a value that is not of its form stops the write
+// whole, and a value that is not of its form is also not a record anybody may go and read
+// (docs/DESIGN.md §7e, §7h, #243).
+func pendingEventOfATask() map[string]rule {
+	return map[string]rule{
+		"":      aContainer(),
+		"id":    ofForm(aFingerprint),
+		"at":    ofForm(aMoment),
+		"from":  ofList(statesOfAttention...),
+		"to":    ofList(statesOfAttention...),
+		"basis": ofForm(aCommit),
+	}
 }
 
 // attemptOfATask is one attempt of the executor in the state of a task: when it was started and

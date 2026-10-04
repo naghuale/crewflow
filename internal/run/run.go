@@ -828,6 +828,12 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 		}
 		return err
 	}
+	// What the record on the disk says is taken while it is whole, before the attempt is
+	// taken out of it: the removal is made on the attempts behind the record that was read.
+	persisted, err := readPersisted(r.boundary(), current)
+	if err != nil {
+		return err
+	}
 	kept := current.withoutAttempt(attempt, started)
 	if !was && len(kept.Attempts) == 0 {
 		// A task that was never run has no state to put back, and an empty one is a file
@@ -837,9 +843,13 @@ func (r *runner) putStateBack(attempt int, started time.Time, was bool) error {
 		}
 		return nil
 	}
-	// The bytes are written by `saveState` under the lock held above: a state of a task that
-	// is there is changed, and this run changes it by taking one attempt out of it (D-044).
-	return saveState(r.boundary(), path, kept)
+	// The bytes are written by `saveState` under the lock held above, over the record as it is
+	// there now: a state of a task that is there is changed, and this run changes it by taking
+	// one attempt out of it — and the revision of the record is the road's word, taken from the
+	// one that was read, so that removal of an attempt is a change of the record like any other
+	// and not a road around the revision (D-044, docs.DESIGN.md §7h).
+	_, err = saveState(r.boundary(), path, persisted, kept)
+	return err
 }
 
 // aliveStep is a sign of life of the run at a step of crewflow together with whose name

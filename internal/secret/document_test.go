@@ -336,3 +336,106 @@ func sameJSON(one, other any) bool {
 	}
 	return string(first) == string(second)
 }
+
+// TestAPendingEventOfAStateOnSomethingThatIsNotARecordIsNotWritten: the backlog of a task keeps
+// the transitions nobody has been told about yet, and every field of it is either a word of a
+// closed list of §6a or a name with a shape the format has: a transition is told by the commit
+// at the head of the branch of the task, and a payload of any other kind in the backlog of a
+// task is a field nobody looked at when the event was told. So a record of a task whose basis is
+// not a commit, or whose transition is between words that are not the states of the queue, is
+// not written at all — and the refusal names the field and not the value of it (D-082, D-089,
+// docs/DESIGN.md §7e, §7h, #243).
+func TestAPendingEventOfAStateOnSomethingThatIsNotARecordIsNotWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		event  map[string]any
+		path   string
+		reason error
+	}{
+		{name: "a payload in place of the record a transition rests on",
+			event: map[string]any{"id": "7490550696ff", "at": "2026-10-04T09:00:00Z",
+				"from": "stands", "to": "awaits-review", "basis": `{"the": "run said"}`},
+			path: "pending_events[].basis", reason: ErrProtectedFieldInvalid},
+		{name: "a value of a run in place of the record a transition rests on",
+			event: map[string]any{"id": "7490550696ff", "at": "2026-10-04T09:00:00Z",
+				"from": "stands", "to": "awaits-review", "basis": canaryShort},
+			path: "pending_events[].basis", reason: ErrProtectedFieldInvalid},
+		{name: "a word out of the list of the states in place of a state",
+			event: map[string]any{"id": "7490550696ff", "at": "2026-10-04T09:00:00Z",
+				"from": "in-progress", "to": "awaits-review", "basis": "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"},
+			path: "pending_events[].from", reason: ErrProtectedFieldInvalid},
+		{name: "a moment that is not a moment in place of the moment of a transition",
+			event: map[string]any{"id": "7490550696ff", "at": "yesterday",
+				"from": "stands", "to": "awaits-review", "basis": "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"},
+			path: "pending_events[].at", reason: ErrProtectedFieldInvalid},
+		{name: "a name a program cannot read in place of the name of an event",
+			event: map[string]any{"id": "not-a-digest", "at": "2026-10-04T09:00:00Z",
+				"from": "stands", "to": "awaits-review", "basis": "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"},
+			path: "pending_events[].id", reason: ErrProtectedFieldInvalid},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := boundaryOf(Chosen(canaryShort)...)
+
+			document, err := out.StateDocument(map[string]any{
+				"schema": 1, "revision": 1, "task": 43,
+				"pending_events": []any{tc.event},
+			})
+
+			if !errors.Is(err, tc.reason) {
+				t.Fatalf("the state of a task with a transition that is not one = %v, want %v", err, tc.reason)
+			}
+			if document != nil {
+				t.Errorf("the state of a task that was not written is %s, want nothing", document)
+			}
+			for _, want := range []string{string(DocumentState), tc.path} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("the refusal is %q, want it to name the document and the field", err)
+				}
+			}
+			if strings.Contains(err.Error(), canaryShort) {
+				t.Errorf("the refusal is %q, want no value of a run in it", err)
+			}
+		})
+	}
+}
+
+// TestAPendingEventOfAStateIsWrittenAsItIs: the fields the policy of the backlog names are fields
+// somebody looked at, and a transition of a task that rests on the commit at the head of its
+// branch is a document the boundary publishes whole — the words of the format with a cut in them
+// are words nobody can read, and the commit of the host is what a subscriber goes and reads the
+// event against (D-082, R224-001, docs/DESIGN.md §7e, §7h, #243).
+func TestAPendingEventOfAStateIsWrittenAsItIs(t *testing.T) {
+	const commit = "9f1c0de4a4a0b1f2c3d4e5f60718293a4b5c6d7"
+	out := boundaryOf(Chosen("commit")...)
+
+	document, err := out.StateDocument(map[string]any{
+		"schema": 1, "revision": 4, "task": 43,
+		"pending_events": []any{map[string]any{
+			"id": "7490550696ff", "at": "2026-10-04T09:00:00Z",
+			"from": "stands", "to": "awaits-review", "basis": commit,
+		}},
+	})
+
+	if err != nil {
+		t.Fatalf("the state of a task with a transition of its own: %v", err)
+	}
+	var read map[string]any
+	if err := json.Unmarshal(document, &read); err != nil {
+		t.Fatalf("the state of a task is not a document: %v\n%s", err, document)
+	}
+	events, isList := read["pending_events"].([]any)
+	if !isList || len(events) != 1 {
+		t.Fatalf("the state of a task holds %v, want the one transition that was written", read["pending_events"])
+	}
+	want := map[string]any{
+		"id": "7490550696ff", "at": "2026-10-04T09:00:00Z",
+		"from": "stands", "to": "awaits-review", "basis": commit,
+	}
+	if event := events[0].(map[string]any); !sameJSON(event, want) {
+		t.Errorf("the transition in the backlog is\n%s\nwant\n%s", asJSON(t, event), asJSON(t, want))
+	}
+	if revision, _ := read["revision"].(float64); revision != 4 {
+		t.Errorf("the revision of the record is %v, want 4: the record keeps the number it was written with",
+			read["revision"])
+	}
+}
