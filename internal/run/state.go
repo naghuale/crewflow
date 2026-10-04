@@ -879,15 +879,23 @@ func nextRevision(out *secret.Out, was persisted, next State) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	switch {
-	case same:
+	if same {
 		return was.revision, nil
-	case was.revision == math.MaxInt64:
+	}
+	return revisionOf(was)
+}
+
+// revisionOf is the revision a record of a task takes when the change before it changed it: one
+// more than the revision that is on the disk, and nothing at all where the record stands at the
+// highest revision the format has. It is the revision an event of that change is named by, so the
+// name of an event is bound to the one version of the record it was told in
+// (docs/DESIGN.md §7h, #243).
+func revisionOf(was persisted) (int64, error) {
+	if was.revision == math.MaxInt64 {
 		return 0, fmt.Errorf("the state of the task stands at the revision %d, which is the highest one the format "+
 			"has, and a change cannot be written over it: %w", was.revision, ErrRevisionOverflow)
-	default:
-		return was.revision + 1, nil
 	}
+	return was.revision + 1, nil
 }
 
 // publishState is the record of a task as the boundary publishes it and the file of the task keeps
@@ -935,6 +943,18 @@ func UpdateState(path string, change func(State) (State, error)) (State, error) 
 // A nil boundary publishes what it is given: the words of crewflow in a state are its own
 // and there is nothing of a run to take out of them.
 func UpdateStateThrough(out *secret.Out, path string, change func(State) (State, error)) (State, error) {
+	return updateStateThrough(out, path, func(state State, _ persisted) (State, error) { return change(state) })
+}
+
+// updateStateThrough is [UpdateStateThrough] with what the record on the disk said handed to the
+// change beside the record itself. A change of the state of a task is made on the arrays behind
+// the record it was given, so a change that has to tell whether it changed anything at all — a
+// road that refuses an event of a task that did not change — cannot do it from the record in its
+// hands: by then the record is the change. What was on the disk is therefore taken under the
+// lock and given to the change, and it is the same lock, the same reading and the same write for
+// both roads (docs/DESIGN.md §7h, #243).
+func updateStateThrough(out *secret.Out, path string,
+	change func(State, persisted) (State, error)) (State, error) {
 	release, err := lockState(path)
 	if err != nil {
 		return State{}, err
@@ -958,7 +978,7 @@ func UpdateStateThrough(out *secret.Out, path string, change func(State) (State,
 	if err != nil {
 		return State{}, err
 	}
-	changed, err := change(state)
+	changed, err := change(state, was)
 	if err != nil {
 		return State{}, err
 	}

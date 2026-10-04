@@ -93,13 +93,18 @@ func TestTheBoundaryHoldsTheFormOfTheNameAndTheRecordOfAPendingEvent(t *testing.
 	if !known {
 		t.Fatal("the policy of the state does not name the record a transition rests on")
 	}
-	for _, transition := range []Transition{
-		{From: AttentionStands, To: AttentionAwaitsReview, At: monday, Basis: theHead},
-		{From: AttentionBlocked, To: AttentionStopped, At: monday, Basis: "9f1c0de"},
+	for _, at := range []struct {
+		transition Transition
+		revision   int64
+	}{
+		{transition: Transition{From: AttentionStands, To: AttentionAwaitsReview, At: monday, Basis: theHead},
+			revision: 1},
+		{transition: Transition{From: AttentionBlocked, To: AttentionStopped, At: monday, Basis: "9f1c0de"},
+			revision: 7},
 	} {
-		event, err := eventOf(transition)
+		event, err := eventOf(at.transition, at.revision)
 		if err != nil {
-			t.Fatalf("the record of the transition %s→%s: %v", transition.From, transition.To, err)
+			t.Fatalf("the record of the transition %s→%s: %v", at.transition.From, at.transition.To, err)
 		}
 		if !name(event.ID) {
 			t.Errorf("the form of the name of an event refuses the name the code writes: %q", event.ID)
@@ -107,6 +112,10 @@ func TestTheBoundaryHoldsTheFormOfTheNameAndTheRecordOfAPendingEvent(t *testing.
 		if !record(event.Basis) {
 			t.Errorf("the form of the record a transition rests on refuses the commit the code writes: %q",
 				event.Basis)
+		}
+		if want := idOf(at.transition, at.revision); event.ID != want {
+			t.Errorf("the name of the event at the revision %d is %q, want the digest of it: %q",
+				at.revision, event.ID, want)
 		}
 	}
 }

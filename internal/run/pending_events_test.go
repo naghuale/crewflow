@@ -25,6 +25,23 @@ func went(from, to AttentionState, at time.Time, head string) Transition {
 	return Transition{From: from, To: to, At: at, Basis: head}
 }
 
+// runWentOn is a change of the state of a task that is real: another run of the task began, and
+// the record of the task says so. A transition is news of a change, so a test that records one
+// makes a change of the task with it — a change that changes nothing is not news of anything and
+// is refused (#243).
+func runWentOn(attempt int) func(State) (State, error) {
+	return func(state State) (State, error) {
+		return state.NextAttempt(state.NextNumber(), StartOf{
+			Started:      monday.Add(time.Duration(attempt) * time.Hour),
+			Step:         stepExecutor,
+			Journal:      fmt.Sprintf("/w/43-%d.jsonl", attempt),
+			ErrorJournal: fmt.Sprintf("/w/43-%d.err", attempt),
+			Executor:     "opencode",
+			Identity:     Identity{Mode: "owner"},
+		}), nil
+	}
+}
+
 // TestATransitionIsKeptWithTheChangeThatCarriesIt: the news about a change of a task and the
 // change itself are one write under the lock of the task. A subscriber that read the record
 // between them would see a task that went from A to B and would never hear about it, and a
@@ -37,12 +54,7 @@ func TestATransitionIsKeptWithTheChangeThatCarriesIt(t *testing.T) {
 	at := monday.Add(9 * time.Hour)
 
 	written, err := RecordPendingEvent(nil, path,
-		went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst),
-		func(state State) (State, error) {
-			return state.NextAttempt(state.NextNumber(), StartOf{
-				Started: at, Step: stepExecutor, Journal: journals.JournalPath(43, 1),
-			}), nil
-		})
+		went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst), runWentOn(1))
 	if err != nil {
 		t.Fatalf("RecordPendingEvent returned an error: %v", err)
 	}
@@ -74,16 +86,160 @@ func TestATransitionIsKeptWithTheChangeThatCarriesIt(t *testing.T) {
 	if !event.At.Equal(at) {
 		t.Errorf("the transition is at %s, want %s", event.At, at)
 	}
+	// The name of the event is bound to the version of the record it was told in: the record
+	// was at zero, the change made it the first version, and the event is named by that.
+	if want := idOf(went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst), 1); event.ID != want {
+		t.Errorf("the transition is named %q, want the digest of it at the revision 1: %q", event.ID, want)
+	}
 	if kept.Revision != written.Revision || written.Revision != 1 {
 		t.Errorf("the record of the task stands at the revision %d (written as %d), want the first change of "+
 			"the record of a task that was not there", kept.Revision, written.Revision)
 	}
 }
 
-// TestTheBacklogOfATaskIsThereAfterTheProcessThatWroteItIsGone: the record of a task is
-// written whole or not at all through a file of its own and moved over the old one, so the
-// backlog of a task survives the crewflow that wrote it being killed — a separate file of the
-// events, and an intent written before the state, are what do not survive that (D-068 FINDING-4,
+// TestATransitionWithoutAChangeOfTheTaskIsRefused: a transition is news of a change, and a change
+// it can be news of. A caller that records a transition and leaves the record of the task saying
+// the same thing has committed nothing, and an event of a task that did not happen is exactly the
+// uncommitted transition the backlog exists not to publish — so it is refused whole, with a name a
+// caller can tell apart, and neither the event nor the change beside it reaches the disk: the
+// record stands byte for byte, at the revision it stood at, with the backlog it had
+// (docs/DESIGN.md §7h, #243).
+func TestATransitionWithoutAChangeOfTheTaskIsRefused(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	keeps(t, path, State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-the-run-of-a-task"})
+	recorded(t, path, went(AttentionStands, AttentionAwaitsReview, monday.Add(9*time.Hour), headOfTheFirst))
+	written := read(t, path)
+	before := stateOfTheTask(t, path)
+
+	_, err := RecordPendingEvent(nil, path,
+		went(AttentionAwaitsReview, AttentionFinishedUnseen, monday.Add(10*time.Hour), headOfTheSecond),
+		unchanged)
+
+	if !errors.Is(err, ErrPendingWithoutChange) {
+		t.Fatalf("the transition without a change of the task = %v, want %v", err, ErrPendingWithoutChange)
+	}
+	for _, want := range []string{"awaits-review", "finished-unseen", "same thing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal %q does not hold %q", err, want)
+		}
+	}
+	if kept := read(t, path); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, written)
+	}
+	after := stateOfTheTask(t, path)
+	if after.Revision != before.Revision {
+		t.Errorf("the record of the task stands at the revision %d after the refusal, want %d: nothing was "+
+			"committed, so nothing changed", after.Revision, before.Revision)
+	}
+	if len(after.PendingEvents) != len(before.PendingEvents) {
+		t.Errorf("the backlog of the task holds %v after the refusal, want %v", idsOf(after), idsOf(before))
+	}
+}
+
+// TestTwoChangesOfATaskOnOneRecordAreTwoEvents: the name of an event is a digest of the version of
+// the record it was told in, of the transition and of the whole record it rests on. Two changes of a
+// task committed one after another are two events — even when the transition is the same and the
+// branch of the task did not move, as when only the title of the task changed between them — and
+// the second of them is not the same news told twice: a subscriber that was told nothing about the
+// first has to be able to read the second as its own (docs/DESIGN.md §7h, #243).
+func TestTwoChangesOfATaskOnOneRecordAreTwoEvents(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	at := monday.Add(9 * time.Hour)
+	keeps(t, path, State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-the-run-of-a-task"})
+	transition := went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst)
+
+	first, err := RecordPendingEvent(nil, path, transition, func(state State) (State, error) {
+		changed := state
+		changed.Title = "the run of a task, first change"
+		return changed, nil
+	})
+	if err != nil {
+		t.Fatalf("the first change of the task returned an error: %v", err)
+	}
+
+	second, err := RecordPendingEvent(nil, path, transition, func(state State) (State, error) {
+		changed := state
+		changed.Title = "the run of a task, second change"
+		return changed, nil
+	})
+
+	if err != nil {
+		t.Fatalf("the second change of the task on the same record returned an error: %v, want two events", err)
+	}
+	if second.Revision != first.Revision+1 {
+		t.Errorf("the record of the task stands at the revision %d after the second change, want %d",
+			second.Revision, first.Revision+1)
+	}
+	if len(second.PendingEvents) != 2 {
+		t.Fatalf("the backlog holds %v, want both transitions of the two changes", idsOf(second))
+	}
+	if second.PendingEvents[0].ID == second.PendingEvents[1].ID {
+		t.Fatalf("the backlog holds the same event twice under one name: %q", second.PendingEvents[0].ID)
+	}
+	for at, event := range second.PendingEvents {
+		version := first.Revision + int64(at)
+		if want := idOf(transition, version); event.ID != want {
+			t.Errorf("the event %d of the backlog is named %q, want the digest of the transition at the "+
+				"revision %d: %q", at+1, event.ID, version, want)
+		}
+		if event.Basis != headOfTheFirst {
+			t.Errorf("the event %d of the backlog rests on %q, want the record the branch of the task "+
+				"stood at both times: %q", at+1, event.Basis, headOfTheFirst)
+		}
+	}
+	// The whole record the event rests on is in its name, and so is the version of the record
+	// of the task: the same transition told about another commit, and the same transition told
+	// again after another change, are two events and not one.
+	other := went(AttentionStands, AttentionAwaitsReview, at, headOfTheSecond)
+	if idOf(transition, second.Revision) == idOf(other, second.Revision) {
+		t.Errorf("the name of an event is the same for two records of the host: %q",
+			idOf(transition, second.Revision))
+	}
+	if idOf(transition, second.Revision) == idOf(transition, second.Revision+1) {
+		t.Error("the name of an event is the same in two versions of the record of a task")
+	}
+}
+
+// TestTheSameEventTwiceInOneRecordIsRefused: a record of the backlog holds each event once, and a
+// name nobody checked is not what keeps it that way. The same transition told twice about one
+// version of the record of a task is one event twice, and the second of them is refused whole —
+// so a record of the backlog is not written over and not written twice (docs/DESIGN.md §7h, #243).
+func TestTheSameEventTwiceInOneRecordIsRefused(t *testing.T) {
+	journals := newJournals(t.TempDir(), "naghuale-crewflow")
+	path := journals.StatePath(43)
+	keeps(t, path, State{Number: 43, Title: "the run of a task", Branch: "crewflow/43-the-run-of-a-task"})
+	before := stateOfTheTask(t, path)
+	transition := went(AttentionStands, AttentionAwaitsReview, monday.Add(9*time.Hour), headOfTheFirst)
+	written := read(t, path)
+	// The record takes the next revision with this change in it, and the event is named by it.
+	committed := before.Revision + 1
+
+	_, err := UpdateState(path, func(state State) (State, error) {
+		changed, err := state.withPendingEvent(transition, committed)
+		if err != nil {
+			return State{}, err
+		}
+		return changed.withPendingEvent(transition, committed)
+	})
+
+	if !errors.Is(err, ErrPendingExists) {
+		t.Fatalf("the same event twice in one record = %v, want %v", err, ErrPendingExists)
+	}
+	if kept := read(t, path); kept != written {
+		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, written)
+	}
+	if state := stateOfTheTask(t, path); len(state.PendingEvents) != 0 || state.Revision != before.Revision {
+		t.Errorf("the record of the task holds %v at the revision %d after the refusal, want an empty backlog "+
+			"at the revision %d", idsOf(state), state.Revision, before.Revision)
+	}
+}
+
+// TestTheBacklogOfATaskIsThereAfterTheProcessThatWroteItIsGone: the record of a task is written
+// whole or not at all through a file of its own and moved over the old one, so the backlog of a
+// task survives the crewflow that wrote it being killed — a separate file of the events, and an
+// intent written before the state, are what do not survive that (D-068 FINDING-4,
 // docs/DESIGN.md §7h, #243).
 func TestTheBacklogOfATaskIsThereAfterTheProcessThatWroteItIsGone(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
@@ -143,7 +299,7 @@ func TestABacklogThatIsFullRefusesTheTransitionAndKeepsTheRecord(t *testing.T) {
 	for one := range PendingLimit {
 		if _, err := RecordPendingEvent(nil, path,
 			went(AttentionStands, AttentionAwaitsReview, at.Add(time.Duration(one)*time.Hour),
-				headOfTheAt(one)), unchanged); err != nil {
+				headOfTheAt(one)), runWentOn(one+1)); err != nil {
 			t.Fatalf("RecordPendingEvent %d of %d returned an error: %v", one+1, PendingLimit, err)
 		}
 	}
@@ -152,14 +308,13 @@ func TestABacklogThatIsFullRefusesTheTransitionAndKeepsTheRecord(t *testing.T) {
 	if len(state.PendingEvents) != PendingLimit {
 		t.Fatalf("the backlog holds %d transitions, want the %d it holds", len(state.PendingEvents), PendingLimit)
 	}
+	if len(state.Attempts) != PendingLimit {
+		t.Fatalf("the record holds %d attempts, want one for every transition written", len(state.Attempts))
+	}
 
 	_, err := RecordPendingEvent(nil, path,
 		went(AttentionAwaitsReview, AttentionFinishedUnseen, at.Add(9*time.Hour), headOfTheAt(PendingLimit)),
-		func(current State) (State, error) {
-			return current.NextAttempt(current.NextNumber(), StartOf{
-				Started: at.Add(9 * time.Hour), Step: stepExecutor, Journal: journals.JournalPath(43, 1),
-			}), nil
-		})
+		runWentOn(PendingLimit+1))
 
 	if !errors.Is(err, ErrPendingLimitReached) {
 		t.Fatalf("the transition into a full backlog = %v, want %v", err, ErrPendingLimitReached)
@@ -171,7 +326,7 @@ func TestABacklogThatIsFullRefusesTheTransitionAndKeepsTheRecord(t *testing.T) {
 		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, full)
 	}
 	state = stateOfTheTask(t, path)
-	if len(state.Attempts) != 0 {
+	if len(state.Attempts) != PendingLimit {
 		t.Errorf("the change the refused transition belonged to was written all the same: %d attempts in the record",
 			len(state.Attempts))
 	}
@@ -181,39 +336,10 @@ func TestABacklogThatIsFullRefusesTheTransitionAndKeepsTheRecord(t *testing.T) {
 	}
 }
 
-// TestATransitionThatIsInTheBacklogAlreadyIsNotWrittenOverIt: the name of a record of the
-// backlog is a digest of the transition and of the record it rests on, and the same transition
-// on the same record is one event however many times it is written. The record that is there is
-// kept whole — a subscriber that was told nothing about it yet must be able to read the same
-// event again (docs/DESIGN.md §7h, #243).
-func TestATransitionThatIsInTheBacklogAlreadyIsNotWrittenOverIt(t *testing.T) {
-	journals := newJournals(t.TempDir(), "naghuale-crewflow")
-	path := journals.StatePath(43)
-	at := monday.Add(9 * time.Hour)
-	keeps(t, path, State{Number: 43, Title: "the run of a task"})
-	transition := went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst)
-	if _, err := RecordPendingEvent(nil, path, transition, unchanged); err != nil {
-		t.Fatalf("RecordPendingEvent returned an error: %v", err)
-	}
-	first := read(t, path)
-
-	_, err := RecordPendingEvent(nil, path, transition, unchanged)
-
-	if !errors.Is(err, ErrPendingExists) {
-		t.Fatalf("the transition that is in the backlog already = %v, want %v", err, ErrPendingExists)
-	}
-	if kept := read(t, path); kept != first {
-		t.Errorf("the record of the task after the refusal is\n%s\nwant the one that was there\n%s", kept, first)
-	}
-	if state := stateOfTheTask(t, path); len(state.PendingEvents) != 1 {
-		t.Errorf("the backlog holds %d transitions, want the one that was there", len(state.PendingEvents))
-	}
-}
-
 // TestARecordOfTheBacklogThatDoesNotFitIsRefused: a state of a task is not a place for a
 // payload, and a record of the backlog is bounded in its size as well as in the number of
 // records. A transition whose record does not fit is refused with the change it belongs to,
-// whatever a caller put into it (docs/DESIGN.md §7h, #243).
+// whatever a caller put into it (docs.DESIGN.md §7h, #243).
 func TestARecordOfTheBacklogThatDoesNotFitIsRefused(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
@@ -222,8 +348,7 @@ func TestARecordOfTheBacklogThatDoesNotFitIsRefused(t *testing.T) {
 
 	_, err := RecordPendingEvent(nil, path,
 		went(AttentionStands, AttentionAwaitsReview, monday.Add(9*time.Hour),
-			strings.Repeat("a", PendingRecordLimit*2)),
-		unchanged)
+			strings.Repeat("a", PendingRecordLimit*2)), runWentOn(1))
 
 	if !errors.Is(err, ErrPendingTooLarge) {
 		t.Fatalf("the transition with a record that does not fit = %v, want %v", err, ErrPendingTooLarge)
@@ -247,7 +372,7 @@ func TestATransitionBetweenWordsThatAreNotTheStatesIsRefused(t *testing.T) {
 		went(AttentionState("in-progress"), AttentionAwaitsReview, monday.Add(9*time.Hour), headOfTheFirst),
 		went(AttentionStands, AttentionState("merged"), monday.Add(9*time.Hour), headOfTheFirst),
 	} {
-		_, err := RecordPendingEvent(nil, path, transition, unchanged)
+		_, err := RecordPendingEvent(nil, path, transition, runWentOn(1))
 		if !errors.Is(err, ErrPendingStateUnknown) {
 			t.Fatalf("the transition %q→%q = %v, want %v", transition.From, transition.To, err, ErrPendingStateUnknown)
 		}
@@ -269,7 +394,7 @@ func TestATransitionBetweenWordsThatAreNotTheStatesIsRefused(t *testing.T) {
 // against the backlog as it is there now, under the lock of the task. An event another writer
 // added while the list of confirmed names was being made is not in that list and stays where
 // it is — and the task that went from A to B went once: the confirmation does not move the
-// revision of the record and writes no event of its own (docs/DESIGN.md §7h, #243).
+// revision of the record and writes no event of its own (docs.DESIGN.md §7h, #243).
 func TestOnlyTheConfirmedEventsAreTakenOutOfTheBacklog(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
@@ -311,7 +436,7 @@ func TestOnlyTheConfirmedEventsAreTakenOutOfTheBacklog(t *testing.T) {
 // what has not been told about a task yet, so a confirmation of a name that is not in it says
 // nothing about what is — and a confirmation that took something out on a name nobody checked
 // would take out whatever else holds that name. The refusal is written before the record on the
-// disk is touched (docs/DESIGN.md §7h, #243).
+// disk is touched (docs.DESIGN.md §7h, #243).
 func TestTheConfirmationOfAnEventThatIsNotInTheBacklogIsRefused(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
@@ -362,7 +487,7 @@ func TestTheBacklogOfATaskSurvivesTheQueueAroundIt(t *testing.T) {
 // record it rests on, and the backlog has no field of the words of a run in it: a boundary that
 // has a password to cut has nothing to cut in the payload of an event. The record of the task
 // is published through the boundary of the run all the same, and the transition that rests on
-// what the branch of the task stands at goes in whole (docs/DESIGN.md §7e, §7h, #243).
+// what the branch of the task stands at goes in whole (docs.DESIGN.md §7e, §7h, #243).
 func TestTheBacklogOfATaskIsNotWrittenWithTheValuesOfARun(t *testing.T) {
 	journals := newJournals(t.TempDir(), "naghuale-crewflow")
 	path := journals.StatePath(43)
@@ -374,7 +499,10 @@ func TestTheBacklogOfATaskIsNotWrittenWithTheValuesOfARun(t *testing.T) {
 	if _, err := RecordPendingEvent(out, path,
 		went(AttentionStands, AttentionAwaitsReview, at, headOfTheFirst),
 		func(state State) (State, error) {
-			return state.Reason(1, password+": the run asked for "+password), nil
+			return state.NextAttempt(state.NextNumber(), StartOf{
+				Started: at, Step: stepExecutor, Journal: journals.JournalPath(43, 1),
+				Identity: Identity{Mode: "owner"},
+			}).Reason(1, password+": the run asked for "+password), nil
 		}); err != nil {
 		t.Fatalf("RecordPendingEvent returned an error: %v", err)
 	}
@@ -391,10 +519,11 @@ func TestTheBacklogOfATaskIsNotWrittenWithTheValuesOfARun(t *testing.T) {
 }
 
 // recorded is the record the backlog of the task holds after one transition written into it, and
-// it fails the test where the transition was not written.
+// it fails the test where the transition was not written. Every transition is told with a change
+// of the task beside it: a transition of a task that did not change is not news of anything.
 func recorded(t *testing.T, path string, transition Transition) PendingEvent {
 	t.Helper()
-	written, err := RecordPendingEvent(nil, path, transition, unchanged)
+	written, err := RecordPendingEvent(nil, path, transition, runWentOn(len(stateOfTheTask(t, path).Attempts)+1))
 	if err != nil {
 		t.Fatalf("RecordPendingEvent %s→%s returned an error: %v", transition.From, transition.To, err)
 	}
@@ -405,8 +534,8 @@ func recorded(t *testing.T, path string, transition Transition) PendingEvent {
 	return written.PendingEvents[len(written.PendingEvents)-1]
 }
 
-// unchanged is a change of a state of a task that changes nothing in it: a test that writes only
-// a transition into the backlog of a task and does not touch the task itself says so.
+// unchanged is a change of a state of a task that changes nothing in it: what a caller that
+// records a transition of a task that did not change gets.
 func unchanged(state State) (State, error) { return state, nil }
 
 // stateOfTheTask is the record of the task as it is on the disk, read the way a process that is

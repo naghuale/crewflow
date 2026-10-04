@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/naghuale/crewflow/internal/secret"
@@ -36,9 +37,14 @@ import (
 // the backlog of a task is a field nobody looked at when the event was told (docs/DESIGN.md §7e, §7h).
 type PendingEvent struct {
 	// ID is what the backlog keeps the event under and what a confirmation of it names. It is
-	// a digest of the transition and of the record it rests on, and no caller writes it: the
-	// same transition on the same record is the same event, and the backlog refuses to write
-	// the second of them over the first.
+	// a digest of the revision the record took when the event was written, of the transition
+	// and of the whole record it rests on, and no caller writes it.
+	//
+	// The revision is in it because it is what tells two changes of a task apart: the same
+	// transition on the same commit, told once before a change of the title and once after it,
+	// is two events of two versions of the record and not one event told twice. The name of an
+	// event is therefore bound to the one version of the record it was told in, and it stays
+	// that way for as long as the event is in the backlog.
 	ID string `json:"id"`
 	// At is when the task went from From to To.
 	At time.Time `json:"at"`
@@ -89,6 +95,12 @@ var (
 	// states of §6a: what the task went from and to are the states of the queue, and a word
 	// out of the list is a transition nobody can read.
 	ErrPendingStateUnknown = errors.New("pending-event-state-unknown")
+	// ErrPendingWithoutChange is the refusal of a transition of a task that the change beside it
+	// did not make: the record of the task says the same thing it said before, so nothing was
+	// committed and there is no transition of it to tell anybody about. The refusal comes
+	// before the write, and the record on the disk stays what it was — neither the event nor
+	// the change of it reaches the disk (docs/DESIGN.md §7h, #243).
+	ErrPendingWithoutChange = errors.New("pending-event-without-change")
 	// ErrPendingNotFound is the refusal of a confirmation of an event the backlog does not
 	// hold: either the event was told already or the caller named what was never written, and
 	// a confirmation that took something out of the backlog on a name nobody checked would
@@ -113,23 +125,53 @@ type Transition struct {
 // RecordPendingEvent writes the transition into the backlog of the task in the same write as the
 // change it belongs to, under the lock of the task: a subscriber that read the record between
 // the change and the news about it would see a task that went from A to B and would never hear
-// about it, and the two are one write or neither of them is (docs/DESIGN.md §7h, #243).
+// about it, and the two are one write or neither of them is (docs.DESIGN.md §7h, #243).
 //
-// The change is made first and the transition is added to what it made. A transition that does
-// not fit the backlog refuses the change with it, and nothing of either reaches the disk: the
-// record on it stays the one that was there, byte for byte, and crewflow does not go back to it
-// afterwards to make room or to write the change without the news — a transition whose event was
-// lost is not a transition anybody may act on.
+// A transition is news of a change, and a change it can be news of. So the change is made
+// first and the record it made is compared with the record that was on the disk: if the change
+// left the record saying the same thing, the transition is refused whole
+// (`pending-event-without-change`) — nothing was committed, and an event of a task that did not
+// happen is exactly the uncommitted transition the backlog exists not to publish. The comparison
+// is of what was read under the lock and of what the change made, because the change is made on
+// the arrays behind the record it was given and a record compared with itself afterwards says
+// that nothing changed.
+//
+// Then the event is added to the record the change made, named by the revision that record
+// takes: two changes of a task committed one after another are two events even when the
+// transition and the record it rests on are the same words.
+//
+// A transition that does not fit the backlog refuses the change with it, and nothing of either
+// reaches the disk: the record on it stays the one that was there, byte for byte, and crewflow
+// does not go back to it afterwards to make room or to write the change without the news — a
+// transition whose event was lost is not a transition anybody may act on.
 //
 // The caller names the transition and the change and nothing else: the name of the event is a
-// digest of it, and the revision of the record is the road's word (#243).
+// digest of it and of the revision, and the revision of the record is the road's word (#243).
 func RecordPendingEvent(out *secret.Out, path string, was Transition, change func(State) (State, error)) (State, error) {
-	return UpdateStateThrough(out, path, func(state State) (State, error) {
+	return updateStateThrough(out, path, func(state State, wasRead persisted) (State, error) {
+		// The transition is read before the change is made: a word of §6a that the format
+		// does not name is refused as what it is, and not as a change that changed nothing.
+		if _, err := eventOf(was, 0); err != nil {
+			return State{}, err
+		}
 		changed, err := change(state)
 		if err != nil {
 			return State{}, err
 		}
-		return changed.withPendingEvent(was)
+		same, err := saysTheSame(out, wasRead, changed)
+		if err != nil {
+			return State{}, err
+		}
+		if same {
+			return State{}, fmt.Errorf("the change of the task left the record of it saying the same thing, so "+
+				"nothing was committed and the transition %s→%s on %s is no news of it: %w",
+				was.From, was.To, shortOf(was.Basis), ErrPendingWithoutChange)
+		}
+		revision, err := revisionOf(wasRead)
+		if err != nil {
+			return State{}, err
+		}
+		return changed.withPendingEvent(was, revision)
 	})
 }
 
@@ -149,12 +191,17 @@ func ConfirmPendingEvents(out *secret.Out, path string, confirmed []string) (Sta
 	})
 }
 
-// withPendingEvent is the state of a task with the transition written into its backlog, and a
-// refusal where it does not fit. The event is appended and never written over: a backlog is a
-// queue of what is not told yet, and the record it holds is a record of a transition of the task
-// that a subscriber may come to look at after the task went on changing.
-func (s State) withPendingEvent(was Transition) (State, error) {
-	event, err := eventOf(was)
+// withPendingEvent is the state of a task with the transition written into its backlog at that
+// revision, and a refusal where it does not fit. The event is appended and never written over: a
+// backlog is a queue of what is not told yet, and the record it holds is a record of a transition
+// of the task that a subscriber may come to look at after the task went on changing.
+//
+// The revision is the one the record of the task takes with this event in it, and it is part of
+// the name of the event: a record of the backlog holds each event once, and the same event twice
+// in one record is the same transition told twice about one version of the record
+// (docs/DESIGN.md §7h, #243).
+func (s State) withPendingEvent(was Transition, revision int64) (State, error) {
+	event, err := eventOf(was, revision)
 	if err != nil {
 		return s, err
 	}
@@ -210,19 +257,17 @@ func (s State) pendingEvent(id string) (PendingEvent, bool) {
 	return s.PendingEvents[at], true
 }
 
-// eventOf is the record the backlog keeps the transition under, and a refusal where the
-// transition is not between the states of §6a. The name of the record is a digest of the
-// transition and of the record it rests on, and no caller brings one: the same transition on the
-// same record is one event however many times it is recorded, and a name a caller wrote is a
-// name nobody checked.
-func eventOf(was Transition) (PendingEvent, error) {
+// eventOf is the record the backlog keeps the transition under at that revision, and a refusal
+// where the transition is not between the states of §6a. The name of the record is a digest of
+// it, and no caller brings one: a name a caller wrote is a name nobody checked.
+func eventOf(was Transition, revision int64) (PendingEvent, error) {
 	if !KnownState(was.From) || !KnownState(was.To) {
 		return PendingEvent{}, fmt.Errorf("the transition %q→%q of the task is not between the states of §6a, "+
 			"and what the task went from and to are the states of the queue: %w",
 			was.From, was.To, ErrPendingStateUnknown)
 	}
 	return PendingEvent{
-		ID:    idOf(was),
+		ID:    idOf(was, revision),
 		At:    was.At,
 		From:  was.From,
 		To:    was.To,
@@ -230,11 +275,15 @@ func eventOf(was Transition) (PendingEvent, error) {
 	}, nil
 }
 
-// idOf is what the backlog keeps the transition under: a digest of the two states of it and of
-// the record it rests on, and nothing of when it happened — the moment of a transition is part
-// of the record of it and not part of the name of it. It is kept short because a state file is
-// read by a person who is looking for the branch of the task, not for a hash (docs/DESIGN.md §7h).
-func idOf(was Transition) string {
-	sum := sha256.Sum256([]byte(string(was.From) + "\x00" + string(was.To) + "\x00" + was.Basis))
+// idOf is what the backlog keeps the transition under at that revision: a digest of the revision
+// the record of the task takes with the event in it, of the two states of the transition and of
+// the whole record it rests on. The revision and the basis are both of it in full — a transition
+// on another commit, and the same transition told again after another change of the task, are two
+// events and not one — and the moment of it is not: the moment is part of the record of the event
+// and not part of the name of it. It is kept short because a state file is read by a person who is
+// looking for the branch of the task, not for a hash (docs/DESIGN.md §7h, #243).
+func idOf(was Transition, revision int64) string {
+	sum := sha256.Sum256([]byte(strconv.FormatInt(revision, 10) + "\x00" + string(was.From) + "\x00" +
+		string(was.To) + "\x00" + was.Basis))
 	return hex.EncodeToString(sum[:6])
 }
